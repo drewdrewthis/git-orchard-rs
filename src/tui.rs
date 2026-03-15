@@ -58,7 +58,7 @@ enum Phase {
 
 enum AppMsg {
     Worktrees(Vec<Worktree>),
-    PaneContent(String),
+    PaneContent(String, String), // (session_name, content)
     Warning(String),
     DeleteDone,
     DeleteErr(String),
@@ -190,7 +190,7 @@ impl App {
             } else {
                 tmux::capture_pane_content(&session, 100).unwrap_or_default()
             };
-            let _ = tx.send(AppMsg::PaneContent(content));
+            let _ = tx.send(AppMsg::PaneContent(session.clone(), content));
         });
     }
 
@@ -233,8 +233,13 @@ impl App {
                         self.pane_content.clear();
                     }
                 }
-                AppMsg::PaneContent(content) => {
-                    self.pane_content = content;
+                AppMsg::PaneContent(session_name, content) => {
+                    // Only accept if it matches the currently selected worktree's session.
+                    let current_session = self.worktrees.get(self.cursor)
+                        .and_then(|wt| wt.tmux_session.as_ref());
+                    if current_session.map_or(false, |s| s == &session_name) {
+                        self.pane_content = content;
+                    }
                 }
                 AppMsg::DeleteDone => {
                     self.delete_phase = Phase::Done;

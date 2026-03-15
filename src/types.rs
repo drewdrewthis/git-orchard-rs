@@ -77,33 +77,17 @@ pub struct StatusDisplay {
 }
 
 pub fn resolve_pr_status(pr: &PrInfo) -> PrStatus {
-    if pr.has_conflicts {
-        return PrStatus::Conflict;
-    }
-    if pr.checks_status == ChecksStatus::Fail {
-        return PrStatus::Failing;
-    }
-    if pr.unresolved_threads > 0 {
-        return PrStatus::Unresolved;
-    }
-    if pr.review_decision == ReviewDecision::ChangesRequested {
-        return PrStatus::ChangesRequested;
-    }
-    if pr.state == "merged" {
-        return PrStatus::Merged;
-    }
-    if pr.state == "closed" {
-        return PrStatus::Closed;
-    }
+    if pr.state == "merged" { return PrStatus::Merged; }
+    if pr.state == "closed" { return PrStatus::Closed; }
+    if pr.has_conflicts { return PrStatus::Conflict; }
+    if pr.unresolved_threads > 0 { return PrStatus::Unresolved; }
+    if pr.review_decision == ReviewDecision::ChangesRequested { return PrStatus::ChangesRequested; }
+    if pr.checks_status == ChecksStatus::Fail { return PrStatus::Failing; }
     if pr.review_decision == ReviewDecision::None || pr.review_decision == ReviewDecision::ReviewRequired {
         return PrStatus::ReviewNeeded;
     }
-    if pr.checks_status == ChecksStatus::Pending {
-        return PrStatus::PendingCi;
-    }
-    if pr.review_decision == ReviewDecision::Approved {
-        return PrStatus::Approved;
-    }
+    if pr.checks_status == ChecksStatus::Pending { return PrStatus::PendingCi; }
+    if pr.review_decision == ReviewDecision::Approved { return PrStatus::Approved; }
     PrStatus::ReviewNeeded
 }
 
@@ -177,13 +161,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn conflict_highest_priority() {
+    fn conflict_beats_failing_when_open() {
         let pr = PrInfo {
             number: 1, state: "open".into(), title: String::new(), url: String::new(),
             review_decision: ReviewDecision::None, unresolved_threads: 0,
             checks_status: ChecksStatus::Fail, has_conflicts: true,
         };
         assert_eq!(resolve_pr_status(&pr), PrStatus::Conflict);
+    }
+
+    #[test]
+    fn merged_beats_conflicts_and_failing_ci() {
+        let pr = PrInfo {
+            number: 1, state: "merged".into(), title: String::new(), url: String::new(),
+            review_decision: ReviewDecision::None, unresolved_threads: 0,
+            checks_status: ChecksStatus::Fail, has_conflicts: true,
+        };
+        assert_eq!(resolve_pr_status(&pr), PrStatus::Merged);
     }
 
     #[test]

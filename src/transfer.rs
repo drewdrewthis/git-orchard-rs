@@ -6,6 +6,7 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 use crate::remote;
+use crate::tmux;
 use crate::types::{RemoteConfig, Worktree};
 
 const WIP_MESSAGE: &str = "[orchard] WIP handoff";
@@ -101,7 +102,7 @@ fn commit_wip(dir: &str) -> anyhow::Result<()> {
     if has_wip_commit(dir) {
         return Ok(());
     }
-    run_local(Some(dir), &["git", "add", "-A"])?;
+    run_local(Some(dir), &["git", "add", "-u"])?;
 
     let status = Command::new("git")
         .args(["-C", dir, "status", "--porcelain"])
@@ -155,22 +156,34 @@ pub fn push_to_remote(
     on_step("Creating remote worktree...");
     let remote_path = derive_remote_worktree_path(&remote.repo_path, &branch);
 
-    let fetch_cmd = format!("cd {} && git fetch origin {}", remote.repo_path, branch);
+    let fetch_cmd = format!(
+        "cd {} && git fetch origin {}",
+        remote::shell_escape(&remote.repo_path), remote::shell_escape(&branch)
+    );
     remote::ssh_exec(&remote.host, &fetch_cmd)
         .map_err(|e| anyhow!("remote git fetch: {}", e))?;
 
     let add_cmd = format!(
         "cd {} && git worktree add {} {}",
-        remote.repo_path, remote_path, branch
+        remote::shell_escape(&remote.repo_path),
+        remote::shell_escape(&remote_path),
+        remote::shell_escape(&branch)
     );
     if remote::ssh_exec(&remote.host, &add_cmd).is_err() {
-        let pull_cmd = format!("cd {} && git pull origin {}", remote_path, branch);
+        let pull_cmd = format!(
+            "cd {} && git pull origin {}",
+            remote::shell_escape(&remote_path), remote::shell_escape(&branch)
+        );
         remote::ssh_exec(&remote.host, &pull_cmd)
             .map_err(|e| anyhow!("remote worktree add and pull both failed: {}", e))?;
     }
 
     on_step("Creating session...");
-    let session_name = sanitize_branch_slug(&branch);
+    let repo_basename = std::path::Path::new(&remote.repo_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("orchard");
+    let session_name = tmux::derive_session_name(repo_basename, Some(&branch), &remote_path);
     remote::create_remote_session(&remote.host, &session_name, &remote_path)
         .map_err(|e| anyhow!("create remote session: {}", e))?;
 
@@ -214,14 +227,17 @@ pub fn pull_to_local(
 
     on_step("Committing changes...");
     let commit_cmd = format!(
-        "cd {} && git add -A && (git diff --cached --quiet || git commit -m {:?})",
-        wt.path, WIP_MESSAGE
+        "cd {} && git add -u && (git diff --cached --quiet || git commit -m {})",
+        remote::shell_escape(&wt.path), remote::shell_escape(WIP_MESSAGE)
     );
     remote::ssh_exec(&remote.host, &commit_cmd)
         .map_err(|e| anyhow!("remote commit WIP: {}", e))?;
 
     on_step("Pushing branch...");
-    let push_cmd = format!("cd {} && git push origin {}", wt.path, branch);
+    let push_cmd = format!(
+        "cd {} && git push origin {}",
+        remote::shell_escape(&wt.path), remote::shell_escape(&branch)
+    );
     remote::ssh_exec(&remote.host, &push_cmd)
         .map_err(|e| anyhow!("remote git push: {}", e))?;
 
@@ -242,7 +258,11 @@ pub fn pull_to_local(
     }
 
     on_step("Creating session...");
-    let session_name = sanitize_branch_slug(&branch);
+    let repo_basename = std::path::Path::new(repo_root)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("orchard");
+    let session_name = tmux::derive_session_name(repo_basename, Some(&branch), &local_path);
     let create_out = Command::new("tmux")
         .args([
             "new-session",
