@@ -224,7 +224,7 @@ pub fn capture_remote_pane_content(
     lines: u32,
 ) -> anyhow::Result<String> {
     let cmd = format!(
-        "tmux capture-pane -t {} -p -J -e -S -{}",
+        "tmux capture-pane -t {} -p -J -S -{}",
         session, lines
     );
     let out = ssh_exec(host, &cmd)?;

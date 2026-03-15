@@ -185,9 +185,9 @@ impl App {
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let content = if let Some(host) = remote_host {
-                remote::capture_remote_pane_content(&host, &session, 30).unwrap_or_default()
+                remote::capture_remote_pane_content(&host, &session, 100).unwrap_or_default()
             } else {
-                tmux::capture_pane_content(&session, 30).unwrap_or_default()
+                tmux::capture_pane_content(&session, 100).unwrap_or_default()
             };
             let _ = tx.send(AppMsg::PaneContent(content));
         });
@@ -201,9 +201,14 @@ impl App {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 AppMsg::Worktrees(trees) => {
+                    // Keep refreshing=true until no worktrees have pr_loading set
+                    // (progressive updates set pr_loading=true until the final stage)
+                    let still_loading = trees.iter().any(|wt| wt.pr_loading);
                     self.worktrees = trees;
                     self.loading = false;
-                    self.refreshing = false;
+                    if !still_loading {
+                        self.refreshing = false;
+                    }
                     self.error = None;
                     if self.cursor >= self.worktrees.len() && !self.worktrees.is_empty() {
                         self.cursor = self.worktrees.len() - 1;
@@ -738,26 +743,15 @@ impl App {
             .as_ref()
             .is_some_and(|(_, t)| t.elapsed().as_secs() < WARNING_DURATION_SECS);
 
-        let warning_height: u16 = if has_warning { 1 } else { 0 };
-
-        // Calculate how much space is available for the preview
-        let fixed_height: u16 = 7 + 1 + list_height + 1 + warning_height + 1; // header + spacer + list + spacer + warning + hints
-        let preview_height = if has_preview && area.height > fixed_height + 4 {
-            let avail = area.height - fixed_height;
-            avail.min(20).max(4)
-        } else {
-            0
-        };
-
         let mut constraints = vec![
             Constraint::Length(7),          // header
             Constraint::Length(1),          // spacer
             Constraint::Length(list_height), // worktree list
         ];
 
-        if preview_height > 0 {
+        if has_preview {
             constraints.push(Constraint::Length(1)); // spacer
-            constraints.push(Constraint::Length(preview_height)); // preview
+            constraints.push(Constraint::Min(4));    // preview fills remaining
         }
 
         if has_warning {
@@ -765,7 +759,13 @@ impl App {
         }
 
         constraints.push(Constraint::Length(1)); // hints
-        constraints.push(Constraint::Min(0));    // remainder absorber
+
+        // If no preview, add remainder absorber between list and hints
+        if !has_preview {
+            // Insert a Min(0) before hints to absorb remaining space
+            let hints_idx = constraints.len() - 1;
+            constraints.insert(hints_idx, Constraint::Min(0));
+        }
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -786,7 +786,7 @@ impl App {
         chunk_idx += 1;
 
         // Preview
-        if preview_height > 0 {
+        if has_preview {
             chunk_idx += 1; // spacer
             self.render_preview(f, chunks[chunk_idx]);
             chunk_idx += 1;
@@ -809,11 +809,11 @@ impl App {
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
         let header_text = vec![
-            Line::from("\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}"),
-            Line::from("\u{250c}\u{2500}\u{2510}\u{252c}\u{250c}\u{252c}\u{2510}\u{2554}\u{2550}\u{2557}\u{2566}\u{2550}\u{2557}\u{2554}\u{2550}\u{2557}\u{2566} \u{2566}\u{2554}\u{2550}\u{2557}\u{2566}\u{2550}\u{2557}\u{2554}\u{2566}\u{2557}"),
-            Line::from("\u{2502} \u{252c}\u{2502}\u{2502} \u{2502} \u{2551} \u{2551}\u{2560}\u{2566}\u{255d}\u{2551}  \u{2560}\u{2550}\u{2569}\u{2560}\u{2550}\u{2557}\u{2560}\u{2566}\u{255d} \u{2551}\u{2551}"),
-            Line::from("\u{2514}\u{2500}\u{2518}\u{2534} \u{2534} \u{255a}\u{2550}\u{255d}\u{2569}\u{255a}\u{2550}\u{255a}\u{2550}\u{255d}\u{2569} \u{2569}\u{2569} \u{2569}\u{2569}\u{255a}\u{2550}\u{2550}\u{2569}\u{255d}"),
-            Line::from("\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}\u{1f332}\u{1f333}\u{1f334}"),
+            Line::from("🌲🌳🌴🌲🌳🌴🌲🌳🌴🌲🌳🌴🌲🌳🌴🌲🌳🌴"),
+            Line::from("┌─┐┬┌┬┐╔═╗╦═╗╔═╗╦ ╦╔═╗╦═╗╔╦╗"),
+            Line::from("│ ┬│ │ ║ ║╠╦╝║  ╠═╣╠═╣╠╦╝ ║║"),
+            Line::from("└─┘┴ ┴ ╚═╝╩╚═╚═╝╩ ╩╩ ╩╩╚══╩╝"),
+            Line::from("🌲🌳🌴🌲🌳🌴🌲🌳🌴🌲🌳🌴🌲🌳🌴🌲🌳🌴"),
         ];
         let header = Paragraph::new(header_text)
             .alignment(Alignment::Center)

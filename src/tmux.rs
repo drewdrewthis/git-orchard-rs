@@ -103,7 +103,7 @@ pub fn kill_tmux_session(name: &str) -> Result<()> {
 pub fn capture_pane_content(session: &str, lines: u32) -> Result<String> {
     let lines_arg = format!("-{lines}");
     let out = Command::new("tmux")
-        .args(["capture-pane", "-t", session, "-p", "-J", "-e", "-S", &lines_arg])
+        .args(["capture-pane", "-t", session, "-p", "-J", "-S", &lines_arg])
         .output()
         .context("tmux capture-pane")?;
 
