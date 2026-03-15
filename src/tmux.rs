@@ -159,10 +159,21 @@ pub fn switch_to_session(opts: &SwitchToSessionOptions) -> Result<()> {
         opts.pr.as_ref(),
     )?;
 
-    Command::new("tmux")
-        .args(["switch-client", "-t", &opts.session_name])
-        .status()
-        .context("tmux switch-client")?;
+    // Use switch-client when inside tmux, attach-session when outside
+    let inside_tmux = std::env::var("TMUX").is_ok();
+    if inside_tmux {
+        Command::new("tmux")
+            .args(["switch-client", "-t", &opts.session_name])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .context("tmux switch-client")?;
+    } else {
+        Command::new("tmux")
+            .args(["attach-session", "-t", &opts.session_name])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .context("tmux attach-session")?;
+    }
 
     Ok(())
 }

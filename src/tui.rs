@@ -59,6 +59,7 @@ enum Phase {
 enum AppMsg {
     Worktrees(Vec<Worktree>),
     PaneContent(String),
+    Warning(String),
     DeleteDone,
     DeleteErr(String),
     TransferDone,
@@ -258,6 +259,9 @@ impl App {
                 AppMsg::CleanupDone => {
                     self.cleanup_phase = Phase::Done;
                     self.start_refresh();
+                }
+                AppMsg::Warning(msg) => {
+                    self.warning = Some((msg, Instant::now()));
                 }
                 AppMsg::Error(e) => {
                     self.error = Some(e);
@@ -469,46 +473,59 @@ impl App {
         if self.worktrees.is_empty() || self.cursor >= self.worktrees.len() {
             return;
         }
-        let wt = &self.worktrees[self.cursor];
+        let wt = self.worktrees[self.cursor].clone();
         let repo_name = self.repo_name.clone();
         let config = self.config.clone();
+        let tx = self.tx.clone();
 
-        if let Some(ref host) = wt.remote {
-            // Remote session
-            let session_name = wt
-                .tmux_session
-                .clone()
-                .or_else(|| {
-                    wt.branch.as_ref().map(|b| {
-                        tmux::derive_session_name(&repo_name, Some(b), &wt.path)
+        std::thread::spawn(move || {
+            let result = if let Some(ref host) = wt.remote {
+                // Remote session
+                let session_name = wt
+                    .tmux_session
+                    .clone()
+                    .or_else(|| {
+                        wt.branch.as_ref().map(|b| {
+                            tmux::derive_session_name(&repo_name, Some(b), &wt.path)
+                        })
                     })
+                    .unwrap_or_default();
+                if session_name.is_empty() {
+                    return;
+                }
+                let shell = config
+                    .remote
+                    .as_ref()
+                    .map(|r| r.shell.as_str())
+                    .unwrap_or("ssh");
+                remote::attach_remote_session(host, &session_name, shell)
+            } else {
+                // Local session
+                let session_name = wt.tmux_session.clone().unwrap_or_else(|| {
+                    tmux::derive_session_name(
+                        &repo_name,
+                        wt.branch.as_deref(),
+                        &wt.path,
+                    )
+                });
+                tmux::switch_to_session(&SwitchToSessionOptions {
+                    session_name,
+                    worktree_path: wt.path.clone(),
+                    branch: wt.branch.clone(),
+                    pr: wt.pr.clone(),
                 })
-                .unwrap_or_default();
-            if session_name.is_empty() {
-                return;
+            };
+            if let Err(e) = result {
+                let msg = e.to_string();
+                if msg.contains("no current client") {
+                    let _ = tx.send(AppMsg::Warning(
+                        "Not inside tmux — run `orchard` shell function instead".to_string()
+                    ));
+                } else {
+                    let _ = tx.send(AppMsg::Warning(format!("tmux: {msg}")));
+                }
             }
-            let shell = config
-                .remote
-                .as_ref()
-                .map(|r| r.shell.as_str())
-                .unwrap_or("ssh");
-            let _ = remote::attach_remote_session(host, &session_name, shell);
-        } else {
-            // Local session
-            let session_name = wt.tmux_session.clone().unwrap_or_else(|| {
-                tmux::derive_session_name(
-                    &repo_name,
-                    wt.branch.as_deref(),
-                    &wt.path,
-                )
-            });
-            let _ = tmux::switch_to_session(&SwitchToSessionOptions {
-                session_name,
-                worktree_path: wt.path.clone(),
-                branch: wt.branch.clone(),
-                pr: wt.pr.clone(),
-            });
-        }
+        });
     }
 
     fn open_pr_url(&self) {
