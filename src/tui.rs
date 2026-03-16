@@ -297,6 +297,8 @@ impl App {
     // -------------------------------------------------------------------
 
     fn handle_key(&mut self, key: KeyEvent) -> bool {
+        crate::logger::LOG.info(&format!("tui: key event: {:?} view={:?}", key.code, self.view));
+
         // Ctrl+C always quits.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return true;
@@ -1456,12 +1458,22 @@ fn run_loop(
         // If a tmux switch is pending, run it directly.
         // No alternate screen to worry about — tmux switch-client just works.
         if let Some(action) = app.pending_tmux_switch.take() {
+            crate::logger::LOG.info("tui: executing pending tmux switch");
             let result = match action.kind {
-                TmuxSwitchKind::Local(opts) => tmux::switch_to_session(&opts),
-                TmuxSwitchKind::Remote { host, session_name, shell } => {
-                    remote::attach_remote_session(&host, &session_name, &shell)
+                TmuxSwitchKind::Local(ref opts) => {
+                    crate::logger::LOG.info(&format!("tui: switching to local session {}", opts.session_name));
+                    tmux::switch_to_session(opts)
+                }
+                TmuxSwitchKind::Remote { ref host, ref session_name, ref shell } => {
+                    crate::logger::LOG.info(&format!("tui: attaching remote session {} on {}", session_name, host));
+                    remote::attach_remote_session(host, session_name, shell)
                 }
             };
+
+            match &result {
+                Ok(()) => crate::logger::LOG.info("tui: tmux switch succeeded"),
+                Err(e) => crate::logger::LOG.error(&format!("tui: tmux switch failed: {}", e)),
+            }
 
             if let Err(e) = result {
                 let msg = e.to_string();
