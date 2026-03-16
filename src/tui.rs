@@ -1583,6 +1583,11 @@ fn render_status_badge(wt: &Worktree, refreshing: bool) -> String {
     if wt.has_conflicts {
         return "\u{2716} conflict".to_string();
     }
+    if let Some(ref title) = wt.tmux_pane_title {
+        if title.contains("Claude Code") {
+            return "\u{26a1} claude".to_string();
+        }
+    }
     if wt.pr_loading || refreshing {
         return "\u{00b7}\u{00b7}\u{00b7}".to_string();
     }
@@ -1603,6 +1608,11 @@ fn render_status_badge(wt: &Worktree, refreshing: bool) -> String {
 fn status_badge_style(wt: &Worktree, refreshing: bool) -> Style {
     if wt.has_conflicts {
         return Style::default().fg(Color::Red);
+    }
+    if let Some(ref title) = wt.tmux_pane_title {
+        if title.contains("Claude Code") {
+            return Style::default().fg(Color::Magenta);
+        }
     }
     if wt.pr_loading || refreshing {
         return Style::default().fg(Color::DarkGray);
@@ -1674,6 +1684,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(render_status_badge(&wt, false), "\u{00b7}\u{00b7}\u{00b7}");
+    }
+
+    #[test]
+    fn status_badge_shows_claude_when_active() {
+        let wt = Worktree {
+            tmux_pane_title: Some("\u{2733} Claude Code".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(render_status_badge(&wt, false), "\u{26a1} claude");
     }
 
     #[test]

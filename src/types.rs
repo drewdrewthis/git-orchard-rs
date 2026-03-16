@@ -13,6 +13,8 @@ pub struct Worktree {
     pub tmux_session: Option<String>,
     pub tmux_attached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub tmux_pane_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub issue_number: Option<u32>,
@@ -127,6 +129,7 @@ pub struct TmuxSession {
     pub name: String,
     pub path: String,
     pub attached: bool,
+    pub pane_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

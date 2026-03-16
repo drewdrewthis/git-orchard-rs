@@ -36,7 +36,27 @@ pub fn list_tmux_sessions() -> Vec<TmuxSession> {
             name: parts[0].to_string(),
             path: parts[1].to_string(),
             attached: parts[2] == "1",
+            pane_title: None,
         });
+    }
+
+    // Fetch pane titles for all sessions in one call (pane index 0 only).
+    let pane_out = Command::new("tmux")
+        .args(["list-panes", "-a", "-F", "#{session_name}\t#{pane_index}\t#{pane_title}"])
+        .output();
+
+    if let Ok(o) = pane_out {
+        if o.status.success() {
+            let pane_text = String::from_utf8_lossy(&o.stdout);
+            for line in pane_text.trim().lines() {
+                let parts: Vec<&str> = line.splitn(3, '\t').collect();
+                if parts.len() == 3 && parts[1] == "0" {
+                    if let Some(session) = sessions.iter_mut().find(|s| s.name == parts[0]) {
+                        session.pane_title = Some(parts[2].to_string());
+                    }
+                }
+            }
+        }
     }
 
     LOG.info(&format!("listTmuxSessions: {} sessions", sessions.len()));
@@ -295,9 +315,9 @@ mod tests {
 
     fn make_sessions() -> Vec<TmuxSession> {
         vec![
-            TmuxSession { name: "other_main".into(), path: "/other/path".into(), attached: false },
-            TmuxSession { name: "myrepo_feature-x".into(), path: "/home/user/myrepo-feature-x".into(), attached: false },
-            TmuxSession { name: "orchard".into(), path: "/home/user/orchard".into(), attached: true },
+            TmuxSession { name: "other_main".into(), path: "/other/path".into(), attached: false, pane_title: None },
+            TmuxSession { name: "myrepo_feature-x".into(), path: "/home/user/myrepo-feature-x".into(), attached: false, pane_title: None },
+            TmuxSession { name: "orchard".into(), path: "/home/user/orchard".into(), attached: true, pane_title: None },
         ]
     }
 

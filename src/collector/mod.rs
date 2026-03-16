@@ -44,6 +44,7 @@ pub fn merge_tmux_sessions(
             let mut t = tree.clone();
             t.tmux_session = session.map(|s| s.name.clone());
             t.tmux_attached = session.is_some_and(|s| s.attached);
+            t.tmux_pane_title = session.and_then(|s| s.pane_title.clone());
             t.pr_loading = !tree.is_bare && tree.branch.is_some() && gh_ok;
             t
         })
@@ -292,6 +293,7 @@ mod tests {
             name: "myrepo_main".to_string(),
             path: "/home/user/project".to_string(),
             attached: false,
+            pane_title: None,
         }];
         let result = merge_tmux_sessions(&trees, &sessions, false);
         assert_eq!(result[0].tmux_session.as_deref(), Some("myrepo_main"));
@@ -304,6 +306,7 @@ mod tests {
             name: "myrepo_main".to_string(),
             path: "/home/user/project".to_string(),
             attached: true,
+            pane_title: None,
         }];
         let result = merge_tmux_sessions(&trees, &sessions, true);
         assert!(result[0].tmux_attached);
@@ -336,6 +339,19 @@ mod tests {
         let result = merge_tmux_sessions(&trees, &[], false);
         assert!(result[0].tmux_session.is_none());
         assert!(!result[0].tmux_attached);
+    }
+
+    #[test]
+    fn merge_tmux_sets_pane_title() {
+        let trees = vec![branched_worktree("/home/user/project", "main")];
+        let sessions = vec![TmuxSession {
+            name: "myrepo_main".to_string(),
+            path: "/home/user/project".to_string(),
+            attached: false,
+            pane_title: Some("\u{2733} Claude Code".to_string()),
+        }];
+        let result = merge_tmux_sessions(&trees, &sessions, false);
+        assert_eq!(result[0].tmux_pane_title.as_deref(), Some("\u{2733} Claude Code"));
     }
 
     // -----------------------------------------------------------------------
