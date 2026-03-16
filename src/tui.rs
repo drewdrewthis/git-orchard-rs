@@ -68,6 +68,17 @@ enum AppMsg {
     Error(String),
 }
 
+/// Describes a tmux session switch that must run with the terminal suspended.
+struct TmuxSwitchAction {
+    /// For local: SwitchToSessionOptions. For remote: host + session + shell.
+    kind: TmuxSwitchKind,
+}
+
+enum TmuxSwitchKind {
+    Local(SwitchToSessionOptions),
+    Remote { host: String, session_name: String, shell: String },
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -88,6 +99,9 @@ pub struct App {
     // Background data channel
     tx: mpsc::Sender<AppMsg>,
     rx: mpsc::Receiver<AppMsg>,
+
+    // Pending tmux action to run after suspending the terminal
+    pending_tmux_switch: Option<TmuxSwitchAction>,
 
     // Delete state
     delete_target: Option<Worktree>,
@@ -153,6 +167,7 @@ impl App {
             cleanup_errors: Vec::new(),
             last_refresh: Instant::now(),
             spinner_frame: 0,
+            pending_tmux_switch: None,
         }
     }
 
@@ -474,63 +489,55 @@ impl App {
     // Actions
     // -------------------------------------------------------------------
 
-    fn switch_to_tmux_session(&self) {
+    fn switch_to_tmux_session(&mut self) {
         if self.worktrees.is_empty() || self.cursor >= self.worktrees.len() {
             return;
         }
-        let wt = self.worktrees[self.cursor].clone();
-        let repo_name = self.repo_name.clone();
-        let config = self.config.clone();
-        let tx = self.tx.clone();
+        let wt = &self.worktrees[self.cursor];
+        let repo_name = &self.repo_name;
 
-        std::thread::spawn(move || {
-            let result = if let Some(ref host) = wt.remote {
-                // Remote session
-                let session_name = wt
-                    .tmux_session
-                    .clone()
-                    .or_else(|| {
-                        wt.branch.as_ref().map(|b| {
-                            tmux::derive_session_name(&repo_name, Some(b), &wt.path)
-                        })
+        if let Some(ref host) = wt.remote {
+            let session_name = wt
+                .tmux_session
+                .clone()
+                .or_else(|| {
+                    wt.branch.as_ref().map(|b| {
+                        tmux::derive_session_name(repo_name, Some(b), &wt.path)
                     })
-                    .unwrap_or_default();
-                if session_name.is_empty() {
-                    return;
-                }
-                let shell = config
-                    .remote
-                    .as_ref()
-                    .map(|r| r.shell.as_str())
-                    .unwrap_or("ssh");
-                remote::attach_remote_session(host, &session_name, shell)
-            } else {
-                // Local session
-                let session_name = wt.tmux_session.clone().unwrap_or_else(|| {
-                    tmux::derive_session_name(
-                        &repo_name,
-                        wt.branch.as_deref(),
-                        &wt.path,
-                    )
-                });
-                tmux::switch_to_session(&SwitchToSessionOptions {
+                })
+                .unwrap_or_default();
+            if session_name.is_empty() {
+                return;
+            }
+            let shell = self.config
+                .remote
+                .as_ref()
+                .map(|r| r.shell.clone())
+                .unwrap_or_else(|| "ssh".to_string());
+            self.pending_tmux_switch = Some(TmuxSwitchAction {
+                kind: TmuxSwitchKind::Remote {
+                    host: host.clone(),
+                    session_name,
+                    shell,
+                },
+            });
+        } else {
+            let session_name = wt.tmux_session.clone().unwrap_or_else(|| {
+                tmux::derive_session_name(
+                    repo_name,
+                    wt.branch.as_deref(),
+                    &wt.path,
+                )
+            });
+            self.pending_tmux_switch = Some(TmuxSwitchAction {
+                kind: TmuxSwitchKind::Local(SwitchToSessionOptions {
                     session_name,
                     worktree_path: wt.path.clone(),
                     branch: wt.branch.clone(),
                     pr: wt.pr.clone(),
-                })
-            };
-            if let Err(e) = result {
-                let msg = e.to_string();
-                if msg.contains("no current client") {
-                    let _ = tx.send(AppMsg::Warning(
-                        "Not inside tmux — run `orchard` shell function instead".to_string()
-                    ));
-                } else {
-                    let _ = tx.send(AppMsg::Warning(format!("tmux: {msg}")));
-                }
-            }
-        });
+                }),
+            });
+        }
     }
 
     fn open_pr_url(&self) {
@@ -1447,6 +1454,43 @@ fn run_loop(
                     break;
                 }
             }
+        }
+
+        // If a tmux switch is pending, suspend the terminal and run it.
+        if let Some(action) = app.pending_tmux_switch.take() {
+            // Leave alternate screen so tmux can take over
+            crossterm::terminal::disable_raw_mode()?;
+            crossterm::execute!(
+                terminal.backend_mut(),
+                crossterm::terminal::LeaveAlternateScreen
+            )?;
+
+            let result = match action.kind {
+                TmuxSwitchKind::Local(opts) => tmux::switch_to_session(&opts),
+                TmuxSwitchKind::Remote { host, session_name, shell } => {
+                    remote::attach_remote_session(&host, &session_name, &shell)
+                }
+            };
+
+            if let Err(e) = result {
+                let msg = e.to_string();
+                if msg.contains("no current client") {
+                    app.warning = Some((
+                        "Not inside tmux — run `orchard` shell function instead".to_string(),
+                        Instant::now(),
+                    ));
+                } else {
+                    app.warning = Some((format!("tmux: {msg}"), Instant::now()));
+                }
+            }
+
+            // Re-enter alternate screen
+            crossterm::terminal::enable_raw_mode()?;
+            crossterm::execute!(
+                terminal.backend_mut(),
+                crossterm::terminal::EnterAlternateScreen
+            )?;
+            terminal.clear()?;
         }
 
         // Check for background data updates.
