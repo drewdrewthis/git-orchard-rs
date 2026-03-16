@@ -376,7 +376,18 @@ impl App {
                 self.start_refresh();
                 false
             }
-            KeyCode::Char('q') => true,
+            KeyCode::Char('q') => {
+                // Switch back to the previous tmux session instead of quitting.
+                // Only actually quit if we're not inside tmux.
+                if std::env::var("TMUX").is_ok() {
+                    let _ = std::process::Command::new("tmux")
+                        .args(["switch-client", "-l"])
+                        .status();
+                    false
+                } else {
+                    true
+                }
+            }
             _ => false,
         }
     }
@@ -1126,7 +1137,7 @@ impl App {
             "q",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(" quit"));
+        spans.push(Span::raw(" back"));
 
         let hints = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
         f.render_widget(hints, area);

@@ -107,6 +107,6 @@ Navigation:
   d       Delete selected worktree
   c       Cleanup merged worktrees
   r       Refresh list
-  q       Quit"#
+  q       Switch back to previous tmux session (quit if not in tmux)"#
     );
 }
