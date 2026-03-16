@@ -6,6 +6,7 @@ use anyhow::anyhow;
 use regex::Regex;
 
 use crate::logger::LOG;
+use crate::timed;
 use crate::types::{ChecksStatus, IssueState, PrInfo, ReviewDecision};
 
 // ---------------------------------------------------------------------------
@@ -103,12 +104,16 @@ impl Drop for SemaphoreGuard {
 /// First fetches all open PRs in one request, then resolves missing branches
 /// concurrently with a limit of 5 threads.
 pub fn get_all_prs(branches: &[String]) -> HashMap<String, PrInfo> {
-    let mut result: HashMap<String, PrInfo> = HashMap::new();
     if branches.is_empty() {
-        return result;
+        return HashMap::new();
     }
+    timed!("getAllPrs", {
+        get_all_prs_inner(branches)
+    })
+}
 
-    LOG.time("getAllPrs");
+fn get_all_prs_inner(branches: &[String]) -> HashMap<String, PrInfo> {
+    let mut result: HashMap<String, PrInfo> = HashMap::new();
 
     if let Ok(open_prs) = fetch_open_prs() {
         result.extend(open_prs);
@@ -149,7 +154,6 @@ pub fn get_all_prs(branches: &[String]) -> HashMap<String, PrInfo> {
     }
 
     LOG.info(&format!("getAllPrs: {} PRs", result.len()));
-    LOG.time_end("getAllPrs");
     result
 }
 
@@ -237,12 +241,16 @@ fn parse_review_decision(s: &str) -> ReviewDecision {
 
 /// Fetches detailed GraphQL data for up to 25 open PRs and updates `pr_map` in-place.
 pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
-    LOG.time("enrichPrDetails");
+    timed!("enrichPrDetails", {
+        enrich_pr_details_inner(pr_map);
+    })
+}
+
+fn enrich_pr_details_inner(pr_map: &mut HashMap<String, PrInfo>) {
     let (owner, repo) = match get_repo() {
         Ok(pair) => pair,
         Err(err) => {
             LOG.warn(&format!("enrichPrDetails failed: {}", err));
-            LOG.time_end("enrichPrDetails");
             return;
         }
     };
@@ -255,7 +263,6 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
         .collect();
 
     if entries.is_empty() {
-        LOG.time_end("enrichPrDetails");
         return;
     }
 
@@ -277,7 +284,6 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
         Ok(o) => o,
         Err(err) => {
             LOG.warn(&format!("enrichPrDetails failed: {}", err));
-            LOG.time_end("enrichPrDetails");
             return;
         }
     };
@@ -286,17 +292,13 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
         Ok(v) => v,
         Err(err) => {
             LOG.warn(&format!("enrichPrDetails failed: {}", err));
-            LOG.time_end("enrichPrDetails");
             return;
         }
     };
 
     let repo_obj = match raw["data"]["repository"].as_object() {
         Some(o) => o.clone(),
-        None => {
-            LOG.time_end("enrichPrDetails");
-            return;
-        }
+        None => return,
     };
 
     // Reverse map: number -> branch
@@ -347,8 +349,6 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
             .unwrap_or_default();
         pr.checks_status = derive_checks_status(&check_contexts);
     }
-
-    LOG.time_end("enrichPrDetails");
 }
 
 fn build_enrich_query(entries: &[(String, u32)]) -> String {
@@ -512,15 +512,15 @@ pub fn get_issue_states(numbers: &[u32]) -> HashMap<u32, IssueState> {
     if numbers.is_empty() {
         return HashMap::new();
     }
+    timed!("getIssueStates", {
+        get_issue_states_inner(numbers)
+    })
+}
 
-    LOG.time("getIssueStates");
-
+fn get_issue_states_inner(numbers: &[u32]) -> HashMap<u32, IssueState> {
     let (owner, repo) = match get_repo() {
         Ok(pair) => pair,
-        Err(_) => {
-            LOG.time_end("getIssueStates");
-            return HashMap::new();
-        }
+        Err(_) => return HashMap::new(),
     };
 
     let limit = if numbers.len() > 25 {
@@ -581,7 +581,6 @@ pub fn get_issue_states(numbers: &[u32]) -> HashMap<u32, IssueState> {
         }
     }
     LOG.info(&format!("getIssueStates: {} issues resolved", result.len()));
-    LOG.time_end("getIssueStates");
     result
 }
 

@@ -270,3 +270,53 @@ pub fn remove_remote_registry_entry(host: &str, name: &str) -> anyhow::Result<()
     ssh_exec(host, &format!("rm -f ~/.remmy/sessions/{}.json", shell_escape(name)))?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_escape_returns_empty_quoted_for_empty_string() {
+        assert_eq!(shell_escape(""), "''");
+    }
+
+    #[test]
+    fn shell_escape_passes_through_safe_characters() {
+        assert_eq!(shell_escape("hello-world_123"), "hello-world_123");
+    }
+
+    #[test]
+    fn shell_escape_passes_through_tilde() {
+        assert_eq!(shell_escape("~/path/to/dir"), "~/path/to/dir");
+    }
+
+    #[test]
+    fn shell_escape_passes_through_at_and_colon() {
+        assert_eq!(shell_escape("user@host:path"), "user@host:path");
+    }
+
+    #[test]
+    fn shell_escape_wraps_spaces_in_single_quotes() {
+        assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn shell_escape_escapes_single_quotes() {
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_escape_wraps_semicolons() {
+        assert_eq!(shell_escape("cmd;evil"), "'cmd;evil'");
+    }
+
+    #[test]
+    fn shell_escape_wraps_dollar_signs() {
+        assert_eq!(shell_escape("$HOME"), "'$HOME'");
+    }
+
+    #[test]
+    fn shell_escape_wraps_backticks() {
+        assert_eq!(shell_escape("`whoami`"), "'`whoami`'");
+    }
+}

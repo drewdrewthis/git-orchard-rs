@@ -5,27 +5,28 @@ use crate::git;
 use crate::github;
 use crate::logger::LOG;
 use crate::remote;
+use crate::timed;
 use crate::tmux;
 use crate::types::{IssueState, PrInfo, TmuxSession, Worktree};
 
 /// Returns the list of local git worktrees, or an empty vec on failure.
 pub fn fetch_git_worktrees() -> Vec<Worktree> {
-    LOG.time("phase:git");
-    let trees = git::list_worktrees().unwrap_or_default();
-    LOG.info(&format!("worktrees: {} found", trees.len()));
-    LOG.time_end("phase:git");
-    trees
+    timed!("phase:git", {
+        let trees = git::list_worktrees().unwrap_or_default();
+        LOG.info(&format!("worktrees: {} found", trees.len()));
+        trees
+    })
 }
 
 /// Runs tmux session listing and gh-availability check in parallel.
 /// Returns `(sessions, gh_ok)`.
 pub fn fetch_tmux_and_gh() -> (Vec<TmuxSession>, bool) {
-    LOG.time("phase:tmux+gh");
-    let tmux_handle = std::thread::spawn(tmux::list_tmux_sessions);
-    let gh_ok = github::is_gh_available();
-    let sessions = tmux_handle.join().unwrap_or_default();
-    LOG.time_end("phase:tmux+gh");
-    (sessions, gh_ok)
+    timed!("phase:tmux+gh", {
+        let tmux_handle = std::thread::spawn(tmux::list_tmux_sessions);
+        let gh_ok = github::is_gh_available();
+        let sessions = tmux_handle.join().unwrap_or_default();
+        (sessions, gh_ok)
+    })
 }
 
 /// Merges tmux session data into the worktrees slice.
@@ -51,11 +52,11 @@ pub fn merge_tmux_sessions(
 
 /// Fetches basic PR info for the given branch names.
 pub fn fetch_pr_basics(branches: &[String]) -> HashMap<String, PrInfo> {
-    LOG.time("phase:pr-basics");
-    let pr_map = github::get_all_prs(branches);
-    LOG.info(&format!("PRs: {} found", pr_map.len()));
-    LOG.time_end("phase:pr-basics");
-    pr_map
+    timed!("phase:pr-basics", {
+        let pr_map = github::get_all_prs(branches);
+        LOG.info(&format!("PRs: {} found", pr_map.len()));
+        pr_map
+    })
 }
 
 /// Applies a PR map to a worktrees slice. Clears `pr_loading` on all entries.
@@ -76,9 +77,9 @@ pub fn apply_prs(base: &[Worktree], pr_map: &HashMap<String, PrInfo>) -> Vec<Wor
 
 /// Fetches detailed PR data (checks, review threads, conflicts) and updates `pr_map` in-place.
 pub fn enrich_prs(pr_map: &mut HashMap<String, PrInfo>) {
-    LOG.time("phase:pr-enrich");
-    github::enrich_pr_details(pr_map);
-    LOG.time_end("phase:pr-enrich");
+    timed!("phase:pr-enrich", {
+        github::enrich_pr_details(pr_map);
+    })
 }
 
 /// Collects issue numbers referenced by branches that have no PR, then fetches their states.

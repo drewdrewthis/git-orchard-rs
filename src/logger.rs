@@ -98,3 +98,39 @@ pub static LOG: LazyLock<Logger> = LazyLock::new(|| {
         .join("git-orchard");
     Logger::new(&dir.to_string_lossy(), "debug.log")
 });
+
+/// RAII guard that calls `LOG.time_end` when dropped.
+/// Used by the `timed!` macro to ensure time_end is called even on early returns.
+pub struct TimingGuard<'a> {
+    label: &'a str,
+}
+
+impl<'a> TimingGuard<'a> {
+    pub fn new(label: &'a str) -> Self {
+        Self { label }
+    }
+}
+
+impl<'a> Drop for TimingGuard<'a> {
+    fn drop(&mut self) {
+        LOG.time_end(self.label);
+    }
+}
+
+/// Times a block and logs it. Returns the block's value.
+/// Calls `LOG.time` before and `LOG.time_end` after (even on early return).
+///
+/// # Example
+/// ```ignore
+/// let result = timed!("phase:git", {
+///     git::list_worktrees().unwrap_or_default()
+/// });
+/// ```
+#[macro_export]
+macro_rules! timed {
+    ($label:expr, $body:expr) => {{
+        $crate::logger::LOG.time($label);
+        let _guard = $crate::logger::TimingGuard::new($label);
+        $body
+    }};
+}

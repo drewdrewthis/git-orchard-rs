@@ -68,12 +68,6 @@ enum AppMsg {
     Error(String),
 }
 
-/// Describes a tmux session switch that must run with the terminal suspended.
-struct TmuxSwitchAction {
-    /// For local: SwitchToSessionOptions. For remote: host + session + shell.
-    kind: TmuxSwitchKind,
-}
-
 enum TmuxSwitchKind {
     Local(SwitchToSessionOptions),
     Remote { host: String, session_name: String, shell: String },
@@ -101,7 +95,7 @@ pub struct App {
     rx: mpsc::Receiver<AppMsg>,
 
     // Pending tmux action to run after suspending the terminal
-    pending_tmux_switch: Option<TmuxSwitchAction>,
+    pending_tmux_switch: Option<TmuxSwitchKind>,
 
     // Delete state
     delete_target: Option<Worktree>,
@@ -516,12 +510,10 @@ impl App {
                 .as_ref()
                 .map(|r| r.shell.clone())
                 .unwrap_or_else(|| "ssh".to_string());
-            self.pending_tmux_switch = Some(TmuxSwitchAction {
-                kind: TmuxSwitchKind::Remote {
-                    host: host.clone(),
-                    session_name,
-                    shell,
-                },
+            self.pending_tmux_switch = Some(TmuxSwitchKind::Remote {
+                host: host.clone(),
+                session_name,
+                shell,
             });
         } else {
             let session_name = wt.tmux_session.clone().unwrap_or_else(|| {
@@ -531,14 +523,12 @@ impl App {
                     &wt.path,
                 )
             });
-            self.pending_tmux_switch = Some(TmuxSwitchAction {
-                kind: TmuxSwitchKind::Local(SwitchToSessionOptions {
-                    session_name,
-                    worktree_path: wt.path.clone(),
-                    branch: wt.branch.clone(),
-                    pr: wt.pr.clone(),
-                }),
-            });
+            self.pending_tmux_switch = Some(TmuxSwitchKind::Local(SwitchToSessionOptions {
+                session_name,
+                worktree_path: wt.path.clone(),
+                branch: wt.branch.clone(),
+                pr: wt.pr.clone(),
+            }));
         }
     }
 
@@ -1459,7 +1449,7 @@ fn run_loop(
         // No alternate screen to worry about — tmux switch-client just works.
         if let Some(action) = app.pending_tmux_switch.take() {
             crate::logger::LOG.info("tui: executing pending tmux switch");
-            let result = match action.kind {
+            let result = match action {
                 TmuxSwitchKind::Local(ref opts) => {
                     crate::logger::LOG.info(&format!("tui: switching to local session {}", opts.session_name));
                     tmux::switch_to_session(opts)
