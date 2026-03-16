@@ -1415,12 +1415,12 @@ impl App {
 
 /// Runs the Ratatui TUI. `command` determines the initial view ("cleanup" or default list).
 pub fn run(command: &str) -> anyhow::Result<()> {
-    // Setup terminal
+    // Setup terminal — no alternate screen so tmux switch-client works seamlessly
     crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
+    let stdout = std::io::stdout();
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
+    terminal.clear()?;
 
     let mut app = App::new(command);
 
@@ -1431,10 +1431,7 @@ pub fn run(command: &str) -> anyhow::Result<()> {
 
     // Restore terminal
     crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen
-    )?;
+    terminal.clear()?;
     terminal.show_cursor()?;
 
     result
@@ -1456,15 +1453,9 @@ fn run_loop(
             }
         }
 
-        // If a tmux switch is pending, suspend the terminal and run it.
+        // If a tmux switch is pending, run it directly.
+        // No alternate screen to worry about — tmux switch-client just works.
         if let Some(action) = app.pending_tmux_switch.take() {
-            // Leave alternate screen so tmux can take over
-            crossterm::terminal::disable_raw_mode()?;
-            crossterm::execute!(
-                terminal.backend_mut(),
-                crossterm::terminal::LeaveAlternateScreen
-            )?;
-
             let result = match action.kind {
                 TmuxSwitchKind::Local(opts) => tmux::switch_to_session(&opts),
                 TmuxSwitchKind::Remote { host, session_name, shell } => {
@@ -1483,14 +1474,6 @@ fn run_loop(
                     app.warning = Some((format!("tmux: {msg}"), Instant::now()));
                 }
             }
-
-            // Re-enter alternate screen
-            crossterm::terminal::enable_raw_mode()?;
-            crossterm::execute!(
-                terminal.backend_mut(),
-                crossterm::terminal::EnterAlternateScreen
-            )?;
-            terminal.clear()?;
         }
 
         // Check for background data updates.
