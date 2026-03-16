@@ -214,7 +214,23 @@ impl App {
                     // Keep refreshing=true until no worktrees have pr_loading set
                     // (progressive updates set pr_loading=true until the final stage)
                     let still_loading = trees.iter().any(|wt| wt.pr_loading);
-                    self.worktrees = trees;
+
+                    // During refresh, preserve remote worktrees from previous data
+                    // until the pipeline sends an update that includes them.
+                    let has_remotes = trees.iter().any(|wt| wt.remote.is_some());
+                    if !has_remotes && !self.worktrees.is_empty() {
+                        let mut merged = trees;
+                        let existing_remotes: Vec<Worktree> = self.worktrees
+                            .iter()
+                            .filter(|wt| wt.remote.is_some())
+                            .cloned()
+                            .collect();
+                        merged.extend(existing_remotes);
+                        self.worktrees = merged;
+                    } else {
+                        self.worktrees = trees;
+                    }
+
                     self.loading = false;
                     if !still_loading {
                         self.refreshing = false;
@@ -877,7 +893,7 @@ impl App {
             let branch_col = pad_right(&branch_display, branch_width);
 
             // Status column
-            let status_str = render_status_badge(wt);
+            let status_str = render_status_badge(wt, self.refreshing);
             let status_col = pad_right(&status_str, status_width);
 
             // Remote column
@@ -946,7 +962,7 @@ impl App {
                 // Status (colored by PR status)
                 spans.push(Span::styled(
                     status_col,
-                    status_badge_style(wt),
+                    status_badge_style(wt, self.refreshing),
                 ));
 
                 // Remote (magenta)
@@ -1551,11 +1567,11 @@ fn delete_worktree(wt: &Worktree, config: &OrchardConfig) -> anyhow::Result<()> 
 // Rendering helpers
 // ---------------------------------------------------------------------------
 
-fn render_status_badge(wt: &Worktree) -> String {
+fn render_status_badge(wt: &Worktree, refreshing: bool) -> String {
     if wt.has_conflicts {
         return "\u{2716} conflict".to_string();
     }
-    if wt.pr_loading {
+    if wt.pr_loading || refreshing {
         return "\u{00b7}\u{00b7}\u{00b7}".to_string();
     }
     if wt.pr.is_none() {
@@ -1564,7 +1580,7 @@ fn render_status_badge(wt: &Worktree) -> String {
                 return "\u{2713} closed".to_string();
             }
         }
-        return "no PR".to_string();
+        return "\u{2014}".to_string();  // em dash — neutral "nothing to report"
     }
     let pr = wt.pr.as_ref().unwrap();
     let status = resolve_pr_status(pr);
@@ -1572,11 +1588,11 @@ fn render_status_badge(wt: &Worktree) -> String {
     format!("{} {}", display.icon, display.label)
 }
 
-fn status_badge_style(wt: &Worktree) -> Style {
+fn status_badge_style(wt: &Worktree, refreshing: bool) -> Style {
     if wt.has_conflicts {
         return Style::default().fg(Color::Red);
     }
-    if wt.pr_loading {
+    if wt.pr_loading || refreshing {
         return Style::default().fg(Color::DarkGray);
     }
     if wt.pr.is_none() {
@@ -1636,7 +1652,7 @@ mod tests {
             has_conflicts: true,
             ..Default::default()
         };
-        assert_eq!(render_status_badge(&wt), "\u{2716} conflict");
+        assert_eq!(render_status_badge(&wt, false), "\u{2716} conflict");
     }
 
     #[test]
@@ -1645,13 +1661,19 @@ mod tests {
             pr_loading: true,
             ..Default::default()
         };
-        assert_eq!(render_status_badge(&wt), "\u{00b7}\u{00b7}\u{00b7}");
+        assert_eq!(render_status_badge(&wt, false), "\u{00b7}\u{00b7}\u{00b7}");
+    }
+
+    #[test]
+    fn status_badge_refreshing() {
+        let wt = Worktree::default();
+        assert_eq!(render_status_badge(&wt, true), "\u{00b7}\u{00b7}\u{00b7}");
     }
 
     #[test]
     fn status_badge_no_pr() {
         let wt = Worktree::default();
-        assert_eq!(render_status_badge(&wt), "no PR");
+        assert_eq!(render_status_badge(&wt, false), "\u{2014}");
     }
 
     #[test]
@@ -1660,7 +1682,7 @@ mod tests {
             issue_state: Some(IssueState::Closed),
             ..Default::default()
         };
-        assert_eq!(render_status_badge(&wt), "\u{2713} closed");
+        assert_eq!(render_status_badge(&wt, false), "\u{2713} closed");
     }
 
     #[test]
@@ -1678,7 +1700,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let badge = render_status_badge(&wt);
+        let badge = render_status_badge(&wt, false);
         assert!(badge.contains("ready"), "expected 'ready' in badge: {}", badge);
     }
 

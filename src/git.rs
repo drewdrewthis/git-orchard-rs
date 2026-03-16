@@ -170,10 +170,33 @@ fn resolve_main_worktree_path(git_dir: &str) -> String {
     match out {
         Ok(o) if o.status.success() => {
             let rel = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            Path::new(git_dir).join(rel).to_string_lossy().into_owned()
+            let joined = Path::new(git_dir).join(&rel);
+            // Try filesystem canonicalize first, fall back to logical normalization.
+            joined.canonicalize()
+                .unwrap_or_else(|_| normalize_path(&joined))
+                .to_string_lossy()
+                .into_owned()
         }
         _ => git_dir.to_string(),
     }
+}
+
+/// Normalize a path by resolving `.` and `..` components without hitting the filesystem.
+fn normalize_path(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut components: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                if !components.is_empty() {
+                    components.pop();
+                }
+            }
+            Component::CurDir => {}
+            other => components.push(other),
+        }
+    }
+    components.iter().collect()
 }
 
 // Reports whether `path` appears in `git worktree list --porcelain`.
@@ -255,5 +278,34 @@ bare";
         let input = "\n\nworktree /tmp/x\nHEAD abc\nbranch refs/heads/main\n\n\n";
         let wts = parse_porcelain(input);
         assert_eq!(wts.len(), 1);
+    }
+
+    #[test]
+    fn normalize_path_resolves_parent_components() {
+        use std::path::PathBuf;
+        let p = Path::new("/a/b/c/../../../d");
+        assert_eq!(normalize_path(p), PathBuf::from("/d"));
+    }
+
+    #[test]
+    fn normalize_path_preserves_clean_path() {
+        use std::path::PathBuf;
+        let p = Path::new("/a/b/c");
+        assert_eq!(normalize_path(p), PathBuf::from("/a/b/c"));
+    }
+
+    #[test]
+    fn normalize_path_resolves_dot_components() {
+        use std::path::PathBuf;
+        let p = Path::new("/a/./b/./c");
+        assert_eq!(normalize_path(p), PathBuf::from("/a/b/c"));
+    }
+
+    #[test]
+    fn normalize_path_resolves_git_modules_path() {
+        use std::path::PathBuf;
+        // .git/modules/sub is 3 components deep from repo root, so 3 x ".." = repo root
+        let p = Path::new("/home/user/repo/.git/modules/sub/../../../actual");
+        assert_eq!(normalize_path(p), PathBuf::from("/home/user/repo/actual"));
     }
 }
