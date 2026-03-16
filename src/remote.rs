@@ -12,7 +12,7 @@ pub fn shell_escape(s: &str) -> String {
         return "''".to_string();
     }
     // If it only contains safe characters, return as-is
-    if s.chars().all(|c| c.is_alphanumeric() || "-_./=@:+".contains(c)) {
+    if s.chars().all(|c| c.is_alphanumeric() || "-_./=@:+~".contains(c)) {
         return s.to_string();
     }
     // Otherwise, wrap in single quotes and escape any internal single quotes
