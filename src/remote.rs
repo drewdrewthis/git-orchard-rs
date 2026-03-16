@@ -244,9 +244,10 @@ pub fn attach_remote_session(host: &str, name: &str, shell: &str) -> anyhow::Res
 
     let switch = Command::new("tmux")
         .args(["switch-client", "-t", &local_name])
-        .status()?;
-    if !switch.success() {
-        return Err(anyhow!("switching to session {:?}", local_name));
+        .output()?;
+    if !switch.status.success() {
+        let stderr = String::from_utf8_lossy(&switch.stderr);
+        return Err(anyhow!("switching to session {:?}: {}", local_name, stderr.trim()));
     }
     Ok(())
 }
