@@ -3,6 +3,7 @@ use std::process::Command;
 
 use anyhow::anyhow;
 
+use crate::logger::LOG;
 use crate::types::{RemoteConfig, TmuxSession, Worktree};
 
 /// Shell-escape a string for safe use in SSH command strings.
@@ -52,13 +53,17 @@ pub fn list_remote_worktrees(remote: &RemoteConfig) -> Vec<Worktree> {
     let cmd = format!("cd {} && git worktree list --porcelain", shell_escape(&remote.repo_path));
     let out = match ssh_exec(&remote.host, &cmd) {
         Ok(o) => o,
-        Err(_) => return Vec::new(),
+        Err(err) => {
+            LOG.warn(&format!("remote[{}]: failed to list worktrees: {}", remote.host, err));
+            return Vec::new();
+        }
     };
 
     let mut worktrees = crate::git::parse_porcelain(&out);
     for wt in &mut worktrees {
         wt.remote = Some(remote.host.clone());
     }
+    LOG.info(&format!("remote[{}]: {} worktrees", remote.host, worktrees.len()));
     worktrees
 }
 
@@ -71,7 +76,9 @@ pub fn list_remote_tmux_sessions(remote: &RemoteConfig) -> Vec<TmuxSession> {
         Ok(o) => o,
         Err(_) => return Vec::new(),
     };
-    parse_tmux_output(&out)
+    let sessions = parse_tmux_output(&out);
+    LOG.info(&format!("remote[{}]: {} tmux sessions", remote.host, sessions.len()));
+    sessions
 }
 
 fn parse_tmux_output(out: &str) -> Vec<TmuxSession> {
@@ -144,6 +151,7 @@ fn match_session<'a>(
 /// Kills the named tmux session on the remote host.
 pub fn kill_remote_tmux_session(host: &str, name: &str) -> anyhow::Result<()> {
     ssh_exec(host, &format!("tmux kill-session -t {}", shell_escape(name)))?;
+    LOG.info(&format!("remote: killed tmux session {}", name));
     Ok(())
 }
 

@@ -5,6 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use anyhow::anyhow;
 use regex::Regex;
 
+use crate::logger::LOG;
 use crate::types::{ChecksStatus, IssueState, PrInfo, ReviewDecision};
 
 // ---------------------------------------------------------------------------
@@ -107,6 +108,8 @@ pub fn get_all_prs(branches: &[String]) -> HashMap<String, PrInfo> {
         return result;
     }
 
+    LOG.time("getAllPrs");
+
     if let Ok(open_prs) = fetch_open_prs() {
         result.extend(open_prs);
     }
@@ -117,33 +120,36 @@ pub fn get_all_prs(branches: &[String]) -> HashMap<String, PrInfo> {
         .cloned()
         .collect();
 
-    if missing.is_empty() {
-        return result;
-    }
+    if !missing.is_empty() {
+        LOG.info(&format!("getAllPrs: looking up {} missing branches", missing.len()));
 
-    let sem = Arc::new(Semaphore::new(5));
-    let collected: Arc<Mutex<HashMap<String, PrInfo>>> = Arc::new(Mutex::new(HashMap::new()));
+        let sem = Arc::new(Semaphore::new(5));
+        let collected: Arc<Mutex<HashMap<String, PrInfo>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    let handles: Vec<_> = missing
-        .into_iter()
-        .map(|branch| {
-            let sem = Arc::clone(&sem);
-            let collected = Arc::clone(&collected);
-            std::thread::spawn(move || {
-                let _guard = sem.acquire();
-                if let Some(pr) = fetch_pr_for_branch(&branch) {
-                    collected.lock().unwrap().insert(branch, pr);
-                }
+        let handles: Vec<_> = missing
+            .into_iter()
+            .map(|branch| {
+                let sem = Arc::clone(&sem);
+                let collected = Arc::clone(&collected);
+                std::thread::spawn(move || {
+                    let _guard = sem.acquire();
+                    if let Some(pr) = fetch_pr_for_branch(&branch) {
+                        collected.lock().unwrap().insert(branch, pr);
+                    }
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    for h in handles {
-        let _ = h.join();
+        for h in handles {
+            let _ = h.join();
+        }
+
+        let fetched = collected.lock().unwrap();
+        result.extend(fetched.clone());
     }
 
-    let fetched = collected.lock().unwrap();
-    result.extend(fetched.clone());
+    LOG.info(&format!("getAllPrs: {} PRs", result.len()));
+    LOG.time_end("getAllPrs");
     result
 }
 
@@ -231,9 +237,14 @@ fn parse_review_decision(s: &str) -> ReviewDecision {
 
 /// Fetches detailed GraphQL data for up to 25 open PRs and updates `pr_map` in-place.
 pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
+    LOG.time("enrichPrDetails");
     let (owner, repo) = match get_repo() {
         Ok(pair) => pair,
-        Err(_) => return,
+        Err(err) => {
+            LOG.warn(&format!("enrichPrDetails failed: {}", err));
+            LOG.time_end("enrichPrDetails");
+            return;
+        }
     };
 
     let entries: Vec<(String, u32)> = pr_map
@@ -244,6 +255,7 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
         .collect();
 
     if entries.is_empty() {
+        LOG.time_end("enrichPrDetails");
         return;
     }
 
@@ -263,17 +275,28 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
         .output()
     {
         Ok(o) => o,
-        Err(_) => return,
+        Err(err) => {
+            LOG.warn(&format!("enrichPrDetails failed: {}", err));
+            LOG.time_end("enrichPrDetails");
+            return;
+        }
     };
 
     let raw: serde_json::Value = match serde_json::from_slice(&out.stdout) {
         Ok(v) => v,
-        Err(_) => return,
+        Err(err) => {
+            LOG.warn(&format!("enrichPrDetails failed: {}", err));
+            LOG.time_end("enrichPrDetails");
+            return;
+        }
     };
 
     let repo_obj = match raw["data"]["repository"].as_object() {
         Some(o) => o.clone(),
-        None => return,
+        None => {
+            LOG.time_end("enrichPrDetails");
+            return;
+        }
     };
 
     // Reverse map: number -> branch
@@ -324,6 +347,8 @@ pub fn enrich_pr_details(pr_map: &mut HashMap<String, PrInfo>) {
             .unwrap_or_default();
         pr.checks_status = derive_checks_status(&check_contexts);
     }
+
+    LOG.time_end("enrichPrDetails");
 }
 
 fn build_enrich_query(entries: &[(String, u32)]) -> String {
@@ -488,9 +513,14 @@ pub fn get_issue_states(numbers: &[u32]) -> HashMap<u32, IssueState> {
         return HashMap::new();
     }
 
+    LOG.time("getIssueStates");
+
     let (owner, repo) = match get_repo() {
         Ok(pair) => pair,
-        Err(_) => return HashMap::new(),
+        Err(_) => {
+            LOG.time_end("getIssueStates");
+            return HashMap::new();
+        }
     };
 
     let limit = if numbers.len() > 25 {
@@ -550,6 +580,8 @@ pub fn get_issue_states(numbers: &[u32]) -> HashMap<u32, IssueState> {
             result.insert(number, issue_state);
         }
     }
+    LOG.info(&format!("getIssueStates: {} issues resolved", result.len()));
+    LOG.time_end("getIssueStates");
     result
 }
 

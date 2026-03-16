@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::logger::LOG;
 use crate::types::{OrchardConfig, RemoteConfig};
 
 /// Loads `orchard.json` from the `.git` directory of the current repository.
@@ -18,13 +19,16 @@ fn load_config_from_dir(dir: &str) -> OrchardConfig {
     let path = PathBuf::from(dir).join("orchard.json");
     let data = match std::fs::read(&path) {
         Ok(d) => d,
-        Err(_) => return OrchardConfig::default(),
+        Err(_) => {
+            LOG.info("config: no orchard.json found");
+            return OrchardConfig::default();
+        }
     };
-    parse_config(&data)
+    parse_config(&data, &path.to_string_lossy())
 }
 
 // Unmarshals raw JSON bytes into an OrchardConfig.
-fn parse_config(data: &[u8]) -> OrchardConfig {
+fn parse_config(data: &[u8], path: &str) -> OrchardConfig {
     #[derive(serde::Deserialize)]
     struct LegacyEntry {
         host: String,
@@ -43,11 +47,15 @@ fn parse_config(data: &[u8]) -> OrchardConfig {
 
     let raw: RawConfig = match serde_json::from_slice(data) {
         Ok(r) => r,
-        Err(_) => return OrchardConfig::default(),
+        Err(error) => {
+            LOG.warn(&format!("config: failed to parse orchard.json: {}", error));
+            return OrchardConfig::default();
+        }
     };
 
     // New format takes precedence.
     if let Some(remote) = raw.remote {
+        LOG.info(&format!("config: loaded remote {} from {}", remote.host, path));
         return OrchardConfig { remote: Some(remote) };
     }
 
@@ -61,6 +69,7 @@ fn parse_config(data: &[u8]) -> OrchardConfig {
         } else {
             entry.shell
         };
+        LOG.info(&format!("config: migrated remote {} from legacy format", entry.host));
         return OrchardConfig {
             remote: Some(RemoteConfig {
                 host: entry.host,
@@ -95,7 +104,7 @@ mod tests {
 
     fn load_from_file(path: &str) -> OrchardConfig {
         let data = std::fs::read(path).unwrap();
-        parse_config(&data)
+        parse_config(&data, path)
     }
 
     #[test]

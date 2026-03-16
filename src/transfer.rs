@@ -5,6 +5,7 @@ use anyhow::anyhow;
 use regex::Regex;
 use std::sync::OnceLock;
 
+use crate::logger::LOG;
 use crate::remote;
 use crate::tmux;
 use crate::types::{RemoteConfig, Worktree};
@@ -146,6 +147,8 @@ pub fn push_to_remote(
 
     let branch = branch_name(wt)?;
 
+    LOG.info(&format!("pushToRemote: transferring {} to {}", branch, remote.host));
+
     on_step("Committing changes...");
     commit_wip(&wt.path).map_err(|e| anyhow!("commit WIP: {}", e))?;
 
@@ -224,6 +227,8 @@ pub fn pull_to_local(
     on_step: &dyn Fn(&str),
 ) -> anyhow::Result<()> {
     let branch = branch_name(wt)?;
+
+    LOG.info(&format!("pullToLocal: transferring {} from {}", branch, remote.host));
 
     on_step("Committing changes...");
     let commit_cmd = format!(

@@ -2,6 +2,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+use crate::logger::LOG;
 use crate::types::{PrInfo, SwitchToSessionOptions, TmuxSession};
 use crate::types::resolve_pr_status;
 
@@ -38,6 +39,7 @@ pub fn list_tmux_sessions() -> Vec<TmuxSession> {
         });
     }
 
+    LOG.info(&format!("listTmuxSessions: {} sessions", sessions.len()));
     sessions
 }
 
@@ -96,6 +98,7 @@ pub fn kill_tmux_session(name: &str) -> Result<()> {
         .args(["kill-session", "-t", name])
         .status()
         .context("tmux kill-session")?;
+    LOG.info(&format!("killTmuxSession: {}", name));
     Ok(())
 }
 
@@ -152,6 +155,12 @@ pub fn switch_to_session(opts: &SwitchToSessionOptions) -> Result<()> {
             .status()
             .with_context(|| format!("creating session {}", opts.session_name))?;
     }
+
+    LOG.info(&format!(
+        "switchToSession: {} ({})",
+        opts.session_name,
+        if exists { "existing" } else { "new" }
+    ));
 
     apply_session_style(
         &opts.session_name,

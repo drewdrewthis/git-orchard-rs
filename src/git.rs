@@ -3,6 +3,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
+use crate::logger::LOG;
 use crate::types::Worktree;
 
 /// Returns the absolute path of the git repository root, or an empty string on failure.
@@ -56,6 +57,7 @@ pub fn list_worktrees() -> Result<Vec<Worktree>> {
         trees.push(wt);
     }
 
+    LOG.info(&format!("listWorktrees: {} trees", trees.len()));
     Ok(trees)
 }
 
@@ -129,10 +131,12 @@ pub fn remove_worktree(path: &str, force: bool) -> Result<()> {
     }
 
     if Command::new("git").args(&args).status().map(|s| s.success()).unwrap_or(false) {
+        LOG.info(&format!("removeWorktree: removed {}", path));
         return Ok(());
     }
 
     // Fallback: worktree may be in a broken state.
+    LOG.warn(&format!("removeWorktree: git remove failed for {}, falling back to rm + prune", path));
     let resolved = std::fs::canonicalize(path)
         .with_context(|| format!("canonicalizing path: {path}"))?;
     let resolved_str = resolved.to_string_lossy();
