@@ -12,7 +12,7 @@ orchard() {
   done
 
   local session="orchard"
-  local cmd='while true; do git-orchard "$@"; done'
+  local cmd='while git-orchard "$@"; rc=$?; [ "$rc" -ne 130 ]; do :; done'
 
   if ! tmux has-session -t "$session" 2>/dev/null; then
     local cheatsheet='#[fg=colour8]prefix: ctrl-b | o: orchard | (/): prev/next | %%: split-v | ": split-h | arrows: pane | z: zoom | x: close | d: detach'

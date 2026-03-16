@@ -309,9 +309,10 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) -> bool {
         crate::logger::LOG.info(&format!("tui: key event: {:?} view={:?}", key.code, self.view));
 
-        // Ctrl+C always quits.
+        // Ctrl+C: hard quit with exit code 130 to break the shell loop.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-            return true;
+            crossterm::terminal::disable_raw_mode().ok();
+            std::process::exit(130);
         }
 
         match self.view {
