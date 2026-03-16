@@ -63,14 +63,6 @@ impl PrStatus {
         }
     }
 
-    pub fn color(self) -> &'static str {
-        match self {
-            Self::Conflict | Self::Failing | Self::ChangesRequested | Self::Closed => "red",
-            Self::Unresolved | Self::ReviewNeeded | Self::PendingCi => "yellow",
-            Self::Approved => "green",
-            Self::Merged => "magenta",
-        }
-    }
 }
 
 pub struct StatusDisplay {
@@ -156,8 +148,6 @@ pub struct SwitchToSessionOptions {
     pub branch: Option<String>,
     pub pr: Option<PrInfo>,
 }
-
-pub type StepCallback = Box<dyn Fn(&str) + Send>;
 
 #[cfg(test)]
 mod tests {

@@ -59,7 +59,6 @@ enum Phase {
 enum AppMsg {
     Worktrees(Vec<Worktree>),
     PaneContent(String, String), // (session_name, content)
-    Warning(String),
     DeleteDone,
     DeleteErr(String),
     TransferDone,
@@ -289,9 +288,6 @@ impl App {
                 AppMsg::CleanupDone => {
                     self.cleanup_phase = Phase::Done;
                     self.start_refresh();
-                }
-                AppMsg::Warning(msg) => {
-                    self.warning = Some((msg, Instant::now()));
                 }
                 AppMsg::Error(e) => {
                     self.error = Some(e);
