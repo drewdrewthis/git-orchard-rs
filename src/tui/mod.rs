@@ -121,7 +121,11 @@ impl App {
             let update_fn = move |trees: &[Worktree]| {
                 let _ = tx_clone.send(AppMsg::Worktrees(trees.to_vec()));
             };
-            if let Err(e) = collector::refresh_worktrees(&update_fn) {
+            let tx_err = tx.clone();
+            let error_fn = move |msg: &str| {
+                let _ = tx_err.send(AppMsg::Error(msg.to_string()));
+            };
+            if let Err(e) = collector::refresh_worktrees(&update_fn, &error_fn) {
                 let _ = tx.send(AppMsg::Error(e.to_string()));
             }
         });
