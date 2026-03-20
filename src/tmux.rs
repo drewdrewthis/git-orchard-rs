@@ -155,10 +155,9 @@ pub fn derive_session_name(repo_name: &str, branch: Option<&str>, worktree_path:
     format!("{repo_name}_{suffix}")
 }
 
-/// Switches the tmux client to the named session, creating it if needed.
-/// Applies orchard status bar style and registers the keybinding hook.
-pub fn switch_to_session(opts: &SwitchToSessionOptions) -> Result<()> {
-    // Create session if it doesn't exist.
+/// Creates the tmux session for the given worktree if it does not already exist.
+/// Applies orchard status bar style. Does NOT switch the client.
+pub fn create_session(opts: &SwitchToSessionOptions) -> Result<()> {
     let exists = Command::new("tmux")
         .args(["has-session", "-t", &opts.session_name])
         .status()
@@ -177,7 +176,7 @@ pub fn switch_to_session(opts: &SwitchToSessionOptions) -> Result<()> {
     }
 
     LOG.info(&format!(
-        "switchToSession: {} ({})",
+        "createSession: {} ({})",
         opts.session_name,
         if exists { "existing" } else { "new" }
     ));
@@ -188,26 +187,10 @@ pub fn switch_to_session(opts: &SwitchToSessionOptions) -> Result<()> {
         opts.pr.as_ref(),
     )?;
 
-    // Use switch-client when inside tmux, attach-session when outside
-    let inside_tmux = std::env::var("TMUX").is_ok();
-    if inside_tmux {
-        Command::new("tmux")
-            .args(["switch-client", "-t", &opts.session_name])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .context("tmux switch-client")?;
-    } else {
-        Command::new("tmux")
-            .args(["attach-session", "-t", &opts.session_name])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .context("tmux attach-session")?;
-    }
-
     Ok(())
 }
 
-const CHEATSHEET: &str =
+pub(crate) const CHEATSHEET: &str =
     "#[fg=colour8]prefix: ctrl-b | o: orchard | (/): prev/next | %%: split-v | \": split-h | arrows: pane | z: zoom | x: close | d: detach";
 
 /// Applies the orchard status bar style to a tmux session.
@@ -216,8 +199,6 @@ pub fn apply_session_style(
     branch: Option<&str>,
     pr: Option<&PrInfo>,
 ) -> Result<()> {
-    save_and_hook_keybinding()?;
-
     let status_left = format_status_left(branch, pr);
     let t = ["-t", name];
 
@@ -239,58 +220,9 @@ pub fn apply_session_style(
             .with_context(|| format!("tmux set-option {key}"))?;
     }
 
-    Command::new("tmux")
-        .args(["bind-key", "o", "switch-client", "-t", "orchard"])
-        .status()
-        .context("tmux bind-key o")?;
-
     Ok(())
 }
 
-/// Idempotently saves the current "o" keybinding and registers a session-closed hook
-/// that restores or unbinds it when the orchard session is destroyed.
-pub fn save_and_hook_keybinding() -> Result<()> {
-    // Idempotency guard: don't re-register if already hooked.
-    if let Ok(out) = Command::new("tmux").args(["show-hooks", "-g"]).output() {
-        let text = String::from_utf8_lossy(&out.stdout);
-        if text.contains("session-closed") && text.contains("orchard") {
-            return Ok(());
-        }
-    }
-
-    // Capture existing "o" binding.
-    let original_cmd = Command::new("tmux")
-        .args(["list-keys"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            let text = String::from_utf8_lossy(&o.stdout).into_owned();
-            let re = regex::Regex::new(r"\bbind-key\s+(?:-T\s+\S+\s+)?o\b").unwrap();
-            text.lines()
-                .find(|l| re.is_match(l))
-                .and_then(|line| {
-                    let m = re.find(line)?;
-                    let after = line[m.end()..].trim_start().to_string();
-                    if after.is_empty() { None } else { Some(after) }
-                })
-        });
-
-    let cleanup_action = match original_cmd {
-        Some(cmd) => format!("bind-key o {cmd}; set-hook -gu session-closed[99]"),
-        None => "unbind-key o; set-hook -gu session-closed[99]".to_string(),
-    };
-
-    let hook_cmd = format!(
-        "if-shell '! tmux has-session -t orchard 2>/dev/null' '{cleanup_action}'"
-    );
-
-    Command::new("tmux")
-        .args(["set-hook", "-g", "session-closed[99]", &hook_cmd])
-        .status()
-        .context("tmux set-hook")?;
-
-    Ok(())
-}
 
 /// Formats the tmux status-left string for an orchard session.
 pub fn format_status_left(branch: Option<&str>, pr: Option<&PrInfo>) -> String {

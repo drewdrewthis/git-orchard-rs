@@ -190,14 +190,86 @@ pub fn create_remote_session(host: &str, name: &str, path: &str) -> anyhow::Resu
     }
 }
 
-/// Creates a local tmux session that connects to the remote session via ssh or
-/// mosh, then switches the local tmux client to it.
-pub fn attach_remote_session(host: &str, name: &str, shell: &str) -> anyhow::Result<()> {
+/// Checks if a local proxy session exists and is healthy.
+/// Returns `true` if the session needs to be (re)created.
+/// Determines whether the local proxy session needs to be (re)created.
+/// `remote_was_fresh` indicates the remote session was just created, meaning
+/// any existing proxy is connected to a stale session.
+fn should_recreate_proxy(local_name: &str, remote_was_fresh: bool) -> bool {
+    let proxy_exists = Command::new("tmux")
+        .args(["has-session", "-t", local_name])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !proxy_exists {
+        return true;
+    }
+
+    // If we just created the remote session, the existing proxy is stale.
+    if remote_was_fresh {
+        LOG.info(&format!("remote: killing stale proxy {} (remote was recreated)", local_name));
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", local_name])
+            .status();
+        return true;
+    }
+
+    let pane_dead = Command::new("tmux")
+        .args(["list-panes", "-t", local_name, "-F", "#{pane_dead}"])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+        .unwrap_or(false);
+
+    let pane_stuck = if !pane_dead {
+        Command::new("tmux")
+            .args(["capture-pane", "-t", local_name, "-p", "-S", "-1"])
+            .output()
+            .ok()
+            .map(|o| {
+                let content = String::from_utf8_lossy(&o.stdout);
+                content.contains("mosh: Last contact")
+                    || (content.contains("Connection to") && content.contains("closed"))
+            })
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    if pane_dead || pane_stuck {
+        LOG.info(&format!(
+            "remote: killing {} proxy session {}",
+            if pane_dead { "dead" } else { "stuck" },
+            local_name
+        ));
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", local_name])
+            .status();
+        return true;
+    }
+
+    false
+}
+
+/// Creates a local proxy tmux session that connects to the remote session via ssh or
+/// mosh. Does NOT switch the local tmux client to it. Returns the local session name.
+///
+/// This is the popup-mode entry point: the caller gets the local session name back
+/// and prints it to stdout for the wrapper script to call `tmux switch-client`.
+pub fn create_remote_proxy_session(
+    host: &str,
+    name: &str,
+    path: &str,
+    shell: &str,
+) -> anyhow::Result<String> {
     let shell = if shell.is_empty() { "ssh" } else { shell };
 
-    // Verify the remote session is alive.
-    ssh_exec(host, &format!("tmux has-session -t {}", shell_escape(name)))
-        .map_err(|_| anyhow!("remote session {:?} not found on {}", name, host))?;
+    // Create the remote session if it doesn't exist yet.
+    let remote_was_fresh = ssh_exec(host, &format!("tmux has-session -t {}", shell_escape(name))).is_err();
+    if remote_was_fresh {
+        create_remote_session(host, name, path)?;
+    }
 
     let local_name = format!("remote_{}", name);
     let connect_cmd = if shell == "mosh" {
@@ -212,44 +284,40 @@ pub fn attach_remote_session(host: &str, name: &str, shell: &str) -> anyhow::Res
         )
     };
 
-    let create_out = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            &local_name,
-            "--",
-            "sh",
-            "-c",
-            &connect_cmd,
-        ])
-        .output()?;
+    let need_create = should_recreate_proxy(&local_name, remote_was_fresh);
+    if need_create {
+        let create_out = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &local_name,
+                "--",
+                "sh",
+                "-c",
+                &connect_cmd,
+            ])
+            .output()?;
 
-    if !create_out.status.success() {
-        let stderr = String::from_utf8_lossy(&create_out.stderr);
-        if !stderr.contains("duplicate session") {
-            return Err(anyhow!(
-                "creating local session {:?}: {}",
-                local_name,
-                stderr
-            ));
+        if !create_out.status.success() {
+            let stderr = String::from_utf8_lossy(&create_out.stderr);
+            if !stderr.contains("duplicate session") {
+                return Err(anyhow!(
+                    "creating local proxy session {:?}: {}",
+                    local_name,
+                    stderr
+                ));
+            }
         }
     }
 
-    // Keep the pane alive after the SSH/mosh process exits so the user can see
-    // any error output before the window is destroyed.
+    // Keep the pane alive after the SSH/mosh process exits.
     let _ = Command::new("tmux")
         .args(["set-option", "-t", &local_name, "remain-on-exit", "on"])
         .status();
 
-    let switch = Command::new("tmux")
-        .args(["switch-client", "-t", &local_name])
-        .output()?;
-    if !switch.status.success() {
-        let stderr = String::from_utf8_lossy(&switch.stderr);
-        return Err(anyhow!("switching to session {:?}: {}", local_name, stderr.trim()));
-    }
-    Ok(())
+    LOG.info(&format!("createRemoteProxySession: {} -> {}", name, local_name));
+    Ok(local_name)
 }
 
 /// Captures the pane content of a remote tmux session via SSH.

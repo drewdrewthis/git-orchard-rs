@@ -1,19 +1,25 @@
 mod browser;
 mod collector;
+pub mod events;
 mod config;
 mod git;
 mod github;
+mod issue_sync;
 mod logger;
 mod navigation;
 mod paths;
 mod remote;
+mod session_discovery;
 mod shell;
+mod state;
+mod status;
 mod tmux;
 mod transfer;
 mod types;
 mod tui;
 
 use std::env;
+use std::io::IsTerminal;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -34,7 +40,7 @@ fn main() {
     }
 
     logger::LOG.info(&format!(
-        "startup: git-orchard{}",
+        "startup: orchard{}",
         if command.is_empty() {
             String::new()
         } else {
@@ -56,13 +62,19 @@ fn main() {
 }
 
 fn handle_init() {
-    println!("{}", shell::get_init_instructions());
+    match shell::run_init_wizard() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 fn handle_upgrade() {
     eprintln!("Upgrade not yet implemented for the Rust binary.");
     eprintln!(
-        "Download the latest from: https://github.com/drewdrewthis/git-orchard-rs/releases/latest"
+        "Download the latest from: https://github.com/drewdrewthis/orchard-rs/releases/latest"
     );
 }
 
@@ -82,20 +94,62 @@ fn handle_json() {
     }
 }
 
+/// Runs the TUI. If inside tmux and run directly (not via popup wrapper),
+/// re-launches itself as a tmux popup using the wrapper script so that
+/// session switching works correctly after the popup closes.
 fn handle_tui(command: &str) {
-    if let Err(e) = tui::run(command) {
-        eprintln!("Error running TUI: {e}");
-        std::process::exit(1);
+    let inside_tmux = env::var("TMUX").is_ok();
+    let is_tty = std::io::stdout().is_terminal();
+
+    // If inside tmux and stdout is a TTY, we were run directly (not via popup).
+    // Re-launch as a popup through the wrapper script.
+    if inside_tmux && is_tty {
+        let wrapper = dirs::home_dir()
+            .map(|h| h.join(".local/bin/orchard-popup"))
+            .unwrap_or_else(|| std::path::PathBuf::from("orchard-popup"));
+
+        if wrapper.exists() {
+            let _ = std::process::Command::new("tmux")
+                .args([
+                    "display-popup", "-E",
+                    "-w", "90%", "-h", "80%",
+                    &wrapper.to_string_lossy(),
+                ])
+                .status();
+        } else {
+            eprintln!("Wrapper script not found. Run `orchard init` first.");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Inside popup (stdout captured) or outside tmux — run the TUI directly.
+    match tui::run(command) {
+        Ok(Some(session_name)) => {
+            if inside_tmux {
+                // Inside popup — print for wrapper to switch-client.
+                println!("{session_name}");
+            } else {
+                // Outside tmux — attach to the session.
+                let _ = std::process::Command::new("tmux")
+                    .args(["attach-session", "-t", &session_name])
+                    .status();
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
     }
 }
 
 fn print_usage() {
     eprintln!(
         r#"Usage:
-  git-orchard              Interactive worktree manager
-  git-orchard init         Print shell function for tmux session integration
-  git-orchard upgrade      Upgrade to the latest version
-  git-orchard cleanup      Find worktrees with merged PRs to remove
+  orchard              Interactive worktree manager (popup mode)
+  orchard init         Interactive setup wizard for popup mode
+  orchard upgrade      Upgrade to the latest version
 
 Options:
   --json    Output worktree data as JSON and exit
@@ -103,10 +157,10 @@ Options:
 Navigation:
   1-9     Jump to worktree by number
   ↑/↓     Select worktree
-  t       tmux into worktree (attach or create session)
+  Enter/t tmux into worktree (creates session if needed, then exits)
   d       Delete selected worktree
   c       Cleanup merged worktrees
   r       Refresh list
-  q       Switch back to previous tmux session (quit if not in tmux)"#
+  q/Esc   Close popup (no switch)"#
     );
 }

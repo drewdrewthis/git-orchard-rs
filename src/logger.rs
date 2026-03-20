@@ -36,11 +36,6 @@ impl Logger {
         self.write("WARN", msg);
     }
 
-    /// Logs a message at ERROR level.
-    pub fn error(&self, msg: &str) {
-        self.write("ERROR", msg);
-    }
-
     /// Records the start time for `label`.
     pub fn time(&self, label: &str) {
         if let Ok(mut timers) = self.timers.lock() {

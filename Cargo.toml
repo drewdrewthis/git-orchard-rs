@@ -1,5 +1,5 @@
 [package]
-name = "git-orchard"
+name = "orchard"
 version = "0.1.0"
 edition = "2024"
 description = "Interactive TUI for managing git worktrees, PR status, and tmux sessions"
@@ -15,7 +15,7 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 regex = "1"
 dirs = "6"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 open = "5"
 
 [dev-dependencies]

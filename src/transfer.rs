@@ -217,7 +217,7 @@ pub fn push_to_remote(
 /// 3. SSH: `git push origin BRANCH`.
 /// 4. Local: `git fetch origin BRANCH`.
 /// 5. Local: `git worktree add` (fallback: `git pull`).
-/// 6. Local: `tmux new-session`.
+/// 6. Copy `.env*` files from main checkout into the new worktree.
 /// 7. SSH: kill tmux session.
 /// 8. SSH: remove remote worktree.
 pub fn pull_to_local(
@@ -262,32 +262,8 @@ pub fn pull_to_local(
             .map_err(|e| anyhow!("local worktree add and pull both failed: {}", e))?;
     }
 
-    on_step("Creating session...");
-    let repo_basename = std::path::Path::new(repo_root)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("orchard");
-    let session_name = tmux::derive_session_name(repo_basename, Some(&branch), &local_path);
-    let create_out = Command::new("tmux")
-        .args([
-            "new-session",
-            "-d",
-            "-s",
-            &session_name,
-            "-c",
-            &local_path,
-        ])
-        .output()?;
-    if !create_out.status.success() {
-        let stderr = String::from_utf8_lossy(&create_out.stderr);
-        if !stderr.contains("duplicate session") {
-            return Err(anyhow!(
-                "create local session {:?}: {}",
-                session_name,
-                stderr
-            ));
-        }
-    }
+    on_step("Copying environment files...");
+    copy_env_files(repo_root, &local_path);
 
     on_step("Cleaning up...");
     if let Some(ref sess) = wt.tmux_session {
@@ -300,6 +276,35 @@ pub fn pull_to_local(
 
     on_step("Done");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Copies `.env*` files from `src` to `dst`, skipping files that already exist.
+fn copy_env_files(src: &str, dst: &str) {
+    let src_path = std::path::Path::new(src);
+    let dst_path = std::path::Path::new(dst);
+
+    let entries = match std::fs::read_dir(src_path) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with(".env") && entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            let dst_file = dst_path.join(&name);
+            if !dst_file.exists() {
+                match std::fs::copy(entry.path(), &dst_file) {
+                    Ok(_) => LOG.info(&format!("transfer: copied {} to worktree", name_str)),
+                    Err(e) => LOG.warn(&format!("transfer: failed to copy {}: {}", name_str, e)),
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -386,5 +391,56 @@ mod tests {
             crate::github::extract_issue_number("feat/Issue-200-add-thing"),
             Some(200)
         );
+    }
+
+    // --- copy_env_files ---
+
+    #[test]
+    fn copy_env_files_copies_dotenv_files() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join(".env"), "KEY=val").unwrap();
+        std::fs::write(src.path().join(".env.local"), "LOCAL=1").unwrap();
+
+        copy_env_files(src.path().to_str().unwrap(), dst.path().to_str().unwrap());
+
+        assert!(dst.path().join(".env").exists(), ".env should be copied");
+        assert!(dst.path().join(".env.local").exists(), ".env.local should be copied");
+    }
+
+    #[test]
+    fn copy_env_files_skips_existing_files() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::write(src.path().join(".env"), "FROM_SRC=1").unwrap();
+        std::fs::write(dst.path().join(".env"), "ORIGINAL=1").unwrap();
+
+        copy_env_files(src.path().to_str().unwrap(), dst.path().to_str().unwrap());
+
+        let content = std::fs::read_to_string(dst.path().join(".env")).unwrap();
+        assert_eq!(content, "ORIGINAL=1", "existing dst .env must not be overwritten");
+    }
+
+    #[test]
+    fn copy_env_files_skips_directories() {
+        let src = tempfile::tempdir().unwrap();
+        let dst = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir(src.path().join(".env_dir")).unwrap();
+
+        copy_env_files(src.path().to_str().unwrap(), dst.path().to_str().unwrap());
+
+        assert!(!dst.path().join(".env_dir").exists(), ".env_dir directory must not be copied");
+    }
+
+    #[test]
+    fn copy_env_files_handles_missing_src() {
+        let dst = tempfile::tempdir().unwrap();
+        let missing = dst.path().join("nonexistent_src");
+
+        // Must not panic
+        copy_env_files(missing.to_str().unwrap(), dst.path().to_str().unwrap());
     }
 }
