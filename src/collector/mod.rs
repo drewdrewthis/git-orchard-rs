@@ -29,6 +29,45 @@ pub fn fetch_tmux_and_gh() -> (Vec<TmuxSession>, bool) {
     })
 }
 
+/// Ensures a tmux session exists at the worktree origin (the first entry from
+/// `git worktree list`). Skips creation if a session with the derived name already
+/// exists. Returns the (possibly augmented) session list.
+///
+/// Only call this in TUI mode -- JSON mode is read-only.
+pub fn ensure_main_session(
+    trees: &[Worktree],
+    mut sessions: Vec<TmuxSession>,
+    error_fn: &dyn Fn(&str),
+) -> Vec<TmuxSession> {
+    let origin = match trees.first() {
+        Some(wt) if !wt.is_bare => wt,
+        _ => return sessions,
+    };
+
+    let session_name = tmux::derive_main_session_name(&origin.path, origin.branch.as_deref());
+
+    // Idempotent: skip if session name already exists (regardless of path).
+    if sessions.iter().any(|s| s.name == session_name) {
+        return sessions;
+    }
+
+    match tmux::new_detached_session(&session_name, &origin.path) {
+        Ok(()) => {
+            sessions.push(TmuxSession {
+                name: session_name,
+                path: origin.path.clone(),
+                attached: false,
+                pane_title: None,
+            });
+        }
+        Err(e) => {
+            error_fn(&format!("Failed to create main session: {e}"));
+        }
+    }
+
+    sessions
+}
+
 /// Merges tmux session data into the worktrees slice.
 /// Sets `pr_loading = true` for non-bare worktrees that have a branch and gh available.
 pub fn merge_tmux_sessions(
@@ -186,14 +225,19 @@ pub fn collect_worktree_data() -> anyhow::Result<Vec<Worktree>> {
 }
 
 /// Runs the pipeline in stages, calling `update_fn` after each stage so that
-/// a TUI can display progressively richer data.
-pub fn refresh_worktrees(update_fn: &dyn Fn(&[Worktree])) -> anyhow::Result<()> {
+/// a TUI can display progressively richer data. Non-fatal errors (e.g. session
+/// creation failures) are reported via `error_fn` without aborting the pipeline.
+pub fn refresh_worktrees(
+    update_fn: &dyn Fn(&[Worktree]),
+    error_fn: &dyn Fn(&str),
+) -> anyhow::Result<()> {
     // Stage 1: local worktrees appear immediately.
     let trees = fetch_git_worktrees();
     update_fn(&trees);
 
-    // Stage 2: merge tmux sessions.
+    // Stage 2: ensure main session exists, then merge tmux sessions.
     let (sessions, gh_ok) = fetch_tmux_and_gh();
+    let sessions = ensure_main_session(&trees, sessions, error_fn);
     let with_tmux = merge_tmux_sessions(&trees, &sessions, gh_ok);
     update_fn(&with_tmux);
 
@@ -440,5 +484,93 @@ mod tests {
         let result = apply_issue_states(&[tree], &issue_states);
         assert!(result[0].issue_number.is_none());
         assert!(result[0].issue_state.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // ensure_main_session
+    // -----------------------------------------------------------------------
+
+    fn noop_error(_msg: &str) {}
+
+    #[test]
+    fn ensure_main_session_skips_when_session_already_exists() {
+        let trees = vec![branched_worktree("/home/user/myrepo", "main")];
+        let sessions = vec![TmuxSession {
+            name: "myrepo_main".to_string(),
+            path: "/home/user/myrepo".to_string(),
+            attached: false,
+            pane_title: None,
+        }];
+        let result = ensure_main_session(&trees, sessions.clone(), &noop_error);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "myrepo_main");
+    }
+
+    #[test]
+    fn ensure_main_session_skips_when_session_exists_at_different_path() {
+        let trees = vec![branched_worktree("/home/user/myrepo", "main")];
+        let sessions = vec![TmuxSession {
+            name: "myrepo_main".to_string(),
+            path: "/tmp/other-path".to_string(),
+            attached: false,
+            pane_title: None,
+        }];
+        let result = ensure_main_session(&trees, sessions.clone(), &noop_error);
+        // Should not create a duplicate -- session name already exists
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "myrepo_main");
+    }
+
+    #[test]
+    fn ensure_main_session_returns_unchanged_when_no_worktrees() {
+        let sessions = vec![TmuxSession {
+            name: "other".to_string(),
+            path: "/other".to_string(),
+            attached: false,
+            pane_title: None,
+        }];
+        let result = ensure_main_session(&[], sessions.clone(), &noop_error);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn ensure_main_session_skips_when_first_worktree_is_bare() {
+        let trees = vec![bare_worktree("/home/user/bare.git")];
+        let sessions = vec![];
+        let result = ensure_main_session(&trees, sessions, &noop_error);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ensure_main_session_merge_maps_created_session_to_origin() {
+        // Simulate the flow: session already in list -> merge maps it to origin worktree
+        let trees = vec![
+            branched_worktree("/home/user/myrepo", "main"),
+            branched_worktree("/home/user/myrepo/.worktrees/feat", "feature/login"),
+        ];
+        let sessions = vec![TmuxSession {
+            name: "myrepo_main".to_string(),
+            path: "/home/user/myrepo".to_string(),
+            attached: false,
+            pane_title: None,
+        }];
+        let result = merge_tmux_sessions(&trees, &sessions, false);
+        assert_eq!(result[0].tmux_session.as_deref(), Some("myrepo_main"));
+        assert!(result[1].tmux_session.is_none());
+    }
+
+    #[test]
+    fn ensure_main_session_preserves_across_refresh() {
+        // Same session exists on re-run -- should stay mapped
+        let trees = vec![branched_worktree("/home/user/myrepo", "main")];
+        let sessions = vec![TmuxSession {
+            name: "myrepo_main".to_string(),
+            path: "/home/user/myrepo".to_string(),
+            attached: false,
+            pane_title: None,
+        }];
+        let result1 = merge_tmux_sessions(&trees, &sessions, false);
+        let result2 = merge_tmux_sessions(&trees, &sessions, false);
+        assert_eq!(result1[0].tmux_session, result2[0].tmux_session);
     }
 }

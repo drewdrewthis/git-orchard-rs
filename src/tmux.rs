@@ -112,6 +112,49 @@ pub fn find_session_for_worktree<'a>(
     None
 }
 
+/// Replaces dots with underscores in a repo name to avoid tmux target-session
+/// parsing issues (`.` is a window/pane separator in tmux).
+pub fn sanitize_repo_name(name: &str) -> String {
+    name.replace('.', "_")
+}
+
+/// Replaces slashes with dashes in a branch name so it is valid as part of a
+/// tmux session name (slashes are path separators in tmux target syntax).
+fn sanitize_branch(branch: &str) -> String {
+    branch.replace('/', "-")
+}
+
+/// Derives the main session name for the worktree origin.
+/// Format: `{sanitized_repo_name}_{branch}`. Uses "HEAD" when detached.
+pub fn derive_main_session_name(origin_path: &str, branch: Option<&str>) -> String {
+    let repo_name = std::path::Path::new(origin_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("orchard");
+    let sanitized = sanitize_repo_name(repo_name);
+    let branch_part = branch.map(sanitize_branch).unwrap_or_else(|| "HEAD".to_string());
+    format!("{sanitized}_{branch_part}")
+}
+
+/// Creates a new detached tmux session with the given name at the given directory.
+pub fn new_detached_session(name: &str, start_dir: &str) -> Result<()> {
+    let output = Command::new("tmux")
+        .args(["new-session", "-d", "-s", name, "-c", start_dir])
+        .output()
+        .context("tmux new-session")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "tmux new-session failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    LOG.info(&format!("newDetachedSession: {} at {}", name, start_dir));
+    Ok(())
+}
+
 /// Kills the tmux session with the given name.
 pub fn kill_tmux_session(name: &str) -> Result<()> {
     Command::new("tmux")
@@ -139,7 +182,7 @@ pub fn capture_pane_content(session: &str, lines: u32) -> Result<String> {
 /// Falls back to the last path segment, then "orchard".
 pub fn derive_session_name(repo_name: &str, branch: Option<&str>, worktree_path: &str) -> String {
     let suffix = match branch {
-        Some(b) => b.replace('/', "-"),
+        Some(b) => sanitize_branch(b),
         None => {
             let base = std::path::Path::new(worktree_path)
                 .file_name()
@@ -311,6 +354,81 @@ mod tests {
     fn derive_session_name_fallback_to_orchard() {
         assert_eq!(derive_session_name("myrepo", None, "/"), "myrepo_orchard");
     }
+
+    // -----------------------------------------------------------------------
+    // sanitize_repo_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sanitize_repo_name_replaces_dots_with_underscores() {
+        assert_eq!(sanitize_repo_name("my.repo-v2"), "my_repo-v2");
+    }
+
+    #[test]
+    fn sanitize_repo_name_preserves_names_without_dots() {
+        assert_eq!(sanitize_repo_name("myrepo"), "myrepo");
+    }
+
+    #[test]
+    fn sanitize_repo_name_replaces_multiple_dots() {
+        assert_eq!(sanitize_repo_name("a.b.c"), "a_b_c");
+    }
+
+    // -----------------------------------------------------------------------
+    // derive_main_session_name
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn derive_main_session_name_with_branch() {
+        assert_eq!(
+            derive_main_session_name("/home/user/myrepo", Some("main")),
+            "myrepo_main"
+        );
+    }
+
+    #[test]
+    fn derive_main_session_name_uses_head_when_detached() {
+        assert_eq!(
+            derive_main_session_name("/home/user/myrepo", None),
+            "myrepo_HEAD"
+        );
+    }
+
+    #[test]
+    fn derive_main_session_name_sanitizes_dots() {
+        assert_eq!(
+            derive_main_session_name("/home/user/my.repo-v2", Some("main")),
+            "my_repo-v2_main"
+        );
+    }
+
+    #[test]
+    fn derive_main_session_name_with_non_main_branch() {
+        assert_eq!(
+            derive_main_session_name("/home/user/myrepo", Some("develop")),
+            "myrepo_develop"
+        );
+    }
+
+    #[test]
+    fn derive_main_session_name_derives_repo_from_path() {
+        assert_eq!(
+            derive_main_session_name("/home/user/my-project", Some("main")),
+            "my-project_main"
+        );
+    }
+
+    #[test]
+    fn derive_main_session_name_sanitizes_branch_slashes() {
+        assert_eq!(
+            derive_main_session_name("/home/user/myrepo", Some("feature/login")),
+            "myrepo_feature-login"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // format_status_left
+    // -----------------------------------------------------------------------
 
     #[test]
     fn format_status_left_detached() {
