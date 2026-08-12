@@ -9,6 +9,14 @@
   },
   "plugins": [
     {
+      "name": "claude-session-state",
+      "description": "Lifecycle-hook session truth: folds every Claude Code hook event into a per-session state file for orchard sidebar/status/daemon — or standalone queries.",
+      "author": { "name": "drewdrewthis" },
+      "category": "agent-orchestration",
+      "source": "./plugin-sources/claude-session-state",
+      "homepage": "https://github.com/drewdrewthis/orchardist/tree/main/plugin-sources/claude-session-state"
+    },
+    {
       "name": "orchardist",
       "description": "Recall: search and synthesize context from past Claude Code conversations across all projects.",
       "author": { "name": "drewdrewthis" },

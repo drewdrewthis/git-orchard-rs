@@ -1,0 +1,6 @@
+{
+  "name": "claude-session-state",
+  "description": "Lifecycle-hook truth for Claude Code sessions: maintains a per-session folded state file (~/.local/state/claude-sessions/state/<sid>.json) consumed by orchard sidebar/status and the orchard daemon. Standalone — no orchard binary required.",
+  "version": "0.1.0",
+  "author": { "name": "drewdrewthis", "email": "andrew@langwatch.ai", "url": "https://github.com/drewdrewthis" }
+}
