@@ -77,10 +77,17 @@ STATE_DIR="${CLAUDE_SESSION_STATE_DIR:-$HOME/.local/state/claude-sessions/state}
 
     if   $event == "SessionStart" then .state = "idle"
     elif $event == "UserPromptSubmit" then
+      # harness-injected turns (task notifications, slash-command echoes,
+      # system reminders) arrive through this hook too — real work, not a
+      # human prompt; prefix-gated so real prompts CONTAINING a marker stay
+      (($ev.prompt // "")
+       | test("^(<task-notification>|<local-command-caveat>|<command-name>|\\[SYSTEM NOTIFICATION|<system-reminder>)") | not) as $human |
       .state = "working"
       | .message = null
-      | .last_prompt = ($ev.prompt | trunc(500))
-      | .first_prompt = (.first_prompt // ($ev.prompt | trunc(500)))
+      | (if $human then
+           .last_prompt = ($ev.prompt | trunc(500))
+           | .first_prompt = (.first_prompt // ($ev.prompt | trunc(500)))
+         else . end)
     elif $event == "PreToolUse" then
       .state = "working" | .last_tool = $ev.tool_name | .tool_calls += 1
     elif $event == "PostToolUse" then
