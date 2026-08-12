@@ -116,7 +116,7 @@ export function loadCorpus(dir) {
 }
 
 const STOP_WORDS = new Set(
-  "the a an of to and or is are be for on in it its this that with as by from at into so you your我 not no do does done every any all use used using when where which who what how".split(
+  "the a an of to and or is are be for on in it its this that with as by from at into so you your not no do does done every any all use used using when where which who what how".split(
     /\s+/,
   ),
 );
@@ -401,9 +401,13 @@ export async function callHaiku(
             : [{ type: "text", text: system }],
           messages: [{ role: "user", content: user }],
         }),
+        // Per-attempt timeout: a stalled Messages API call must not hold the
+        // Stop hook for undici's 5-minute default (hook timeout budget ~150s).
+        signal: AbortSignal.timeout(Number(process.env.ADHERENCE_FETCH_TIMEOUT_MS) || 60_000),
       });
     } catch (e) {
       lastErr = `network: ${String(e.message ?? e)}`;
+      if (attempt === maxRetries) break;
       await sleep(1500 * (attempt + 1));
       continue;
     }
@@ -1240,6 +1244,25 @@ async function runGate(input, env) {
         process.exit(0);
       }
     }
+  } else if (stopHookActive) {
+    // No session_id ⇒ no session-keyed retry counter, so priorBlocks can never
+    // reach the cap. Reuse stop_hook_active as the sessionless guard: a re-fire
+    // fails open (the first fire still blocks), bounding termination.
+    const emitRes = await emitJudgeVerdict(
+      judgeEmitFromDecision("allow-no-session-counter", enforcedVia, perProc, blockedProcs, env.gateModel),
+    );
+    logHookEvent(env.logPath, {
+      mode: "gate",
+      event: "stop",
+      decision: "allow-no-session-counter",
+      enforced,
+      enforcedVia,
+      perProc,
+      blockedProcs,
+      stopHookActive,
+      ...telemetryFields(emitRes),
+    });
+    process.exit(0);
   }
 
   const emitRes = await emitJudgeVerdict(

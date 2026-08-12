@@ -1,6 +1,6 @@
 # BUILD-NOTES — procedure-adherence plugin (live-validation progress)
 
-Status: **built + live-wiring proven; not yet DoD-tested end-to-end.** Commits: scaffold+port
+Status: **built + live-wiring proven; DoD-tested end-to-end (see "DoD RESULT" below).** Commits: scaffold+port
 `df7eae5`, dead-code prune `8514d06`, dispatch-guard fix `eb244ef`.
 
 ## What is proven
@@ -110,8 +110,6 @@ benign fail-open direction); D3 telemetry deferred (reconcile DESIGN §6 / ACs 1
 inherited `allow-complete-after-retry`-on-judge-error marker (faithful to the proven reference).
 
 ## Remaining (post-DoD)
-- Fix finding #2 (governing-id-scoped `compiledIdsFromSheet`), re-run the live-hook smoke to
-  confirm `enforced == [onboard-vendor, provision-account, grant-access]`.
 - **DoD harness test** (`test bed = sc#784 harness`): wire the plugin's `compile.sh`/`gate.sh`
   into the vendor-scenario subject's `settings.json` (CLAUDE_PLUGIN_ROOT/CLAUDE_PROJECT_DIR/
   ADHERENCE_CORPUS_DIR=spike corpus/gate-model), run the vendor scenario; AC1a (gate fires

@@ -5,8 +5,8 @@
 # transcript action-log, D2 chain-closed enforced, Sonnet gate decision.
 # Expect: gate BLOCKS grant-access (the transcript is missing the expiry step).
 set -uo pipefail
-PLUGIN=/home/ubuntu/langwatch-workspace/procedure-adherence-plugin
-SPIKE=/home/ubuntu/langwatch-workspace/scenario-784-adherence/javascript/examples/vitest/spike-784-adherence
+PLUGIN="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+SPIKE="${ADHERENCE_SPIKE_DIR:?set ADHERENCE_SPIKE_DIR to the sc#784 spike dir (transcript fixtures)}"
 PROJ="$(mktemp -d /tmp/pa-livehook-XXXX)"
 HOOKLOG="$PROJ/hooklog.jsonl"
 TRANSCRIPT="$PROJ/transcript.jsonl"

@@ -2,7 +2,7 @@
   "generatedAt": "2026-07-11T00:00:00.000Z",
   "seed": 784,
   "tokenizer": "gpt-tokenizer/o200k_base",
-  "totalTokens": 294,
+  "totalTokens": 5218,
   "fileCount": 4,
   "metaProcedureId": "done",
   "procedures": [

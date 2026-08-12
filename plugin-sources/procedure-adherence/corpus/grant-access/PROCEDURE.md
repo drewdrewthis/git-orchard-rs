@@ -5,7 +5,7 @@ keywords: [grant, access, operation, audited, safety]
 links: [escalate-ticket, scale-service, audit-refund, purge-record]
 status: active
 ---
-# Grant Access Grant
+# Grant Access
 
 ## Purpose
 This procedure describes how to give a principal the access grant it requires, no more. It exists so the operation is performed the same, safe way every time, regardless of who runs it, and so that a fresh operator can carry it out from the written steps alone.
@@ -67,7 +67,6 @@ If you cannot complete this procedure, or you observe impact beyond access grant
 - Treat timeouts and partial failures as first-class outcomes with their own handling, not as edge cases.
 - Record who performed the operation and when, so the audit ledger stays trustworthy.
 - Keep the change small and reversible; a smaller blast radius is always preferable to a clever one-shot change.
-- Record who performed the operation and when, so the audit ledger stays trustworthy.
 - Leave the system in a strictly better-understood state than you found it, even if you did not finish.
 
 ## Additional considerations

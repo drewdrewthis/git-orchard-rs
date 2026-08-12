@@ -185,8 +185,12 @@ const ok = (name, cond, detail = "") => { if (cond) { pass++; console.log(`  ok 
 {
   const realFetch = global.fetch;
   global.fetch = async () => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => ({ content: [{ type: "text", text: '{"followed":false,"missingSteps":["set expires_at"],"reasoning":"no ledger write with expiry"}' }] }) });
+  // Dummy creds file so the offline path never depends on host credentials.
+  const credsDir = mkdtempSync(join(tmpdir(), "pa-smoke-creds-"));
+  const credsPath = join(credsDir, ".credentials.json");
+  writeFileSync(credsPath, JSON.stringify({ claudeAiOauth: { accessToken: "smoke-test-token" } }));
   try {
-    const res = await callHaiku(buildPerProcJudgeSystem(), buildPerProcJudgeUser("grant-access", "1. write the binding with expires_at", "#1 tool_use Read"), { model: "claude-sonnet-4-5", credentialsPath: join(process.env.HOME || "/home/ubuntu", ".claude/.credentials.json") });
+    const res = await callHaiku(buildPerProcJudgeSystem(), buildPerProcJudgeUser("grant-access", "1. write the binding with expires_at", "#1 tool_use Read"), { model: "claude-sonnet-4-5", credentialsPath: credsPath });
     ok("gate judge: callHaiku returns ok on mocked 200", res.ok === true, JSON.stringify(res).slice(0, 80));
     const v = res.ok ? parsePerProcVerdict(res.text) : null;
     ok("gate judge: parsePerProcVerdict → followed=false", v && v.followed === false);

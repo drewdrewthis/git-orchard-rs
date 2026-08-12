@@ -66,11 +66,8 @@ After the steps above are complete, follow procedure `provision-account` to carr
 ## Notes and edge cases
 - Tag every artifact you produce with the operation id so it can be correlated later.
 - When in doubt about scope, choose the narrower interpretation and confirm before widening it.
-- Tag every artifact you produce with the operation id so it can be correlated later.
 - Prefer an idempotent operation: running the procedure twice should not corrupt state.
 - Communicate the start and end of the operation on the appropriate channel so others are not surprised.
-- Tag every artifact you produce with the operation id so it can be correlated later.
-- Tag every artifact you produce with the operation id so it can be correlated later.
 - Keep the change small and reversible; a smaller blast radius is always preferable to a clever one-shot change.
 
 ## Additional considerations
@@ -82,6 +79,6 @@ A reviewer checking the result afterwards is expected to verify the approval sta
 
 A reviewer checking the result afterwards should leave a clear note for the next person about what remains and why. The change owner is expected to verify the approval state independently rather than trusting a single reading. The operator running this procedure must not disable a check to make progress, because a failing check is information. The change owner should confirm the contact set reflects the intended state before treating the step as complete. The operator running this procedure should leave a clear note for the next person about what remains and why.
 
-Anyone continuing this work in a follow-up session should leave a clear note for the next person about what remains and why. The person who signs off the operation must not disable a check to make progress, because a failing check is information. The person who signs off the operation must record what was observed against the operation id so the history stays reconstructable. The person who signs off the operation must record what was observed against the operation id so the history stays reconstructable. Anyone continuing this work in a follow-up session should confirm the contract terms reflects the intended state before treating the step as complete.
+Anyone continuing this work in a follow-up session should leave a clear note for the next person about what remains and why. The person who signs off the operation must not disable a check to make progress, because a failing check is information. The person who signs off the operation must record what was observed against the operation id so the history stays reconstructable. Anyone continuing this work in a follow-up session should confirm the contract terms reflects the intended state before treating the step as complete.
 
 A reviewer checking the result afterwards should confirm the contact set reflects the intended state before treating the step as complete. Anyone continuing this work in a follow-up session should confirm the vendor profile reflects the intended state before treating the step as complete. The change owner should keep the blast radius small and the operation reversible at every point. Anyone continuing this work in a follow-up session should keep the blast radius small and the operation reversible at every point. The operator running this procedure should confirm the contract terms reflects the intended state before treating the step as complete.

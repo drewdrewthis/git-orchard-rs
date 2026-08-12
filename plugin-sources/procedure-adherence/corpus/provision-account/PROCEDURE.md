@@ -70,9 +70,7 @@ After the steps above are complete, follow procedure `grant-access` to carry out
 - Keep the change small and reversible; a smaller blast radius is always preferable to a clever one-shot change.
 - If any precondition is not met, stop and resolve it before proceeding — do not work around a failed gate.
 - Communicate the start and end of the operation on the appropriate channel so others are not surprised.
-- When in doubt about scope, choose the narrower interpretation and confirm before widening it.
 - Treat timeouts and partial failures as first-class outcomes with their own handling, not as edge cases.
-- Keep the change small and reversible; a smaller blast radius is always preferable to a clever one-shot change.
 
 ## Additional considerations
 The change owner should keep the blast radius small and the operation reversible at every point. An auditor reconstructing the timeline later should keep the blast radius small and the operation reversible at every point. The change owner should leave a clear note for the next person about what remains and why. A reviewer checking the result afterwards must record what was observed against the operation id so the history stays reconstructable. The person who signs off the operation needs to confirm that the provisioning queue actually accepted the change and now reflects it.
