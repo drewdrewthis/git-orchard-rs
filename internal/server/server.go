@@ -252,6 +252,12 @@ func New(addr string, logger *slog.Logger, opts ...Option) *Server {
 		)
 	}
 
+	// Serve the read-only dashboard page at the exact "/" (see dashboard.go).
+	// Registered last as the "/" catch-all; ServeMux longest-prefix keeps the
+	// routes above winning, and the handler 404s any non-"/" path so this does
+	// not become an open file server.
+	mux.Handle("/", dashboardHandler())
+
 	srv.httpSrv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
