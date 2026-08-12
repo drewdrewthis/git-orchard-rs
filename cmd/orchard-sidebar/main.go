@@ -330,12 +330,7 @@ func fetchFast() tea.Msg {
 	for _, r := range byName {
 		rows = append(rows, *r)
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if a, b := stateRank[rows[i].state], stateRank[rows[j].state]; a != b {
-			return a < b
-		}
-		return rows[i].session < rows[j].session
-	})
+	sortRows(rows)
 	return fastDataMsg{rows: rows}
 }
 
@@ -411,8 +406,21 @@ func (m *model) applyHooks() {
 		m.rows = append(m.rows, row{session: sess, state: h.state, hooked: true,
 			message: h.message, mission: h.mission, lastAct: h.lastAct})
 	}
-	sort.SliceStable(m.rows, func(i, j int) bool {
-		return stateRank[m.rows[i].state] < stateRank[m.rows[j].state]
+	sortRows(m.rows)
+}
+
+// sortRows: status first, then most-recently-active, then name — one total
+// order everywhere so a state flip moves a row between groups without
+// reshuffling the rest.
+func sortRows(rows []row) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		if a, b := stateRank[rows[i].state], stateRank[rows[j].state]; a != b {
+			return a < b
+		}
+		if !rows[i].lastAct.Equal(rows[j].lastAct) {
+			return rows[i].lastAct.After(rows[j].lastAct)
+		}
+		return rows[i].session < rows[j].session
 	})
 }
 
