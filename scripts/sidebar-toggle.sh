@@ -11,5 +11,10 @@ existing="$(tmux list-panes -F '#{pane_id} #{pane_start_command}' \
 if [ -n "$existing" ]; then
   tmux kill-pane -t "$existing"
 else
+  if ! command -v orchard-sidebar >/dev/null 2>&1 \
+     && [ ! -x "$(dirname "${BASH_SOURCE[0]}")/../bin/orchard-sidebar" ]; then
+    tmux display-message "orchard-sidebar not found — run 'orchard init'"
+    exit 0
+  fi
   exec "$(dirname "${BASH_SOURCE[0]}")/sidebar-open.sh"
 fi
