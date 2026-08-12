@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "orchardist",
-  "description": "The orchardist marketplace — companion plugins for the orchardist worktree/session dashboard. Hosts the orchardist plugin (recall skill) and the orchard-chat cross-machine chat plugin.",
+  "description": "The orchardist marketplace \u2014 companion plugins for the orchardist worktree/session dashboard. Hosts the orchardist plugin (recall skill) and the orchard-chat cross-machine chat plugin.",
   "owner": {
     "name": "drewdrewthis",
     "email": "andrew@langwatch.ai",
@@ -11,7 +11,9 @@
     {
       "name": "orchardist",
       "description": "Recall: search and synthesize context from past Claude Code conversations across all projects.",
-      "author": { "name": "drewdrewthis" },
+      "author": {
+        "name": "drewdrewthis"
+      },
       "category": "agent-orchestration",
       "source": "./plugin-sources/orchardist",
       "homepage": "https://github.com/drewdrewthis/orchardist/tree/main/plugin-sources/orchardist"
@@ -19,10 +21,22 @@
     {
       "name": "orchard-chat",
       "description": "Cross-machine chat channel for orchardists. Connects to the orchard-chat broker (Bun WS+HTTP service on boxd) and pushes messages into Claude as <channel source=\"orchard-chat\" ...> events. Exposes a chat:post reply tool. Orchardists listen+post; workers/sisters post-only via the chat-post shell helper.",
-      "author": { "name": "drewdrewthis" },
+      "author": {
+        "name": "drewdrewthis"
+      },
       "category": "agent-orchestration",
       "source": "./plugin-sources/orchard-chat",
       "homepage": "https://github.com/drewdrewthis/orchardist/tree/main/plugin-sources/orchard-chat"
+    },
+    {
+      "name": "procedure-adherence",
+      "description": "Guaranteed procedure adherence under context load: a UserPromptSubmit hook retrieves + Haiku-compiles the governing procedure into a binding sheet, and a per-procedure blocking Stop gate (Sonnet, no GPT in runtime) refuses to end the turn until every authored chain step has a corresponding action. Per-agent/session exemption brick-guard included. Ported from the sc#784-proven recipe.",
+      "author": {
+        "name": "drewdrewthis"
+      },
+      "category": "agent-orchestration",
+      "source": "./plugin-sources/procedure-adherence",
+      "homepage": "https://github.com/drewdrewthis/orchardist/tree/main/plugin-sources/procedure-adherence"
     }
   ]
 }

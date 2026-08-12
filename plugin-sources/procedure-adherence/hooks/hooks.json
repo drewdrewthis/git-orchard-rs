@@ -1,0 +1,7 @@
+{
+  "description": "procedure-adherence: pre-turn retrieve+compile (UserPromptSubmit) + per-procedure blocking Stop gate",
+  "hooks": {
+    "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/compile.sh\"" } ] } ],
+    "Stop": [ { "hooks": [ { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/gate.sh\"" } ] } ]
+  }
+}

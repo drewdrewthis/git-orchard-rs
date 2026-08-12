@@ -1,0 +1,89 @@
+{
+  "generatedAt": "2026-07-11T00:00:00.000Z",
+  "seed": 784,
+  "tokenizer": "gpt-tokenizer/o200k_base",
+  "totalTokens": 5218,
+  "fileCount": 4,
+  "metaProcedureId": "done",
+  "procedures": [
+    {
+      "id": "onboard-vendor",
+      "path": "corpus/onboard-vendor/PROCEDURE.md",
+      "keywords": [
+        "onboard",
+        "vendor",
+        "controlled",
+        "procedure",
+        "runbook"
+      ],
+      "links": [
+        "provision-account",
+        "escalate-ticket",
+        "warm-cache",
+        "audit-service"
+      ],
+      "status": "active",
+      "tokens": 1575
+    },
+    {
+      "id": "provision-account",
+      "path": "corpus/provision-account/PROCEDURE.md",
+      "keywords": [
+        "provision",
+        "account",
+        "recovery",
+        "audited",
+        "operation"
+      ],
+      "links": [
+        "grant-access",
+        "escalate-ticket",
+        "audit-dataset",
+        "dispatch-invoice",
+        "reconcile-ticket"
+      ],
+      "status": "active",
+      "tokens": 1535
+    },
+    {
+      "id": "grant-access",
+      "path": "corpus/grant-access/PROCEDURE.md",
+      "keywords": [
+        "grant",
+        "access",
+        "operation",
+        "audited",
+        "safety"
+      ],
+      "links": [
+        "escalate-ticket",
+        "scale-service",
+        "audit-refund",
+        "purge-record"
+      ],
+      "status": "active",
+      "tokens": 1545
+    },
+    {
+      "id": "done",
+      "path": "corpus/done/PROCEDURE.md",
+      "keywords": [
+        "done",
+        "completion",
+        "finish",
+        "checklist",
+        "verify",
+        "meta",
+        "always"
+      ],
+      "links": [
+        "prove",
+        "audit",
+        "escalate-ticket"
+      ],
+      "status": "active",
+      "always_enforced": true,
+      "tokens": 563
+    }
+  ]
+}

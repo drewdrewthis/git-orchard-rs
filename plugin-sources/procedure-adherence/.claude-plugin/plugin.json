@@ -1,0 +1,6 @@
+{
+  "name": "procedure-adherence",
+  "version": "0.1.0",
+  "description": "Raise procedure-adherence under context load from flaky to guaranteed: retrieve+compile the governing procedure pre-turn, and block the Stop until every step of the authored chain has a corresponding tool action. Ported from the sc#784-proven recipe (Sonnet gate, no GPT in runtime).",
+  "author": { "name": "drewdrewthis" }
+}

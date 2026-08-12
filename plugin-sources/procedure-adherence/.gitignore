@@ -1,0 +1,7 @@
+# Plugin runtime state — session-keyed compiled sheets, retry counters, exempt
+# list, and the JSONL hook-log. These can carry fragments of session/tool content
+# (see README "Caveats (b)") and must never be committed.
+.procedure-adherence/
+
+# Node
+node_modules/
