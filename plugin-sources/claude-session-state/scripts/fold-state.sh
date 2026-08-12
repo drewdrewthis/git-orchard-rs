@@ -43,10 +43,11 @@ STATE_DIR="${CLAUDE_SESSION_STATE_DIR:-$HOME/.local/state/claude-sessions/state}
   if [ "$event" = "Stop" ]; then
     tp="$(jq -r '.transcript_path // empty' <<<"$input")"
     if [ -n "$tp" ] && [ -f "$tp" ]; then
+      # per-line fromjson? tolerates the tail starting mid-JSONL-record
       last_response="$(tail -c 65536 "$tp" \
-        | jq -rs '[.[] | select(type == "object" and .type == "assistant")
-                   | .message.content[]? | select(.type == "text") | .text]
-                  | last // ""' 2>/dev/null \
+        | jq -rRs '[split("\n")[] | fromjson? | select(.type == "assistant")
+                    | .message.content[]? | select(.type == "text") | .text]
+                   | last // ""' 2>/dev/null \
         | head -n 1 | cut -c 1-500)"
     fi
   fi

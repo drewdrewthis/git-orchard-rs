@@ -19,8 +19,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -207,7 +209,9 @@ func pidAlive(pid int) bool {
 
 // paneToSession maps tmux pane ids (%5) to session names via one tmux call.
 func paneToSession() map[string]string {
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_id} #{session_name}").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id} #{session_name}").Output()
 	m := map[string]string{}
 	if err != nil {
 		return m
@@ -258,12 +262,34 @@ func dirExists(p string) bool {
 func post(query string, timeout time.Duration, out any) error {
 	body, _ := json.Marshal(map[string]string{"query": query})
 	client := &http.Client{Timeout: timeout}
-	resp, err := client.Post(graphqlURL, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, graphqlURL, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	return json.NewDecoder(resp.Body).Decode(out)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("daemon: HTTP %d", resp.StatusCode)
+	}
+	// GraphQL can return 200 with an errors array and a zero-value data field;
+	// treating that as valid would blank the sidebar.
+	var envelope struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if json.Unmarshal(raw, &envelope) == nil && len(envelope.Errors) > 0 {
+		return fmt.Errorf("graphql: %s", envelope.Errors[0].Message)
+	}
+	return json.Unmarshal(raw, out)
 }
 
 func fetchFast() tea.Msg {
@@ -335,8 +361,11 @@ func tickAfter(d time.Duration, msg tea.Msg) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return msg })
 }
 
+// One in-flight request per lane: each lane schedules its next tick only when
+// its data message lands, so a slow response can never be overwritten by an
+// older poll that finished later.
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(fetchFast, fetchSlow, fetchHooks, tickAfter(fastEvery, fastTickMsg{}), tickAfter(slowEvery, slowTickMsg{}))
+	return tea.Batch(fetchFast, fetchSlow, fetchHooks)
 }
 
 func (m *model) join() {
@@ -393,9 +422,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		return m, nil
 	case fastTickMsg:
-		return m, tea.Batch(fetchFast, fetchHooks, tickAfter(fastEvery, fastTickMsg{}))
+		return m, tea.Batch(fetchFast, fetchHooks)
 	case slowTickMsg:
-		return m, tea.Batch(fetchSlow, tickAfter(slowEvery, slowTickMsg{}))
+		return m, fetchSlow
 	case fastDataMsg:
 		m.err = msg.err
 		if msg.err == nil {
@@ -411,7 +440,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rows = nil
 			m.applyHooks()
 		}
-		return m, nil
+		return m, tickAfter(fastEvery, fastTickMsg{})
 	case hookDataMsg:
 		m.hooksBySess = msg.bySession
 		m.stateDirOK = msg.dirOK
@@ -424,7 +453,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.slowAt = time.Now()
 			m.join()
 		}
-		return m, nil
+		return m, tickAfter(slowEvery, slowTickMsg{})
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if msg.Y >= 0 && msg.Y < len(m.lineToRow) {

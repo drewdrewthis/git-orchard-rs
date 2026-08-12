@@ -73,7 +73,9 @@ func main() {
 		if live == nil {
 			live = []sessFile{}
 		}
-		json.NewEncoder(os.Stdout).Encode(live)
+		if err := json.NewEncoder(os.Stdout).Encode(live); err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 
