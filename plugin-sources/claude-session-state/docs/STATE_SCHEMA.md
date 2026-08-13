@@ -12,7 +12,7 @@ Override the directory with `CLAUDE_SESSION_STATE_DIR`.
 | `pid` | every event | hook parent pid; consumers MUST `kill -0` it — a stale file with a dead pid is a crashed session |
 | `pane` | when in tmux (sticky) | `$TMUX_PANE` id, joinable to tmux |
 | `started_at` | set-once | first event's timestamp |
-| `state` | event-mapped | `working` (UserPromptSubmit/Pre/PostToolUse) \| `idle` (SessionStart/Stop) \| `input` (Notification) |
+| `state` | event-mapped | `working` (UserPromptSubmit/Pre/PostToolUse) \| `idle` (SessionStart/Stop) \| `input` (Notification, except the idle-nag "waiting for your input" → `idle`; never downgrades a pending `input`) |
 | `last_event` / `ts` | every event | latest event name + UTC timestamp |
 | `message` | Notification; cleared on prompt/Stop | why the session needs attention |
 | `first_prompt` | set-once, ≤500 chars | the session's mission |

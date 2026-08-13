@@ -93,7 +93,13 @@ STATE_DIR="${CLAUDE_SESSION_STATE_DIR:-$HOME/.local/state/claude-sessions/state}
     elif $event == "PostToolUse" then
       .state = "working" | .last_tool = $ev.tool_name
     elif $event == "Notification" then
-      .state = "input" | .message = ($ev.message | trunc(500))
+      # the idle nag ("waiting for your input") is not a real input request —
+      # keep it out of state=input, but never downgrade a pending permission ask
+      if (($ev.message // "") | test("waiting for your input"; "i")) then
+        (if .state == "input" then . else .state = "idle" end)
+      else
+        .state = "input" | .message = ($ev.message | trunc(500))
+      end
     elif $event == "Stop" then
       .state = "idle"
       | .message = null

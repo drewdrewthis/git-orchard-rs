@@ -37,6 +37,27 @@ field() { jq -r ".$1 // \"null\"" "$CLAUDE_SESSION_STATE_DIR/t.json"; }
   [ "$(field first_prompt)" = "the actual mission" ]
 }
 
+notify() { jq -nc --arg m "$2" '{session_id: $ARGS.positional[0], hook_event_name: "Notification", message: $m}' --args "$1" | "$REDUCER"; }
+
+@test "permission notification sets state=input with message" {
+  notify t "Claude needs your permission to use Bash"
+  [ "$(field state)" = "input" ]
+  [ "$(field message)" = "Claude needs your permission to use Bash" ]
+}
+
+@test "idle-nag notification stays idle, no message stored" {
+  notify t "Claude is waiting for your input"
+  [ "$(field state)" = "idle" ]
+  [ "$(field message)" = "null" ]
+}
+
+@test "idle-nag does not downgrade a pending permission request" {
+  notify t "Claude needs your permission to use Bash"
+  notify t "Claude is waiting for your input"
+  [ "$(field state)" = "input" ]
+  [ "$(field message)" = "Claude needs your permission to use Bash" ]
+}
+
 @test "a real prompt merely containing the marker mid-text is kept" {
   send t 'the side bar says "<task-notification>", which is weird?'
   [ "$(field last_prompt)" = 'the side bar says "<task-notification>", which is weird?' ]
