@@ -51,6 +51,14 @@ notify() { jq -nc --arg m "$2" '{session_id: $ARGS.positional[0], hook_event_nam
   [ "$(field message)" = "null" ]
 }
 
+@test "idle-nag after an answered permission clears the stale message" {
+  notify t "Claude needs your permission to use Bash"
+  jq -nc '{session_id: "t", hook_event_name: "PreToolUse", tool_name: "Bash"}' | "$REDUCER"
+  notify t "Claude is waiting for your input"
+  [ "$(field state)" = "idle" ]
+  [ "$(field message)" = "null" ]
+}
+
 @test "idle-nag does not downgrade a pending permission request" {
   notify t "Claude needs your permission to use Bash"
   notify t "Claude is waiting for your input"

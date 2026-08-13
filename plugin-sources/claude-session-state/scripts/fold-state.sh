@@ -96,7 +96,7 @@ STATE_DIR="${CLAUDE_SESSION_STATE_DIR:-$HOME/.local/state/claude-sessions/state}
       # the idle nag ("waiting for your input") is not a real input request —
       # keep it out of state=input, but never downgrade a pending permission ask
       if (($ev.message // "") | test("waiting for your input"; "i")) then
-        (if .state == "input" then . else .state = "idle" end)
+        (if .state == "input" then . else .state = "idle" | .message = null end)
       else
         .state = "input" | .message = ($ev.message | trunc(500))
       end
