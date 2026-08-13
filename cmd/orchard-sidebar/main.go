@@ -594,7 +594,9 @@ func line(width int, left, right string) string {
 	if right == "" {
 		return left
 	}
-	return left + strings.Repeat(" ", pad) + right
+	// final clamp: at pathological widths the 1-cell floors on avail/pad can
+	// still overshoot; a soft-wrapped line would skew the lineToRow map
+	return trunc(left+strings.Repeat(" ", pad)+right, width)
 }
 
 // detail renders the worktree line of a row: branch ±ahead/behind, PR state,
