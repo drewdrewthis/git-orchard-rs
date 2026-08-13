@@ -34,6 +34,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const graphqlURL = "http://127.0.0.1:7777/graphql"
@@ -507,18 +508,37 @@ var (
 	styMsg     = lipgloss.NewStyle().Foreground(lipgloss.Color("13"))
 )
 
+// glyph returns the one-cell state marker; the state *word* lives in the
+// group header only, so it isn't repeated on every row.
 func glyph(state string) (string, lipgloss.Style) {
 	switch state {
 	case "input":
-		return "● INPUT", styInput
+		return "●", styInput
 	case "stalled":
-		return "✖ STALL", styStalled
+		return "✖", styStalled
 	case "working":
-		return "◐ work ", styWorking
+		return "◐", styWorking
 	case "idle":
-		return "○ idle ", styIdle
+		return "○", styIdle
 	default:
-		return "· shell", styShell
+		return "·", styShell
+	}
+}
+
+// groupLabel is the section header shown once above each run of same-state
+// rows (rows are already sorted by stateRank, so runs are contiguous).
+func groupLabel(state string) string {
+	switch state {
+	case "input":
+		return "NEEDS INPUT"
+	case "stalled":
+		return "STALLED"
+	case "working":
+		return "WORKING"
+	case "idle":
+		return "IDLE"
+	default:
+		return "SHELL"
 	}
 }
 
@@ -549,12 +569,32 @@ func age(t time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
+// trunc clips to n terminal cells (ANSI- and wide-rune-aware), first line only.
 func trunc(s string, n int) string {
 	s = strings.SplitN(s, "\n", 2)[0]
-	if len(s) > n {
-		return s[:n] + "…"
+	if n < 1 {
+		return ""
 	}
-	return s
+	return ansi.Truncate(s, n, "…")
+}
+
+// line lays out left + right-aligned right within width cells, truncating
+// left (never right) when they don't both fit.
+func line(width int, left, right string) string {
+	rw := ansi.StringWidth(right)
+	avail := width - rw
+	if rw > 0 {
+		avail-- // one-cell gap
+	}
+	left = trunc(left, max(1, avail))
+	pad := width - ansi.StringWidth(left) - rw
+	if pad < 1 {
+		pad = 1
+	}
+	if right == "" {
+		return left
+	}
+	return left + strings.Repeat(" ", pad) + right
 }
 
 // detail renders the worktree line of a row: branch ±ahead/behind, PR state,
@@ -563,7 +603,7 @@ func detail(r row) string {
 	if r.branch == "" {
 		return ""
 	}
-	s := "  " + r.branch
+	s := r.branch
 	if r.ahead != nil && *r.ahead > 0 {
 		s += fmt.Sprintf(" ↑%d", *r.ahead)
 	}
@@ -591,20 +631,32 @@ func detail(r row) string {
 	return s
 }
 
+// View layout (everything clipped to the live pane width):
+//
+//	header   — counts of attention-worthy states + fetch stamp
+//	sections — one dim header per contiguous state group (rows are sorted by
+//	           state, so groups are runs); rows are ONE line each:
+//	           cursor/attached bar + glyph + name … right-aligned age
+//	           input/stalled rows add their attention message (that's the
+//	           actionable bit); everything else (mission, model, repo,
+//	           branch/PR/CI) expands under the CURSOR row only.
+//	footer   — key hints
 func (m *model) View() string {
+	w := m.width
+	if w <= 0 {
+		w = 42
+	}
 	var b bytes.Buffer
 	lineMap := []int{}
 	emit := func(s string, rowIdx int) {
 		b.WriteString(s + "\n")
 		lineMap = append(lineMap, rowIdx)
 	}
-	sep := styDim.Render(strings.Repeat("─", 40))
+	sep := styDim.Render(strings.Repeat("─", w))
 
 	if m.err != nil {
-		emit(styErr.Render("⚠ DAEMON OFFLINE"), -1)
-		emit(styDim.Render(trunc(m.err.Error(), 38)), -1)
-		emit(styDim.Render("hook states still live"), -1)
-		emit("", -1)
+		emit(styErr.Render(trunc("⚠ DAEMON OFFLINE — hook states live", w)), -1)
+		emit(styDim.Render(trunc(m.err.Error(), w)), -1)
 	}
 
 	counts := map[string]int{}
@@ -615,74 +667,78 @@ func (m *model) View() string {
 	for _, s := range []string{"input", "stalled", "working", "idle"} {
 		if counts[s] > 0 {
 			g, sty := glyph(s)
-			hdr = append(hdr, sty.Render(fmt.Sprintf("%d %s", counts[s], strings.TrimSpace(g))))
+			hdr = append(hdr, sty.Render(fmt.Sprintf("%d%s", counts[s], g)))
 		}
 	}
-	if len(hdr) > 0 {
-		emit(strings.Join(hdr, styDim.Render("  ")), -1)
+	stamp := ""
+	if !m.fastAt.IsZero() {
+		stamp = styDim.Render(m.fastAt.Format("15:04:05"))
 	}
+	emit(line(w, strings.Join(hdr, " "), stamp), -1)
 	emit(sep, -1)
 
+	prev := ""
 	for i, r := range m.rows {
+		if r.state != prev {
+			if prev != "" {
+				emit("", -1)
+			}
+			emit(styDim.Render(trunc(groupLabel(r.state), w)), -1)
+			prev = r.state
+		}
+
 		g, sty := glyph(r.state)
-		bar, name := "  ", r.session
+		bar, name := " ", r.session
 		if r.attached {
-			bar = stySelBar.Render("▎ ")
+			bar = stySelBar.Render("▎")
 			name = stySelName.Render(r.session)
 		}
 		if i == m.cursor && !r.attached {
-			bar = stySelBar.Render("› ")
+			bar = stySelBar.Render("›")
 		}
-		line1 := fmt.Sprintf("%s%s %s", bar, sty.Render(g), name)
-		if r.attached {
-			line1 += styDim.Render(" ⌖")
-		}
+		left := fmt.Sprintf("%s%s %s", bar, sty.Render(g), name)
 		if !r.hooked && r.state != "shell" {
-			line1 += styDim.Render(" (inferred)")
+			left += styDim.Render("?")
 		}
-		emit(line1, i)
+		emit(line(w, left, styDim.Render(age(r.lastAct))), i)
 
-		if r.state == "input" && r.message != "" {
-			emit(styMsg.Render("    ↳ "+trunc(r.message, 36)), i)
-		}
-		if r.mission != "" {
-			emit(styDim.Render("    “"+trunc(r.mission, 34)+"”"), i)
+		if (r.state == "input" || r.state == "stalled") && r.message != "" {
+			emit(styMsg.Render(trunc("   ↳ "+r.message, w)), i)
 		}
 
-		meta := "    "
-		if r.model != "" {
-			meta += r.model + " · "
+		// detail-on-selection: context lines for the cursor row only
+		if i == m.cursor {
+			if r.mission != "" {
+				emit(styDim.Render(trunc("   “"+r.mission+"”", w)), i)
+			}
+			meta := ""
+			if r.model != "" {
+				meta = r.model
+			}
+			if r.repo != "" {
+				if meta != "" {
+					meta += " · "
+				}
+				meta += r.repo
+			}
+			if meta != "" {
+				emit(styDim.Render(trunc("   "+meta, w)), i)
+			}
+			if d := detail(r); d != "" {
+				emit(styMeta.Render(trunc("   "+d, w)), i)
+			}
 		}
-		if a := age(r.lastAct); a != "" {
-			meta += a
-		} else {
-			meta += "—"
-		}
-		if r.repo != "" {
-			meta += " · " + r.repo
-		}
-		emit(styDim.Render(meta), i)
-
-		if d := detail(r); d != "" {
-			emit(styMeta.Render(d), i)
-		}
-		emit(sep, -1)
 	}
 
+	emit(sep, -1)
 	if !m.stateDirOK {
-		emit(styDim.Render("no state dir — install the"), -1)
-		emit(styDim.Render("claude-session-state plugin"), -1)
+		emit(styDim.Render(trunc("no state dir — install claude-session-state", w)), -1)
 	}
-	prNote := "pr:–"
+	prNote := "pr –"
 	if !m.slowAt.IsZero() {
-		prNote = "pr:" + m.slowAt.Format("15:04")
+		prNote = "pr " + m.slowAt.Format("15:04")
 	}
-	stamp := "—"
-	if !m.fastAt.IsZero() {
-		stamp = m.fastAt.Format("15:04:05")
-	}
-	emit(styDim.Render(fmt.Sprintf("%d sessions · %s · %s", len(m.rows), stamp, prNote)), -1)
-	emit(styDim.Render("click/enter jump · j/k · q quit"), -1)
+	emit(line(w, styDim.Render("⏎ jump · j/k · q"), styDim.Render(prNote)), -1)
 
 	m.lineToRow = lineMap
 	return b.String()
