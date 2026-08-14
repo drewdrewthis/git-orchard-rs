@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -70,9 +71,10 @@ func TestGitBoxItems(t *testing.T) {
 	}
 }
 
-// The box renders items+2 border lines, and no line ever exceeds the given
-// width — the same invariant line() holds, because an overshooting line
-// soft-wraps and skews the lineToRow/lineToCopy mouse maps.
+// The box renders items+2 border lines, no line ever exceeds the given width
+// (an overshooting line soft-wraps and skews the mouse maps), and each line
+// carries its own copy payload — borders "", item lines their item's copy —
+// so no caller ever reconstructs the pairing by index arithmetic.
 func TestGitBoxRenderWidth(t *testing.T) {
 	items := []boxItem{
 		{text: "🌿 a-very-long-branch-name-that-truncates ↑2", copy: "x"},
@@ -86,11 +88,36 @@ func TestGitBoxRenderWidth(t *testing.T) {
 				t.Fatalf("w=%d: got %d lines, want %d", w, len(lines), len(items)+2)
 			}
 			for i, l := range lines {
-				if got := ansi.StringWidth(l); got > w {
-					t.Errorf("w=%d flash=%v line %d = %q — %d cells", w, flash, i, l, got)
+				if got := ansi.StringWidth(l.text); got > w {
+					t.Errorf("w=%d flash=%v line %d = %q — %d cells", w, flash, i, l.text, got)
+				}
+			}
+			if lines[0].copy != "" || lines[len(lines)-1].copy != "" {
+				t.Errorf("w=%d: border lines carry copy payloads %q/%q", w, lines[0].copy, lines[len(lines)-1].copy)
+			}
+			for i, it := range items {
+				if lines[i+1].copy != it.copy {
+					t.Errorf("w=%d line %d copy = %q, want %q", w, i+1, lines[i+1].copy, it.copy)
 				}
 			}
 		}
+	}
+}
+
+// issue titles come from GitHub — remote text. Embedded control characters
+// (newlines, ANSI escapes) would skew the one-line-per-row mouse maps or
+// inject terminal escapes, so they are stripped before rendering.
+func TestGitBoxStripsControlCharsFromRemoteTitles(t *testing.T) {
+	r := row{repo: "o/r", issueNum: 9, issueTitle: "evil\x1b[31m\ntitle\x07"}
+	items := gitBoxItems(r)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if strings.ContainsAny(items[0].text, "\x1b\n\x07") {
+		t.Errorf("control chars survived into the rendered text: %q", items[0].text)
+	}
+	if !strings.Contains(items[0].text, "eviltitle") && !strings.Contains(items[0].text, "evil") {
+		t.Errorf("printable content lost: %q", items[0].text)
 	}
 }
 
@@ -108,18 +135,34 @@ func TestClickOnGitBoxCopies(t *testing.T) {
 	}
 	m.View() // populates lineToRow / lineToCopy
 
+	// the full mapping, not just existence: the box's item lines must carry
+	// exactly the payloads gitBoxItems computed, in order
+	wantCopies := []string{"main", "/tmp/x", "https://github.com/o/r/issues/3"}
+	var gotCopies []string
 	first, border := -1, -1
 	for i, cp := range m.lineToCopy {
-		if cp != "" && first == -1 {
+		if cp == "" {
+			continue
+		}
+		if first == -1 {
 			first = i
 			border = i - 1 // the box's top border sits right above the first item
+		}
+		gotCopies = append(gotCopies, cp)
+		if m.lineToRow[i] != -1 {
+			t.Errorf("box item line %d maps to row %d, want -1", i, m.lineToRow[i])
 		}
 	}
 	if first == -1 {
 		t.Fatal("no copyable line rendered")
 	}
-	if m.lineToRow[first] != -1 {
-		t.Errorf("box item line maps to row %d, want -1", m.lineToRow[first])
+	if len(gotCopies) != len(wantCopies) {
+		t.Fatalf("copy payloads = %v, want %v", gotCopies, wantCopies)
+	}
+	for i := range wantCopies {
+		if gotCopies[i] != wantCopies[i] {
+			t.Errorf("copy payload[%d] = %q, want %q", i, gotCopies[i], wantCopies[i])
+		}
 	}
 
 	click := func(y int) tea.Cmd {

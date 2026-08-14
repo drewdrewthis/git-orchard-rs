@@ -12,11 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestLiveSwitchNoRevert drives BOTH real lanes (2s poll + websocket push) against
-// the live daemon and a real tmux client, then switches that client and watches the
-// row's attach flag. The bug this guards is not "attach never arrives" but "attach
-// arrives, then an in-flight poll reverts it" — so it measures both first-true and
-// any revert inside the window after it.
+// pollAttach reports a named row's attach flag as a printable word.
 func pollAttach(rows []row, name string) string {
 	for _, r := range rows {
 		if r.session == name {
@@ -26,6 +22,11 @@ func pollAttach(rows []row, name string) string {
 	return "absent"
 }
 
+// TestLiveSwitchNoRevert drives BOTH real lanes (2s poll + websocket push) against
+// the live daemon and a real tmux client, then switches that client and watches the
+// row's attach flag. The bug this guards is not "attach never arrives" but "attach
+// arrives, then an in-flight poll reverts it" — so it measures both first-true and
+// any revert inside the window after it.
 func TestLiveSwitchNoRevert(t *testing.T) {
 	if os.Getenv("ORCHARD_LIVE") != "1" {
 		t.Skip("live only")

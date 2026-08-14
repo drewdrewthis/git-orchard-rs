@@ -2,9 +2,8 @@
 //
 // Truth layering (issue #719):
 //   - state dir (2s): ~/.local/state/claude-sessions/state/*.json written by the
-//     claude-session-state plugin hooks — authoritative for working|idle|input,
-//     the latest prompt (last_prompt), and attention messages. Works with the
-//     daemon down.
+//     claude-session-state plugin hooks — authoritative for working|idle|input
+//     and the latest prompt (last_prompt). Works with the daemon down.
 //   - daemon fast lane (2s): claudeInstances + tmuxSessions via GraphQL — session
 //     inventory, model, pane titles; inference fallback for sessions with no
 //     state file (marked "inferred").
@@ -157,7 +156,6 @@ type row struct {
 	title    string
 	attached bool
 	hooked   bool // state came from the state dir; false = daemon inference
-	message  string
 	mission  string
 	lastAct  time.Time
 	created  time.Time // tmux session_created — the stable within-group sort key
@@ -198,7 +196,6 @@ type model struct {
 	subAt          time.Time       // last pushed snapshot
 	attachedBySess map[string]bool // from the push lane; outranks the poll's copy
 	fastAt         time.Time
-	slowAt         time.Time
 	width          int
 	desiredWidth   int // shared @orchard_sidebar_width; 0 until first read
 	clientGen      int // bumped on switch/resize; older in-flight reads are stale
@@ -233,7 +230,6 @@ type sessFile struct {
 	Pid         int    `json:"pid"`
 	Pane        string `json:"pane"`
 	Ts          string `json:"ts"`
-	Message     string `json:"message"`
 	FirstPrompt string `json:"first_prompt"`
 	LastPrompt  string `json:"last_prompt"`
 	LastTool    string `json:"last_tool"`
@@ -243,8 +239,6 @@ type sessFile struct {
 type hookState struct {
 	state   string // working | idle | input
 	lastAct time.Time
-	pane    string
-	message string
 	mission string
 	cwd     string
 }
@@ -328,8 +322,7 @@ func fetchHooksUsing(p2s map[string]string) tea.Msg {
 		t, _ := time.Parse(time.RFC3339, s.Ts)
 		// several claude sids can share a tmux session; most recent wins
 		if cur, dup := by[sess]; !dup || t.After(cur.lastAct) {
-			by[sess] = hookState{state: s.State, lastAct: t, pane: s.Pane,
-				message: s.Message, mission: promptOf(s), cwd: s.Cwd}
+			by[sess] = hookState{state: s.State, lastAct: t, mission: promptOf(s), cwd: s.Cwd}
 		}
 	}
 	return hookDataMsg{bySession: by, dirOK: true}
@@ -512,8 +505,19 @@ func (m *model) join() {
 	}
 }
 
+// rebuild re-derives everything view-facing after any lane lands: hook
+// overlay first (the cwd-fallback join reads row.cwd, which the overlay
+// supplies — this also joins hook-appended rows), then the slow-lane join,
+// then re-find the cursor row: applyHooks re-sorts, so the old cursor index
+// points at whatever card slid into that slot.
+func (m *model) rebuild() {
+	m.applyHooks()
+	m.join()
+	m.reanchorCursor()
+}
+
 // applyHooks overlays state-dir truth on the daemon-derived rows (hook lane
-// wins on state/activity/attention; daemon data — model, PR join — stays),
+// wins on state/activity/prompt; daemon data — model, PR join — stays),
 // then appends rows for hook-known sessions the daemon missed. With the
 // daemon down entirely, this is the whole view.
 func (m *model) applyHooks() {
@@ -524,7 +528,6 @@ func (m *model) applyHooks() {
 		if h, ok := m.hooksBySess[m.rows[i].session]; ok {
 			m.rows[i].state = h.state
 			m.rows[i].hooked = true
-			m.rows[i].message = h.message
 			m.rows[i].mission = h.mission
 			m.rows[i].cwd = h.cwd
 			if h.lastAct.After(m.rows[i].lastAct) {
@@ -539,7 +542,7 @@ func (m *model) applyHooks() {
 			continue
 		}
 		m.rows = append(m.rows, row{session: sess, state: h.state, hooked: true,
-			message: h.message, mission: h.mission, lastAct: h.lastAct, cwd: h.cwd,
+			mission: h.mission, lastAct: h.lastAct, cwd: h.cwd,
 			created: m.createdBySess[sess]})
 	}
 	sortRows(m.rows)
@@ -646,11 +649,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.rows[i].attached = m.attachedBySess[m.rows[i].session]
 				}
 			}
-			// hooks before join: the cwd-fallback join reads row.cwd, which
-			// the hook overlay supplies; this also joins hook-appended rows.
-			m.applyHooks()
-			m.join()
-			m.reanchorCursor()
+			m.rebuild()
 		} else {
 			// A slow answer is not the daemon going away. fastQuery is normally
 			// well under 1.5s but spikes past the 4s client timeout while tmux
@@ -659,27 +658,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// for as long as the spike lasted. Hold the last good snapshot
 			// through a transient failure; the push lane keeps its attach flags
 			// honest meanwhile. Only fall back to the hook lane alone once the
-			// daemon has really been unreachable for a while.
-			// A live push lane is itself proof the daemon is reachable, so it
-			// alone is enough to keep the rows even if the fast lane has never
-			// once succeeded.
-			if !m.subLive() && (m.fastAt.IsZero() || time.Since(m.fastAt) > daemonGone) {
+			// daemon has really been unreachable for a while (daemonDown — the
+			// same judgment that gates the offline banner).
+			if m.daemonDown() {
 				m.rows = nil
 			}
-			m.applyHooks()
-			m.join()
-			m.reanchorCursor()
+			m.rebuild()
 		}
 		return m, tickAfter(fastEvery, fastTickMsg{})
 	case hookDataMsg:
 		m.hooksBySess = msg.bySession
 		m.stateDirOK = msg.dirOK
-		m.applyHooks()
-		m.join()
-		// applyHooks re-sorts, so the cursor index now points at whatever row
-		// slid into that slot. Without this the selection silently walks to a
-		// different card every hook poll while the attached session stays put.
-		m.reanchorCursor()
+		m.rebuild()
 		return m, nil
 	case tmuxSubMsg:
 		// pushed snapshot: fresher than any poll, so it wins on attach and on
@@ -717,11 +707,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rows = append(m.rows, row{session: s.Name, state: "shell",
 				attached: attached[s.Name], created: created[s.Name]})
 		}
-		// hooks before join: the cwd-fallback join reads row.cwd, which the
-		// hook overlay supplies; this also joins hook-appended rows.
-		m.applyHooks()
-		m.join()
-		m.reanchorCursor()
+		m.rebuild()
 		return m, nil
 	case slowDataMsg:
 		if msg.err == nil {
@@ -729,7 +715,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.repoBySess = msg.repoBySess
 			m.wtByPath = msg.wtByPath
 			m.repoByPath = msg.repoByPath
-			m.slowAt = time.Now()
 			m.join()
 		}
 		return m, tickAfter(slowEvery, slowTickMsg{})
@@ -866,6 +851,15 @@ var switchClient = func(session string) {
 	exec.Command("tmux", "switch-client", "-t", session).Start()
 }
 
+// daemonDown is the one judgment "the daemon is actually unreachable" —
+// shared by the row wipe and the offline banner so they can never disagree.
+// A recent fast-lane success holds through a transient spike, and a live push
+// lane is itself proof of reachability.
+func (m *model) daemonDown() bool {
+	return m.err != nil && !m.subLive() &&
+		(m.fastAt.IsZero() || time.Since(m.fastAt) > daemonGone)
+}
+
 // subLive reports whether the push lane is delivering. One missed keepalive
 // window is enough slack that a momentary hiccup doesn't hand attach back to
 // the poll; a real drop degrades to polling within it.
@@ -908,18 +902,12 @@ func (m *model) reanchorCursor() {
 }
 
 var (
-	styInput   = lipgloss.NewStyle().Foreground(lipgloss.Color("13")).Bold(true)
-	styStalled = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
-	styWorking = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	styIdle    = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))
-	styShell   = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	stySelBar  = lipgloss.NewStyle().Foreground(lipgloss.Color(neonPurple)).Bold(true)
 	stySelName = lipgloss.NewStyle().Foreground(lipgloss.Color(neonAccent)).Bold(true)
 	stySelHead = lipgloss.NewStyle().Foreground(lipgloss.Color(neonAccent)).Bold(true)
 	stySelAge  = lipgloss.NewStyle().Foreground(lipgloss.Color(neonAccent)).Bold(true)
 	styErr     = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)
 	styDim     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	styMeta    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	styPrompt  = lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("8"))
 	// the selected card's body lifts out of the dim gray the rest of the list
 	// sits in — a pale tint of the accent, so name/border still lead. The
@@ -930,19 +918,20 @@ var (
 )
 
 // glyph returns the one-cell state marker; the state *word* lives in the
-// group header only, so it isn't repeated on every row.
-func glyph(state string) (string, lipgloss.Style) {
+// group header only, so it isn't repeated on every row. All glyphs render in
+// the shared dim style — state is encoded by group position, not color.
+func glyph(state string) string {
 	switch state {
 	case "input":
-		return "●", styInput
+		return "●"
 	case "stalled":
-		return "✖", styStalled
+		return "✖"
 	case "working":
-		return "◐", styWorking
+		return "◐"
 	case "idle":
-		return "○", styIdle
+		return "○"
 	default:
-		return "·", styShell
+		return "·"
 	}
 }
 
@@ -1035,17 +1024,23 @@ func branchLine(r row) string {
 	return s
 }
 
+// issueRef and prRef are the one place the "issue#N" / "pr#M (status)" label
+// formats live — the card's track line and the git box both render them.
+func issueRef(n int) string { return fmt.Sprintf("issue#%d", n) }
+
+func prRef(p prInfo) string { return fmt.Sprintf("pr#%d (%s)", p.Number, prStatus(p)) }
+
 // trackLine renders "issue#N | pr#M (status…)", showing only the halves that
-// exist — a "—" placeholder for the missing one is noise, not information. PR
-// status keeps the raw checks rollup string (never a verdict — false-green
-// incident).
+// exist — a "—" placeholder for the missing one is noise, not information.
+// The status word comes from prStatus, whose narrowest-green ladder is the
+// false-green guard (see its comment).
 func trackLine(r row) string {
 	var parts []string
 	if r.issueNum > 0 {
-		parts = append(parts, fmt.Sprintf("issue#%d", r.issueNum))
+		parts = append(parts, issueRef(r.issueNum))
 	}
 	if r.pr != nil {
-		parts = append(parts, fmt.Sprintf("pr#%d (%s)", r.pr.Number, prStatus(*r.pr)))
+		parts = append(parts, prRef(*r.pr))
 	}
 	return strings.Join(parts, " | ")
 }
@@ -1152,7 +1147,9 @@ func (m *model) View() string {
 
 	raw("", -1) // top padding — nothing butts against the pane's top edge
 
-	if m.err != nil {
+	// same judgment as the row wipe: a transient fast-lane error holds the
+	// rows silently, so it must not also claim the daemon is offline
+	if m.daemonDown() {
 		raw(styErr.Render(trunc("⚠ DAEMON OFFLINE — hook states live", w)), -1)
 		raw(styDim.Render(trunc(m.err.Error(), w)), -1)
 	}
@@ -1194,7 +1191,7 @@ func (m *model) View() string {
 		emit := func(s string, rowIdx int) { raw(pfx+s, rowIdx) }
 		emit("", i) // top padding
 
-		g, _ := glyph(r.state)
+		g := glyph(r.state)
 		if r.state == "working" {
 			g = workFrames[m.frame%len(workFrames)]
 		}
@@ -1244,14 +1241,10 @@ func (m *model) View() string {
 		if items := gitBoxItems(m.rows[curIdx]); len(items) > 0 {
 			raw("", -1)
 			flash := time.Now().Before(m.copiedUntil)
-			for j, l := range gitBoxRender(items, iw, flash) {
-				b.WriteString(l + "\n")
+			for _, bl := range gitBoxRender(items, iw, flash) {
+				b.WriteString(bl.text + "\n")
 				lineMap = append(lineMap, -1) // box clicks copy, never select
-				cp := ""
-				if j >= 1 && j <= len(items) {
-					cp = items[j-1].copy
-				}
-				copyMap = append(copyMap, cp)
+				copyMap = append(copyMap, bl.copy)
 			}
 		}
 	}

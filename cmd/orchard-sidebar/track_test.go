@@ -675,3 +675,24 @@ func TestJoinRunsAfterHooksInEveryHandler(t *testing.T) {
 	m.Update(tmuxSubMsg{sessions: []tmuxSession{{Name: "daemon"}}})
 	check(t, "tmuxSubMsg", m)
 }
+
+// The offline banner and the row hold must express the same judgment: while a
+// transient fast-lane error holds the rows, the header cannot simultaneously
+// claim the daemon is offline — that contradiction lands exactly at the
+// switch-moment spike the hold was built for.
+func TestOfflineBannerHonorsTheHoldWindow(t *testing.T) {
+	m := &model{width: 42}
+	m.Update(fastDataMsg{rows: []row{{session: "a", state: "idle"}}})
+	m.Update(fastDataMsg{err: errors.New("context deadline exceeded")})
+	if strings.Contains(m.View(), "DAEMON OFFLINE") {
+		t.Error("banner shown during a transient error while the rows are held")
+	}
+	m.fastAt = time.Now().Add(-daemonGone - time.Second)
+	if !strings.Contains(m.View(), "DAEMON OFFLINE") {
+		t.Error("daemon unreachable past the hold window but no banner")
+	}
+	m.subAt = time.Now() // a live push lane is itself proof the daemon is up
+	if strings.Contains(m.View(), "DAEMON OFFLINE") {
+		t.Error("banner shown while the push lane is live")
+	}
+}

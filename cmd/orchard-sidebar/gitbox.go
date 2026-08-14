@@ -26,6 +26,26 @@ type boxItem struct {
 	copy string
 }
 
+// boxLine is one *rendered* line, carrying its own click-to-copy payload
+// ("" = border/decoration). Returning the pairing keeps the caller from
+// reconstructing it with index arithmetic against this file's layout.
+type boxLine struct {
+	text string
+	copy string
+}
+
+// stripCtl removes control characters from remote-sourced text (issue titles
+// come from GitHub). An embedded newline would add a rendered line the mouse
+// maps don't know about; an ESC would inject terminal escapes.
+func stripCtl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 // ghURL builds the repo's GitHub web URL from an "owner/name" slug. Bare
 // slugs (a repo the daemon tracks by directory name only) have no canonical
 // web home, so they yield "".
@@ -51,9 +71,9 @@ func gitBoxItems(r row) []boxItem {
 	}
 	base := ghURL(r.repo)
 	if r.issueNum > 0 {
-		text := fmt.Sprintf("issue#%d", r.issueNum)
-		if r.issueTitle != "" {
-			text += " " + r.issueTitle
+		text := issueRef(r.issueNum)
+		if t := stripCtl(r.issueTitle); t != "" {
+			text += " " + t
 		}
 		cp := fmt.Sprintf("#%d", r.issueNum)
 		if base != "" {
@@ -62,12 +82,11 @@ func gitBoxItems(r row) []boxItem {
 		items = append(items, boxItem{text: text, copy: cp})
 	}
 	if r.pr != nil {
-		text := fmt.Sprintf("pr#%d (%s)", r.pr.Number, prStatus(*r.pr))
 		cp := fmt.Sprintf("#%d", r.pr.Number)
 		if base != "" {
 			cp = fmt.Sprintf("%s/pull/%d", base, r.pr.Number)
 		}
-		items = append(items, boxItem{text: text, copy: cp})
+		items = append(items, boxItem{text: prRef(*r.pr), copy: cp})
 	}
 	return items
 }
@@ -77,7 +96,7 @@ func gitBoxItems(r row) []boxItem {
 // clamped to width cells (the line()/lineToRow invariant — an overshooting
 // line soft-wraps and skews the mouse maps). flash swaps the title for a
 // short-lived "✓ copied" acknowledgment after a click.
-func gitBoxRender(items []boxItem, width int, flash bool) []string {
+func gitBoxRender(items []boxItem, width int, flash bool) []boxLine {
 	inner := width - 5 // " │ " + content + " │"
 	title := "─ Git "
 	titleSty := styDim
@@ -91,14 +110,14 @@ func gitBoxRender(items []boxItem, width int, flash bool) []string {
 	if tw > width-3 {
 		mid = strings.Repeat("─", max(0, width-3))
 	}
-	lines := []string{trunc(" "+styDim.Render("╭")+titleSty.Render(mid)+styDim.Render("╮"), width)}
+	lines := []boxLine{{text: trunc(" "+styDim.Render("╭")+titleSty.Render(mid)+styDim.Render("╮"), width)}}
 	for _, it := range items {
 		body := line(max(1, inner), styDim.Render(trunc(it.text, max(1, inner-2))), stySelHead.Render("⧉"))
 		pipe := styDim.Render("│")
-		lines = append(lines, trunc(" "+pipe+" "+body+" "+pipe, width))
+		lines = append(lines, boxLine{text: trunc(" "+pipe+" "+body+" "+pipe, width), copy: it.copy})
 	}
 	bot := " ╰" + strings.Repeat("─", max(0, width-3)) + "╯"
-	lines = append(lines, trunc(styDim.Render(bot), width))
+	lines = append(lines, boxLine{text: trunc(styDim.Render(bot), width)})
 	return lines
 }
 

@@ -95,6 +95,8 @@ func TestLiveInFlightPollCannotRevertAttach(t *testing.T) {
 		t.Errorf("REVERTED: the stale in-flight poll undid the pushed attach — this is the reported lag")
 	}
 	if pre != "true" {
-		t.Logf("note: push had not landed yet when the poll returned (%.2fs); race not exercised this run", dt)
+		// the guard only means something if the push actually beat the poll;
+		// passing here would be a green light the run never earned
+		t.Skipf("push had not landed yet when the poll returned (%.2fs); race not exercised this run", dt)
 	}
 }
