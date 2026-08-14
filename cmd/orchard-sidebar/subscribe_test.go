@@ -7,6 +7,7 @@ package main
 // data — plus the ack signal subscribeTmux uses to reset its backoff.
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,8 +23,17 @@ import (
 // Reading client frames is the script's job; returning closes the socket.
 type wsScript func(t *testing.T, conn *websocket.Conn)
 
-// fakeGqlws points wsURL at an httptest server for the test's duration.
-func fakeGqlws(t *testing.T, script wsScript) {
+// streamResult carries streamTmux's returns out of its goroutine so every
+// assertion happens on the test goroutine, never after the test ends.
+type streamResult struct {
+	acked bool
+	err   error
+}
+
+// fakeGqlws points wsURL at an httptest server and shrinks readWait for the
+// test's duration — it owns both globals, and restores them only after the
+// caller's runStream cleanup has joined the client goroutine (LIFO order).
+func fakeGqlws(t *testing.T, wait time.Duration, script wsScript) {
 	t.Helper()
 	up := websocket.Upgrader{Subprotocols: []string{"graphql-transport-ws"}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,26 +46,45 @@ func fakeGqlws(t *testing.T, script wsScript) {
 	}))
 	t.Cleanup(srv.Close)
 	oldURL, oldWait := wsURL, readWait
-	wsURL = "ws" + strings.TrimPrefix(srv.URL, "http")
+	wsURL, readWait = "ws"+strings.TrimPrefix(srv.URL, "http"), wait
 	t.Cleanup(func() { wsURL, readWait = oldURL, oldWait })
+}
+
+// runStream starts streamTmux in a goroutine and returns its result struct
+// plus a done channel closed on exit. A cleanup cancels the context and
+// waits for that exit BEFORE fakeGqlws restores the package globals — the
+// goroutine can never outlive the test or race the restore.
+func runStream(t *testing.T, send func(tea.Msg)) (*streamResult, <-chan struct{}) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &streamResult{}
+	done := make(chan struct{})
+	go func() {
+		r.acked, r.err = streamTmux(ctx, send)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done // receive on a closed channel never blocks
+	})
+	return r, done
 }
 
 // ackAndSubscribe consumes connection_init and the subscribe frame, replying
 // with connection_ack in between — the minimum handshake streamTmux expects.
-func ackAndSubscribe(t *testing.T, conn *websocket.Conn) {
+func ackAndSubscribe(t *testing.T, conn *websocket.Conn) bool {
 	t.Helper()
 	var env map[string]any
 	if err := conn.ReadJSON(&env); err != nil || env["type"] != "connection_init" {
-		t.Errorf("want connection_init, got %v (err %v)", env, err)
-		return
+		return false
 	}
 	if err := conn.WriteJSON(map[string]any{"type": "connection_ack"}); err != nil {
-		t.Errorf("write ack: %v", err)
-		return
+		return false
 	}
 	if err := conn.ReadJSON(&env); err != nil || env["type"] != "subscribe" {
-		t.Errorf("want subscribe, got %v (err %v)", env, err)
+		return false
 	}
+	return true
 }
 
 // A server that acks and then goes silent — no pings, no data, no close. The
@@ -63,24 +92,21 @@ func ackAndSubscribe(t *testing.T, conn *websocket.Conn) {
 // ReadJSON blocks forever and the push lane is dead with no error and no
 // redial.
 func TestStreamTmuxTimesOutOnSilentSocket(t *testing.T) {
-	fakeGqlws(t, func(t *testing.T, conn *websocket.Conn) {
-		ackAndSubscribe(t, conn)
+	fakeGqlws(t, 200*time.Millisecond, func(t *testing.T, conn *websocket.Conn) {
+		if !ackAndSubscribe(t, conn) {
+			return
+		}
 		time.Sleep(2 * time.Second) // outlive the shrunk readWait, sending nothing
 	})
-	readWait = 200 * time.Millisecond
 
-	done := make(chan error, 1)
-	go func() {
-		acked, err := streamTmux(t.Context(), func(tea.Msg) {})
-		if !acked {
-			t.Error("handshake completed but acked=false — backoff would never reset")
-		}
-		done <- err
-	}()
+	r, done := runStream(t, func(tea.Msg) {})
 	select {
-	case err := <-done:
-		if err == nil {
+	case <-done:
+		if r.err == nil {
 			t.Fatal("silent socket: want a read-deadline error, got nil")
+		}
+		if !r.acked {
+			t.Error("handshake completed but acked=false — backoff would never reset")
 		}
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("streamTmux still blocked on a silent socket — no read deadline")
@@ -91,8 +117,10 @@ func TestStreamTmuxTimesOutOnSilentSocket(t *testing.T) {
 // pings: each arriving frame must re-arm the deadline, and a data frame
 // arriving later must still deliver.
 func TestStreamTmuxSurvivesPingsThenDelivers(t *testing.T) {
-	fakeGqlws(t, func(t *testing.T, conn *websocket.Conn) {
-		ackAndSubscribe(t, conn)
+	fakeGqlws(t, 300*time.Millisecond, func(t *testing.T, conn *websocket.Conn) {
+		if !ackAndSubscribe(t, conn) {
+			return
+		}
 		go func() { // swallow the client's pong replies
 			for {
 				if _, _, err := conn.ReadMessage(); err != nil {
@@ -112,25 +140,20 @@ func TestStreamTmuxSurvivesPingsThenDelivers(t *testing.T) {
 		_ = conn.WriteJSON(map[string]any{"type": "next", "id": "tmux", "payload": json.RawMessage(payload)})
 		time.Sleep(200 * time.Millisecond)
 	})
-	readWait = 300 * time.Millisecond
 
 	got := make(chan tmuxSubMsg, 4)
-	done := make(chan error, 1)
-	go func() {
-		_, err := streamTmux(t.Context(), func(m tea.Msg) {
-			if sm, ok := m.(tmuxSubMsg); ok {
-				got <- sm
-			}
-		})
-		done <- err
-	}()
+	r, done := runStream(t, func(m tea.Msg) {
+		if sm, ok := m.(tmuxSubMsg); ok {
+			got <- sm
+		}
+	})
 	select {
 	case m := <-got:
 		if len(m.sessions) != 1 || m.sessions[0].Name != "pinged" {
 			t.Fatalf("delivered snapshot = %+v, want the pinged session", m.sessions)
 		}
-	case err := <-done:
-		t.Fatalf("connection died during pings (err %v) — frames are not re-arming the deadline", err)
+	case <-done:
+		t.Fatalf("connection died during pings (err %v) — frames are not re-arming the deadline", r.err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("no snapshot delivered")
 	}
@@ -142,7 +165,7 @@ func TestStreamTmuxDialFailureIsNotAcked(t *testing.T) {
 	old := wsURL
 	wsURL = "ws://127.0.0.1:1/graphql" // nothing listens on port 1
 	t.Cleanup(func() { wsURL = old })
-	acked, err := streamTmux(t.Context(), func(tea.Msg) {})
+	acked, err := streamTmux(context.Background(), func(tea.Msg) {})
 	if acked || err == nil {
 		t.Fatalf("dial failure: acked=%v err=%v, want false + non-nil", acked, err)
 	}

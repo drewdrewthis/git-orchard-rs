@@ -38,10 +38,17 @@ type boxLine struct {
 
 // stripCtl removes control characters from remote-sourced text (issue titles
 // come from GitHub). An embedded newline would add a rendered line the mouse
-// maps don't know about; an ESC would inject terminal escapes.
+// maps don't know about; an ESC would inject terminal escapes; a bidi
+// override (Trojan-Source) would visually reorder the row on bidi-aware
+// terminals; Unicode line/paragraph separators are dropped for terminals
+// that treat them as breaks.
 func stripCtl(s string) string {
 	return strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		switch {
+		case r < 0x20 || r == 0x7f,
+			r >= 0x202a && r <= 0x202e,              // bidi embedding/override
+			r >= 0x2066 && r <= 0x2069,              // bidi isolates
+			r == 0x85 || r == 0x2028 || r == 0x2029: // NEL, LS, PS
 			return -1
 		}
 		return r

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -108,16 +107,16 @@ func TestGitBoxRenderWidth(t *testing.T) {
 // (newlines, ANSI escapes) would skew the one-line-per-row mouse maps or
 // inject terminal escapes, so they are stripped before rendering.
 func TestGitBoxStripsControlCharsFromRemoteTitles(t *testing.T) {
-	r := row{repo: "o/r", issueNum: 9, issueTitle: "evil\x1b[31m\ntitle\x07"}
+	r := row{repo: "o/r", issueNum: 9, issueTitle: "evil\x1b[31m\u202e\u2066 \ntitle\x07"}
 	items := gitBoxItems(r)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
-	if strings.ContainsAny(items[0].text, "\x1b\n\x07") {
-		t.Errorf("control chars survived into the rendered text: %q", items[0].text)
-	}
-	if !strings.Contains(items[0].text, "eviltitle") && !strings.Contains(items[0].text, "evil") {
-		t.Errorf("printable content lost: %q", items[0].text)
+	// exact: the control bytes, the bidi override/isolate, and the newline
+	// go; every ordinary printable rune (including the now-inert "[31m"
+	// tail of the defanged escape) survives
+	if want := "issue#9 evil[31m title"; items[0].text != want {
+		t.Errorf("sanitized text = %q, want %q", items[0].text, want)
 	}
 }
 
