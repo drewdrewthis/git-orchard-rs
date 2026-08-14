@@ -223,11 +223,13 @@ func TestReanchorCursorFollowsSession(t *testing.T) {
 		t.Errorf("fallback picked %d/%q, want 1/\"b\"", fresh.cursor, fresh.cursorSess)
 	}
 
-	// a vanished session must not leave the cursor pointing past the end
+	// a vanished (or not-yet-served) session parks the bar rather than
+	// leaving an out-of-range index or walking to a card the user never
+	// chose; the client lane re-reads the real session within ~150ms
 	gone := &model{rows: []row{{session: "a"}}, cursor: 5, cursorSess: "zz"}
 	gone.reanchorCursor()
-	if gone.cursor != 0 {
-		t.Errorf("stale cursor = %d, want 0", gone.cursor)
+	if gone.cursor != -1 {
+		t.Errorf("stale cursor = %d, want parked -1", gone.cursor)
 	}
 }
 
@@ -694,5 +696,28 @@ func TestOfflineBannerHonorsTheHoldWindow(t *testing.T) {
 	m.subAt = time.Now() // a live push lane is itself proof the daemon is up
 	if strings.Contains(m.View(), "DAEMON OFFLINE") {
 		t.Error("banner shown while the push lane is live")
+	}
+}
+
+// A brand-new session can be cursorSess before the daemon serves its row
+// (clientSessMsg parks the bar at -1). The next data message must keep it
+// parked — falling back to "any attached row" would clobber cursorSess with
+// a session the user never chose.
+func TestRebuildKeepsBarParkedWhileRowUnserved(t *testing.T) {
+	m := &model{cursorSess: "brand-new", cursor: -1}
+	m.Update(fastDataMsg{rows: []row{{session: "old", state: "idle", attached: true}}})
+	if m.cursorSess != "brand-new" {
+		t.Fatalf("cursorSess walked to %q while its row was unserved", m.cursorSess)
+	}
+	if m.cursor != -1 {
+		t.Fatalf("cursor = %d, want parked at -1", m.cursor)
+	}
+	// once the daemon serves the row, the bar lands on it
+	m.Update(fastDataMsg{rows: []row{
+		{session: "brand-new", state: "shell"},
+		{session: "old", state: "idle", attached: true},
+	}})
+	if m.cursor < 0 || m.rows[m.cursor].session != "brand-new" {
+		t.Fatalf("cursor = %d (%v), want the brand-new row", m.cursor, m.cursorSess)
 	}
 }

@@ -887,6 +887,11 @@ func (m *model) reanchorCursor() {
 				return
 			}
 		}
+		// the session is known but its row hasn't been served yet (brand-new
+		// session): keep the bar parked rather than walking to a card the
+		// user never chose — that would also clobber cursorSess.
+		m.cursor = -1
+		return
 	}
 	// first paint, before the local lane has answered: prefer any session the
 	// daemon believes is attached, else the top row.

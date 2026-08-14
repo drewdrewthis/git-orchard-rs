@@ -11,9 +11,11 @@ package main
 // the ratified direct tmux attach exception.
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -127,7 +129,11 @@ type copiedMsg struct{ err error }
 
 func copyCmd(text string) tea.Cmd {
 	return func() tea.Msg {
-		c := exec.Command("pbcopy")
+		// bounded: a stalled pbcopy would otherwise pin this goroutine (and
+		// every later click's) forever
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		c := exec.CommandContext(ctx, "pbcopy")
 		c.Stdin = strings.NewReader(text)
 		return copiedMsg{err: c.Run()}
 	}
