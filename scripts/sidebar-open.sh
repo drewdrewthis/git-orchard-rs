@@ -8,6 +8,12 @@ set -u
 target="${1:-}"
 width="$(tmux show-option -gqv @orchard_sidebar_width)"
 width="${width:-42}"
+# floor: below this the sidebar drops to name-only compact mode (minWidth in
+# cmd/orchard-sidebar/main.go), so never open one narrower than it.
+case "$width" in
+  ''|*[!0-9]*) width=42 ;;
+  *) [ "$width" -lt 34 ] && width=34 ;;
+esac
 
 bin="$(command -v orchard-sidebar || true)"
 if [ -z "$bin" ]; then
@@ -19,7 +25,16 @@ fi
 win="${target:+$target:}"
 existing="$(tmux list-panes ${target:+-t "$win"} -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
   | awk '/orchard-sidebar/ {print $1; exit}')"
-[ -n "$existing" ] && exit 0
+if [ -n "$existing" ]; then
+  # already open: heal a pane that got squeezed under the floor (divider drag,
+  # a later split, or a pane opened before the floor existed)
+  cur="$(tmux display-message -p -t "$existing" '#{pane_width}' 2>/dev/null || echo "$width")"
+  case "$cur" in
+    ''|*[!0-9]*) : ;;
+    *) [ "$cur" -lt "$width" ] && tmux resize-pane -t "$existing" -x "$width" ;;
+  esac
+  exit 0
+fi
 
 if [ -n "$target" ]; then
   tmux split-window -hb -d -l "$width" -t "$win" "$bin"
