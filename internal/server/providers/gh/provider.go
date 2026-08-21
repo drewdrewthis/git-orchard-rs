@@ -205,6 +205,34 @@ func (p *Provider) httpClient(ctx context.Context) (*Client, error) {
 	return p.client, nil
 }
 
+// enrichmentStillValid reports whether GraphQL-derived enrichment computed
+// against prev is still valid for the freshly-fetched next.
+//
+// A REST refresh that returns a byte-identical PR tells us nothing changed,
+// so enrichment computed a moment ago still describes this revision. Any
+// movement in UpdatedAt (a new commit, a comment, a label edit) or in the
+// lifecycle State means the enrichment may describe an older revision, and
+// the conservative answer is to refetch.
+//
+// This deliberately keys off REST-visible fields only. Keying off the
+// GraphQL-computed fields themselves (mergeable, mergeStateStatus) would
+// reintroduce the #367 flap, where a transient recompute reads as a change.
+func enrichmentStillValid(prev, next PullRequest) bool {
+	return prev.UpdatedAt == next.UpdatedAt && prev.State == next.State
+}
+
+// carryEnrichment copies the GraphQL-derived enrichment fields from prev onto
+// next. REST payloads never carry these, so a refresh that overwrote the
+// cached entry wholesale would zero them while enrichAt still claimed the
+// entry was freshly enriched.
+func carryEnrichment(next *PullRequest, prev PullRequest) {
+	next.Mergeable = prev.Mergeable
+	next.MergeStateStatus = prev.MergeStateStatus
+	next.ReviewDecision = prev.ReviewDecision
+	next.StatusCheckRollup = prev.StatusCheckRollup
+	next.Labels = prev.Labels
+}
+
 // ListPullRequests fetches and caches the PR list for a repo. The
 // cache key is (owner, name, state); within CacheTTL, repeated calls
 // share one round-trip.
@@ -235,13 +263,19 @@ func (p *Provider) ListPullRequests(ctx context.Context, owner, name string, sta
 	// Also seed the per-key cache so a follow-up GetPullRequest is
 	// cheap. The REST list endpoint does not return enrichment fields
 	// (mergeable, mergeStateStatus, reviewDecision, statusCheckRollup,
-	// labels), so we drop any stale enrichment timestamp here — the
-	// next EnrichPullRequest call must refetch via GraphQL.
+	// labels), so overwriting the entry wholesale would zero them. When
+	// the PR is unchanged we carry the existing enrichment forward and
+	// keep its timestamp; otherwise we drop the timestamp so the next
+	// EnrichPullRequest refetches via GraphQL.
 	p.prMu.Lock()
 	for _, pr := range prs {
 		k := PullRequestKey{Owner: pr.RepoOwner, Name: pr.RepoName, Number: pr.Number}
+		if prev, ok := p.prs[k]; ok && enrichmentStillValid(prev.value, pr) {
+			carryEnrichment(&pr, prev.value)
+		} else {
+			delete(p.enrichAt, k)
+		}
 		p.prs[k] = prEntry{value: pr, at: now}
-		delete(p.enrichAt, k)
 	}
 	p.prMu.Unlock()
 
@@ -268,10 +302,15 @@ func (p *Provider) GetPullRequest(ctx context.Context, key PullRequestKey) (Pull
 		return PullRequest{}, err
 	}
 	p.prMu.Lock()
+	// REST GetPull does not populate enrichment fields. Carry them forward
+	// when the PR is unchanged; otherwise drop the enrichment timestamp so
+	// the next EnrichPullRequest refetches.
+	if prev, ok := p.prs[key]; ok && enrichmentStillValid(prev.value, pr) {
+		carryEnrichment(&pr, prev.value)
+	} else {
+		delete(p.enrichAt, key)
+	}
 	p.prs[key] = prEntry{value: pr, at: p.clock()}
-	// REST GetPull does not populate enrichment fields; drop any stale
-	// enrichment timestamp so the next EnrichPullRequest refetches.
-	delete(p.enrichAt, key)
 	p.prMu.Unlock()
 	return pr, nil
 }
