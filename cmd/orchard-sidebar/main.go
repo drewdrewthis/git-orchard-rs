@@ -39,7 +39,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-const graphqlURL = "http://127.0.0.1:7777/graphql"
+var graphqlURL = "http://127.0.0.1:7777/graphql"
+
 const fastEvery = 2 * time.Second
 const slowEvery = 30 * time.Second
 
@@ -343,6 +344,14 @@ func dirExists(p string) bool {
 	return err == nil && fi.IsDir()
 }
 
+// hasData reports whether a GraphQL envelope carried a usable data payload.
+// Absent and explicit null both mean nothing resolved -- the same distinction
+// that #693/#695 was filed for in this repo.
+func hasData(d json.RawMessage) bool {
+	t := bytes.TrimSpace(d)
+	return len(t) > 0 && !bytes.Equal(t, []byte("null"))
+}
+
 func post(query string, timeout time.Duration, out any) error {
 	body, _ := json.Marshal(map[string]string{"query": query})
 	client := &http.Client{Timeout: timeout}
@@ -359,9 +368,14 @@ func post(query string, timeout time.Duration, out any) error {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return fmt.Errorf("daemon: HTTP %d", resp.StatusCode)
 	}
-	// GraphQL can return 200 with an errors array and a zero-value data field;
-	// treating that as valid would blank the sidebar.
+	// GraphQL can return 200 with an errors array and a zero-value data
+	// field; treating that as valid would blank the sidebar. But it can
+	// equally return errors alongside a fully populated payload -- the daemon
+	// does exactly that when GitHub rate-limits the pr/issue leaves while
+	// every other leaf resolves. Only the first case is fatal: discarding a
+	// populated payload blanks every github field at once.
 	var envelope struct {
+		Data   json.RawMessage `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
 		} `json:"errors"`
@@ -370,7 +384,7 @@ func post(query string, timeout time.Duration, out any) error {
 	if err != nil {
 		return err
 	}
-	if json.Unmarshal(raw, &envelope) == nil && len(envelope.Errors) > 0 {
+	if json.Unmarshal(raw, &envelope) == nil && len(envelope.Errors) > 0 && !hasData(envelope.Data) {
 		return fmt.Errorf("graphql: %s", envelope.Errors[0].Message)
 	}
 	return json.Unmarshal(raw, out)
