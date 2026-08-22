@@ -150,7 +150,7 @@ func decodeAndInvalidate(p *Provider, event string, body []byte, at time.Time) (
 		if owner == "" || name == "" || num == 0 {
 			return "", "", errors.New("missing repository or pull_request fields")
 		}
-		nodeID := fmt.Sprintf("PullRequest:%s/%s#%d", owner, name, num)
+		nodeID := prNodeID(PullRequestKey{Owner: owner, Name: name, Number: num})
 		p.dropPRCache(PullRequestKey{Owner: owner, Name: name, Number: num})
 		p.invalidate(nodeID, "webhook:pull_request", at)
 		return nodeID, "webhook:pull_request", nil
