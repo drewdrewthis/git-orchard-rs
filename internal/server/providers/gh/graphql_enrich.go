@@ -261,14 +261,29 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	base.value.StatusCheckRollup = ciStatus
 	base.value.Labels = filterPhaseLabels(labels)
 
+	wrote := false
 	if shouldCacheEnrichment(mergeable, base.value.State) {
 		p.prs[key] = base
 		p.enrichAt[key] = p.clock()
+		wrote = true
 	}
 	enriched := base.value
 	p.prMu.Unlock()
 
+	// R16/M7: broadcast only after the cache write is visible to readers,
+	// so a subscriber re-fetching on this event sees the fresh value.
+	if wrote {
+		p.invalidate(prNodeID(key), "enrich", p.clock())
+	}
+
 	return enriched, nil
+}
+
+// prNodeID formats the invalidation key subscription resolvers match on.
+// The webhook handler must produce byte-identical keys, so both go through
+// this helper.
+func prNodeID(k PullRequestKey) string {
+	return fmt.Sprintf("PullRequest:%s/%s#%d", k.Owner, k.Name, k.Number)
 }
 
 // shouldCacheEnrichment reports whether an enrichment result may be written
@@ -446,9 +461,9 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 	// We flatten all repos into one query document so a single HTTP call covers
 	// everything. GitHub supports multiple top-level aliases in one query.
 	type prPosition struct {
-		key      PullRequestKey
-		repoIdx  int
-		prIdx    int
+		key     PullRequestKey
+		repoIdx int
+		prIdx   int
 	}
 	var positions []prPosition
 
@@ -590,12 +605,18 @@ func (p *Provider) applyEnrichment(key PullRequestKey, wire enrichPRAlias, now t
 	base.value.StatusCheckRollup = ciStatus
 	base.value.Labels = filterPhaseLabels(labels)
 
+	var emitted []PullRequestKey
 	if shouldCacheEnrichment(mergeable, base.value.State) {
 		p.prs[key] = base
 		p.enrichAt[key] = now
+		emitted = append(emitted, key)
 	}
 	enriched := base.value
 	p.prMu.Unlock()
+
+	for _, k := range emitted {
+		p.invalidate(prNodeID(k), "enrich", now)
+	}
 
 	return enriched
 }
