@@ -6,7 +6,8 @@
 set -u
 
 target="${1:-}"
-width="$(tmux show-option -gqv @orchard_sidebar_width)"
+seeded="$(tmux show-option -gqv @orchard_sidebar_width)"
+width="${seeded:-42}"
 width="${width:-42}"
 # floor: below this the sidebar drops to name-only compact mode (minWidth in
 # cmd/orchard-sidebar/main.go), so never open one narrower than it.
@@ -20,6 +21,10 @@ if [ -z "$bin" ]; then
   repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   [ -x "$repo_dir/bin/orchard-sidebar" ] && bin="$repo_dir/bin/orchard-sidebar"
 fi
+# Seed the shared option when nothing had it: the sidebar publishes only after
+# reading a non-zero value, so an unset option deadlocks its width enforcement (#742).
+[ -z "$seeded" ] && tmux set-option -g @orchard_sidebar_width "$width"
+
 [ -z "$bin" ] && exit 0
 
 win="${target:+$target:}"

@@ -618,6 +618,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.width != m.width {
 				resizePane(msg.width)
 			}
+		} else if msg.width == 0 && m.desiredWidth == 0 && m.width >= minWidth {
+			// Bootstrap (#742): the shared option is written only by us, so an
+			// empty read on a machine where nothing seeded it keeps desiredWidth
+			// zero forever and the WindowSizeMsg enforcement never arms. This
+			// pane got its width from the split that created it, so it IS the
+			// intended value: adopt it and publish once for every other session.
+			m.desiredWidth = m.width
+			setWidthOption(m.width)
 		}
 		// tmux is the authority here — no grace window, no daemon reconciliation.
 		// If the name is empty the read failed; keep the last known good value
