@@ -10,7 +10,7 @@
 // (enrichmentTTL) — shorter than CacheTTL because mergeable and CI
 // status change faster than basic PR metadata.
 //
-// UNKNOWN mergeable is never written to the cache so the next call
+// UNKNOWN mergeable on an open PR is never written to the cache so the next call
 // always re-fetches. This avoids the #367 flap pattern where a
 // transient UNKNOWN hardens into a stale cached value.
 package gh
@@ -261,10 +261,7 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	base.value.StatusCheckRollup = ciStatus
 	base.value.Labels = filterPhaseLabels(labels)
 
-	// Cache the enriched result only when mergeable is definitive.
-	// UNKNOWN means GitHub is still computing — don't cache it so the
-	// next call re-fetches (#367 contract).
-	if mergeable != MergeableStateUnknown {
+	if shouldCacheEnrichment(mergeable, base.value.State) {
 		p.prs[key] = base
 		p.enrichAt[key] = p.clock()
 	}
@@ -272,6 +269,30 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	p.prMu.Unlock()
 
 	return enriched, nil
+}
+
+// shouldCacheEnrichment reports whether an enrichment result may be written
+// to the per-key cache.
+//
+// UNKNOWN is not a verdict, it is an uncomputed value. GitHub computes
+// mergeable lazily, so while a pull request is still OPEN the next call must
+// re-fetch rather than harden a placeholder into a cached answer (#367
+// contract).
+//
+// Once a PR is MERGED or CLOSED, GitHub stops computing mergeable altogether,
+// so UNKNOWN there is terminal rather than transient. Treating it as a cache
+// miss kept those keys in every enrichment batch forever; because the batch
+// query flattens all repos and PRs into a single GraphQL document, one such
+// key forced a real GitHub round-trip for the entire view on every cycle.
+//
+// State is populated from the REST list payload, so this costs no extra API
+// call. When a key has not been seen by a list refresh yet, State is empty
+// and the conservative OPEN-PR rule applies.
+func shouldCacheEnrichment(mergeable MergeableState, state PullRequestState) bool {
+	if mergeable != MergeableStateUnknown {
+		return true
+	}
+	return state == PullRequestStateMerged || state == PullRequestStateClosed
 }
 
 // mapMergeableState maps the raw GitHub string to the typed enum.
@@ -569,7 +590,7 @@ func (p *Provider) applyEnrichment(key PullRequestKey, wire enrichPRAlias, now t
 	base.value.StatusCheckRollup = ciStatus
 	base.value.Labels = filterPhaseLabels(labels)
 
-	if mergeable != MergeableStateUnknown {
+	if shouldCacheEnrichment(mergeable, base.value.State) {
 		p.prs[key] = base
 		p.enrichAt[key] = now
 	}

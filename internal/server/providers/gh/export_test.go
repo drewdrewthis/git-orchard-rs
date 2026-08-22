@@ -42,3 +42,15 @@ func (p *Provider) ExportEnrichTimestamp(key PullRequestKey) time.Time {
 func ExportParseLinkNext(header string) string {
 	return parseLinkNext(header)
 }
+
+// ExportSeedPRState seeds the per-key PR cache with a known lifecycle state,
+// exactly as a ListPullRequests REST refresh would. External tests use this to
+// exercise the terminal-vs-transient UNKNOWN distinction without standing up a
+// full REST list fixture.
+func (p *Provider) ExportSeedPRState(key PullRequestKey, state PullRequestState) {
+	p.prMu.Lock()
+	defer p.prMu.Unlock()
+	e := p.prs[key]
+	e.value.State = state
+	p.prs[key] = e
+}
