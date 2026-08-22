@@ -202,27 +202,39 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 		return serveStale(fmt.Errorf("EnrichPullRequest decode: %w", err))
 	}
 	if len(envelope.Errors) > 0 {
-		msgs := make([]string, 0, len(envelope.Errors))
-		for _, e := range envelope.Errors {
-			msgs = append(msgs, e.Message)
+		// GraphQL partial success: errors[] alongside populated data means
+		// some leaves failed while others resolved. The populated fields are
+		// real -- discarding them blanks every PR over one failed leaf.
+		// Only a response with no usable data is a total failure.
+		var dataProbe struct {
+			Data json.RawMessage `json:"data"`
 		}
-		joined := strings.Join(msgs, "; ")
-		// Detect rate-limit and set a cooldown so we stop hammering. GitHub
-		// resets the limit hourly; default to a 5-minute cooldown which is
-		// short enough to recover quickly if the user invoked a one-off
-		// burst, long enough to avoid waste if we're truly throttled.
-		if strings.Contains(strings.ToLower(joined), "rate limit") {
-			p.prMu.Lock()
-			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-			p.prMu.Unlock()
+		hasData := json.Unmarshal(raw, &dataProbe) == nil && hasRawData(dataProbe.Data)
+		if !hasData {
+			msgs := make([]string, 0, len(envelope.Errors))
+			for _, e := range envelope.Errors {
+				msgs = append(msgs, e.Message)
+			}
+			joined := strings.Join(msgs, "; ")
+			// Detect rate-limit and set a cooldown so we stop hammering. GitHub
+			// resets the limit hourly; default to a 5-minute cooldown which is
+			// short enough to recover quickly if the user invoked a one-off
+			// burst, long enough to avoid waste if we're truly throttled.
+			if strings.Contains(strings.ToLower(joined), "rate limit") {
+				p.prMu.Lock()
+				p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
+				p.prMu.Unlock()
+			}
+			return serveStale(fmt.Errorf("EnrichPullRequest graphql errors: %s", joined))
 		}
-		return serveStale(fmt.Errorf("EnrichPullRequest graphql errors: %s", joined))
 	}
 
-	// Successful fetch — clear the cooldown.
-	p.prMu.Lock()
-	p.rateLimitedUntil = time.Time{}
-	p.prMu.Unlock()
+	if len(envelope.Errors) == 0 {
+		// Successful fetch — clear the cooldown.
+		p.prMu.Lock()
+		p.rateLimitedUntil = time.Time{}
+		p.prMu.Unlock()
+	}
 
 	wire := envelope.Data.Repository.PullRequest
 
@@ -277,6 +289,13 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	}
 
 	return enriched, nil
+}
+
+// hasRawData reports whether a GraphQL envelope carried a usable data
+// payload: absent and explicit null both mean nothing resolved.
+func hasRawData(d json.RawMessage) bool {
+	s := strings.TrimSpace(string(d))
+	return s != "" && s != "null"
 }
 
 // prNodeID formats the invalidation key subscription resolvers match on.
@@ -521,16 +540,22 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
 			p.prMu.Unlock()
 		}
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
+		// Partial success: aliases that resolved are real; only a response
+		// with no usable data discards them all.
+		if len(envelope.Data) == 0 {
+			for _, k := range toFetch {
+				result[k] = serveStaleForKey(k)
+			}
+			return result, fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined)
 		}
-		return result, fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined)
 	}
 
-	// Successful response — clear the cooldown.
-	p.prMu.Lock()
-	p.rateLimitedUntil = time.Time{}
-	p.prMu.Unlock()
+	if len(envelope.Errors) == 0 {
+		// Successful response — clear the cooldown.
+		p.prMu.Lock()
+		p.rateLimitedUntil = time.Time{}
+		p.prMu.Unlock()
+	}
 
 	// For each aliased repo block, decode each aliased PR block.
 	// Then each repo block is itself a map[string]json.RawMessage.

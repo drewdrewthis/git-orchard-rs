@@ -28,8 +28,8 @@ const issueDepsTTL = 60 * time.Second
 // repositories, but sending the headers is the documented contract and
 // avoids silent-empty regressions when GitHub tightens the gating.
 var issueDepsPreviewHeaders = map[string]string{
-	"GraphQL-Features":         "issue_types,sub_issues",
-	"X-Github-Next-Global-ID":  "1",
+	"GraphQL-Features":        "issue_types,sub_issues",
+	"X-Github-Next-Global-ID": "1",
 }
 
 // issueDepsQuery requests the four dependency edges in one round-trip.
@@ -142,11 +142,19 @@ func (p *Provider) EnrichIssueDependencies(ctx context.Context, key IssueKey) (I
 		return IssueDependencies{}, fmt.Errorf("EnrichIssueDependencies decode: %w", err)
 	}
 	if len(envelope.Errors) > 0 {
-		msgs := make([]string, 0, len(envelope.Errors))
-		for _, e := range envelope.Errors {
-			msgs = append(msgs, e.Message)
+		// Partial success: keep the edges that resolved; error only when
+		// no usable data came back.
+		var dataProbe struct {
+			Data json.RawMessage `json:"data"`
 		}
-		return IssueDependencies{}, fmt.Errorf("EnrichIssueDependencies graphql errors: %s", strings.Join(msgs, "; "))
+		hasData := json.Unmarshal(raw, &dataProbe) == nil && hasRawData(dataProbe.Data)
+		if !hasData {
+			msgs := make([]string, 0, len(envelope.Errors))
+			for _, e := range envelope.Errors {
+				msgs = append(msgs, e.Message)
+			}
+			return IssueDependencies{}, fmt.Errorf("EnrichIssueDependencies graphql errors: %s", strings.Join(msgs, "; "))
+		}
 	}
 
 	wire := envelope.Data.Repository.Issue
