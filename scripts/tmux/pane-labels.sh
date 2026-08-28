@@ -1,25 +1,64 @@
 #!/usr/bin/env bash
 # pane-labels.sh — derive a rich label per tmux PANE from orchard daemon
-# state and write it to @orchard_pane_label so choose-tree (expanded)
-# renders it.
+# state plus Claude hook state, and write it to @orchard_pane_label so
+# choose-tree (expanded) renders it.
 #
-# Wired into `prefix + s` via ~/.tmux.conf:
-#   bind-key s run-shell '~/.local/bin/orchard-tmux-labels' \; choose-tree ...
+# Not invoked directly by users: `orchard.tmux` (the tmux-plugin entry
+# script in this directory) binds it to `prefix + s` and passes the
+# resolved daemon URL. See scripts/tmux/README.md.
 #
-# Install: copy to ~/.local/bin/orchard-tmux-labels
-# Source of truth: scripts/tmux/pane-labels.sh in orchardist (L1).
+# Usage:
+#   pane-labels.sh [--daemon-url URL] [--heartbeat-dir DIR]
+#                  [--panes-file FILE] [--print]
+#
+#   --daemon-url    Full GraphQL endpoint. Defaults to $ORCHARD_DAEMON_URL
+#                   (a base URL, with /graphql appended) or
+#                   http://127.0.0.1:7777/graphql.
+#   --heartbeat-dir Directory holding orchard-claude-<session>.json hook
+#                   state files. Defaults to $ORCHARD_HEARTBEAT_DIR, then
+#                   $TMPDIR, then /tmp — mirroring claudeinstance.ResolveDir()
+#                   in internal/server/providers/claudeinstance/types.go.
+#   --panes-file    Read the pane table from FILE instead of `tmux list-panes`.
+#   --print         Emit "<pane_id>\t<label>" on stdout instead of setting
+#                   the tmux option. Implies no tmux writes.
 #
 # Daemon contract: queries `repos { slug worktrees { ... } }` per the v0.8
 # schema (ADR-015 rename project→repo). Falls back to empty results when
 # the daemon is unreachable so the picker still works.
+#
+# Claude enrichment: per ADR-007, Claude state is read from hook state
+# files, not from tmux. The hook (`orchard-state.sh`) writes exactly
+# {state, session_id, tmux_session, cwd, event, timestamp}. Only fields
+# actually present in a file are rendered — nothing is placeholdered.
 set -euo pipefail
 
 DAEMON="${ORCHARD_DAEMON_URL:-http://127.0.0.1:7777}"
+DAEMON_URL=""
+HEARTBEAT_DIR=""
+PANES_FILE=""
+PRINT_MODE=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --daemon-url)    DAEMON_URL="$2"; shift 2 ;;
+    --heartbeat-dir) HEARTBEAT_DIR="$2"; shift 2 ;;
+    --panes-file)    PANES_FILE="$2"; shift 2 ;;
+    --print)         PRINT_MODE=1; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+# --daemon-url is the full endpoint; ORCHARD_DAEMON_URL stays a base URL
+# for backwards compatibility with existing callers.
+[[ -z "$DAEMON_URL" ]] && DAEMON_URL="${DAEMON}/graphql"
 
 run_once() {
   local qfile panes
   qfile=$(mktemp)
   panes=$(mktemp)
+  # Expansion at trap-definition time is deliberate: the paths are fixed for
+  # this call and must survive any later reassignment of the variables.
+  # shellcheck disable=SC2064
   trap "rm -f '$qfile' '$panes'" RETURN
 
   local daemon_ok=1
@@ -35,7 +74,7 @@ run_once() {
   else
     query='{"query":"{ tmuxSessions { name lastActivityAt } claudeInstances { state pane { window { session { name } } } } repos { slug worktrees { branch path host } } }"}'
   fi
-  if ! curl -sf --max-time 15 -X POST "${DAEMON}/graphql" \
+  if ! curl -sf --max-time 15 -X POST "${DAEMON_URL}" \
       -H 'Content-Type: application/json' \
       -d "$query" \
       > "$qfile" 2>/dev/null; then
@@ -46,12 +85,20 @@ run_once() {
   local TAB
   TAB=$(printf '\t')
   # Per-pane: target id, session_name, window_index, pane_index, current_path, current_command.
-  tmux list-panes -aF "#{pane_id}${TAB}#{session_name}${TAB}#{window_index}${TAB}#{pane_index}${TAB}#{pane_current_path}${TAB}#{pane_current_command}" > "$panes" 2>/dev/null || return 1
+  if [[ -n "$PANES_FILE" ]]; then
+    cat "$PANES_FILE" > "$panes"
+  else
+    tmux list-panes -aF "#{pane_id}${TAB}#{session_name}${TAB}#{window_index}${TAB}#{pane_index}${TAB}#{pane_current_path}${TAB}#{pane_current_command}" > "$panes" 2>/dev/null || return 1
+  fi
 
-  ORCHARD_DAEMON_OK=$daemon_ok python3 - "$qfile" "$panes" <<'PY'
-import json, subprocess, sys, datetime, os
+  ORCHARD_DAEMON_OK=$daemon_ok \
+  ORCHARD_PRINT_MODE=$PRINT_MODE \
+  ORCHARD_HEARTBEAT_DIR_ARG="$HEARTBEAT_DIR" \
+  python3 - "$qfile" "$panes" <<'PY'
+import json, subprocess, sys, datetime, os, glob
 
 DAEMON_OK = os.environ.get("ORCHARD_DAEMON_OK", "1") == "1"
+PRINT_MODE = os.environ.get("ORCHARD_PRINT_MODE", "0") == "1"
 
 with open(sys.argv[1]) as f:
     resp = json.load(f)
@@ -68,6 +115,102 @@ for r in repos:
 all_worktrees.sort(key=lambda x: -len(x[0]))
 
 now = datetime.datetime.now(datetime.timezone.utc)
+
+
+# --- Claude hook state (ADR-007) -------------------------------------------
+# The hook writes one sidecar per tmux session, named
+# orchard-claude-<tmux_session>.json. Directory resolution mirrors
+# claudeinstance.ResolveDir(): $ORCHARD_HEARTBEAT_DIR, then $TMPDIR, then /tmp.
+
+def heartbeat_dir():
+    arg = os.environ.get("ORCHARD_HEARTBEAT_DIR_ARG") or ""
+    if arg:
+        return arg
+    for var in ("ORCHARD_HEARTBEAT_DIR", "TMPDIR"):
+        v = os.environ.get(var)
+        if v:
+            return v
+    return "/tmp"
+
+
+def load_hook_states(dirpath):
+    """Map tmux session name -> parsed hook state dict.
+
+    Unreadable, non-JSON, or non-object files are skipped so a partially
+    written sidecar never breaks labelling. `.inflight.json` companions are
+    not state files and are ignored.
+    """
+    states = {}
+    for path in sorted(glob.glob(os.path.join(dirpath, "orchard-claude-*.json"))):
+        name = os.path.basename(path)
+        if name.endswith(".inflight.json"):
+            continue
+        try:
+            with open(path) as fh:
+                st = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(st, dict):
+            continue
+        session = st.get("tmux_session")
+        if not session:
+            session = name[len("orchard-claude-"):-len(".json")]
+        states[session] = st
+    return states
+
+
+HOOK_STATES = load_hook_states(heartbeat_dir())
+
+# Glyph + colour per hook `state` value written by orchard-state.sh:
+# working (PreToolUse/PostToolUse), idle (Stop/SessionStart), input
+# (AskUserQuestion, permission_prompt, elicitation_dialog, idle_prompt).
+CLAUDE_STATE_STYLE = {
+    "working": ("⏺", "green"),
+    "idle":    ("⏸", "brightblack"),
+    "input":   ("⌨", "yellow"),
+}
+
+
+def hook_state_for_pane(session, pane_path, is_claude_pane):
+    """Pick the sidecar belonging to this pane, or None.
+
+    A sidecar is per-SESSION but a label is per-PANE, so a session-name hit
+    alone would stamp Claude state onto every shell and editor in the
+    session. Narrow it to the pane whose cwd the hook recorded, or failing
+    that to the pane actually running claude.
+    """
+    st = HOOK_STATES.get(session)
+    if not st:
+        return None
+    cwd = st.get("cwd") or ""
+    if cwd and (pane_path == cwd or pane_path.startswith(cwd + "/")):
+        return st
+    if is_claude_pane:
+        return st
+    return None
+
+
+def claude_cells(st):
+    """Render the hook state as label cells, omitting every absent field."""
+    if not st:
+        return []
+    cells = []
+    state = (st.get("state") or "").strip()
+    if state:
+        glyph, color = CLAUDE_STATE_STYLE.get(state, ("⏺", "cyan"))
+        cells.append(f"#[fg={color}]{glyph} {state}#[default]")
+    # `model` and `context_window_pct` are statusline telemetry, not part of
+    # the hook payload (ClaudeSessionInfo::from_state_file in
+    # crates/orchard/src/session.rs leaves both None). Rendered only when a
+    # writer actually supplies them; never placeholdered.
+    model = st.get("model")
+    if model:
+        cells.append(f"#[fg=brightblack]{model}#[default]")
+    ctx = st.get("context_window_pct")
+    if isinstance(ctx, (int, float)) and not isinstance(ctx, bool):
+        cells.append(f"#[fg=brightblack]{ctx:.0f}%#[default]")
+    return cells
+
 
 def status_glyph(pr):
     if not pr: return ("", "default")
@@ -132,6 +275,7 @@ with open(sys.argv[2]) as f:
         #   BRANCH  : magenta            (git branch)
         #   LABELS  : yellow             (gh labels)
         #   REPO    : blue,italics       (orchard repo slug)
+        #   CLAUDE  : per-state (green/brightblack/yellow) — hook state
         #   CMD     : green,bold         (running process — claude/zsh/vim/etc.)
         #   PATH    : brightblack        (only when no worktree)
         #   DOWN    : red                (daemon down badge)
@@ -181,9 +325,14 @@ with open(sys.argv[2]) as f:
         is_version_str = bool(cmd_str) and all(part.isdigit() for part in cmd_str.split(".") if part)
         if is_version_str and "." in cmd_str:
             cmd_str = "claude"
+        is_claude_pane = cmd_str.startswith("claude")
+
+        # Claude hook state (ADR-007) sits just before the process indicator.
+        cells.extend(claude_cells(hook_state_for_pane(session, pane_path, is_claude_pane)))
+
         if cmd_str:
             interesting = {"claude","node","python","python3","go","cargo","ssh","mosh","vim","nvim","emacs"}
-            if cmd_str in interesting or cmd_str.startswith("claude"):
+            if cmd_str in interesting or is_claude_pane:
                 cells.append(f"#[fg=green,bold]⏵ {cmd_str}#[default]")
             elif cmd_str in {"zsh","bash","fish","sh","-zsh","-bash"}:
                 cells.append(f"#[fg=brightblack]⏵ {cmd_str}#[default]")
@@ -198,19 +347,23 @@ with open(sys.argv[2]) as f:
             cells.append("#[fg=red]⚠ stale#[default]")
 
         label = "  ".join(cells)
-        # Set on the pane via target -t ${pane_id}
-        subprocess.run(["tmux","set-option","-pt", pane_id, "@orchard_pane_label", label],
-                       check=False)
+        if PRINT_MODE:
+            print(f"{pane_id}\t{label}")
+        else:
+            # Set on the pane via target -t ${pane_id}
+            subprocess.run(["tmux","set-option","-pt", pane_id, "@orchard_pane_label", label],
+                           check=False)
         count += 1
 
 print(f"orchard-tmux-labels: updated {count} panes", file=sys.stderr)
 
-# Also clear any stale session-level @orchard_label so the new pane labels are
-# what choose-tree renders (sessions fall back to default chrome).
-out = subprocess.run(["tmux","list-sessions","-F","#{session_name}"], capture_output=True, text=True)
-if out.returncode == 0:
-    for n in out.stdout.splitlines():
-        subprocess.run(["tmux","set-option","-t",n,"-u","@orchard_label"], check=False)
+if not PRINT_MODE:
+    # Also clear any stale session-level @orchard_label so the new pane labels are
+    # what choose-tree renders (sessions fall back to default chrome).
+    out = subprocess.run(["tmux","list-sessions","-F","#{session_name}"], capture_output=True, text=True)
+    if out.returncode == 0:
+        for n in out.stdout.splitlines():
+            subprocess.run(["tmux","set-option","-t",n,"-u","@orchard_label"], check=False)
 PY
 }
 

@@ -1,0 +1,191 @@
+#!/usr/bin/env bats
+# Label composition for tmux/pane-labels.sh.
+#
+# Every test drives the script through --print, so no tmux server is needed
+# and the assertions are made on the exact string that would be written to
+# @orchard_pane_label. The daemon is faked at the wire (testdata/fake-daemon.py)
+# or simply unreachable — nothing this repo owns is stubbed.
+
+setup() {
+  SCRIPT="$BATS_TEST_DIRNAME/pane-labels.sh"
+  TESTDATA="$BATS_TEST_DIRNAME/testdata"
+  TMPD="$(mktemp -d)"
+  HOOKS="$TMPD/hooks"
+  mkdir -p "$HOOKS"
+  # Port 9 (discard) refuses TCP connections, so this is a genuine
+  # unreachable daemon rather than a simulated failure.
+  UNREACHABLE="http://127.0.0.1:9/graphql"
+}
+
+teardown() {
+  if [ -n "${FAKE_PID:-}" ]; then
+    kill "$FAKE_PID" 2>/dev/null || true
+    wait "$FAKE_PID" 2>/dev/null || true
+  fi
+  [ -n "${TMPD:-}" ] && rm -rf "$TMPD"
+}
+
+# Writes a pane table row in the layout pane-labels.sh expects:
+# pane_id, session, window_index, pane_index, current_path, current_command.
+_pane_row() {
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "0" "0" "$3" "$4"
+}
+
+# Writes a hook state file in the exact shape ~/.claude/hooks/orchard-state.sh
+# emits: {state, session_id, tmux_session, cwd, event, timestamp}.
+_hook_state() {
+  local session="$1" state="$2" cwd="$3"
+  cat > "$HOOKS/orchard-claude-${session}.json" <<EOF
+{
+  "state": "$state",
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "tmux_session": "$session",
+  "cwd": "$cwd",
+  "event": "PostToolUse",
+  "timestamp": "2026-08-28T12:00:00Z"
+}
+EOF
+}
+
+# Starts the fake daemon and exports FAKE_URL.
+_start_fake_daemon() {
+  local portfile="$TMPD/port"
+  python3 "$TESTDATA/fake-daemon.py" "$TESTDATA/daemon-response.json" "$portfile" &
+  FAKE_PID=$!
+  local i=0
+  while [ ! -s "$portfile" ] && [ "$i" -lt 100 ]; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$portfile" ] || return 1
+  FAKE_URL="http://127.0.0.1:$(cat "$portfile")/graphql"
+}
+
+_label_for() {
+  # Prints the label column for the given pane id from --print output.
+  awk -F'\t' -v id="$1" '$1 == id { print $2 }'
+}
+
+@test "hook state present: renders the claude state cell" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" == *"⏺ working"* ]]
+}
+
+@test "hook state absent: renders no claude state cell but still labels the pane" {
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [ -n "$label" ]
+  [[ "$label" == *"/tmp/orchard-bats-alpha"* ]]
+  [[ "$label" == *"⏵ zsh"* ]]
+  [[ "$label" != *"working"* ]]
+  [[ "$label" != *"idle"* ]]
+  [[ "$label" != *"input"* ]]
+}
+
+@test "hook state carries no model or context fields: neither is placeholdered" {
+  _hook_state "alpha" "idle" "/tmp/orchard-bats-alpha"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" == *"⏸ idle"* ]]
+  # The hook payload has no model and no context_window_pct, so nothing
+  # stands in for them — no empty cell, no "None", no bare percentage.
+  [[ "$label" != *"None"* ]]
+  [[ "$label" != *"%"* ]]
+}
+
+@test "hook state for another cwd does not stamp an unrelated pane in the same session" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  # Same session name, different directory, not running claude.
+  _pane_row "%2" "alpha" "/tmp/orchard-bats-elsewhere" "vim" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%2")"
+  [[ "$label" == *"⏵ vim"* ]]
+  [[ "$label" != *"working"* ]]
+}
+
+@test "hook state reaches a claude pane whose cwd has drifted from the recorded one" {
+  _hook_state "alpha" "input" "/tmp/orchard-bats-alpha"
+  _pane_row "%3" "alpha" "/tmp/orchard-bats-elsewhere" "claude" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%3")"
+  [[ "$label" == *"⌨ input"* ]]
+}
+
+@test "unreadable hook state file is skipped rather than failing the run" {
+  printf 'not json at all' > "$HOOKS/orchard-claude-alpha.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" == *"⏵ zsh"* ]]
+}
+
+@test "daemon unreachable: exits 0 and still produces a label for every pane" {
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+  _pane_row "%2" "beta" "/tmp/orchard-bats-elsewhere" "vim" >> "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [ -n "$(printf '%s\n' "$output" | _label_for "%1")" ]
+  [ -n "$(printf '%s\n' "$output" | _label_for "%2")" ]
+  # With no daemon there is no worktree data, so the label falls back to the
+  # pane's own path rather than branch/repo chrome.
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"/tmp/orchard-bats-wt"* ]]
+}
+
+@test "daemon reachable: label carries the worktree branch and repo slug" {
+  _start_fake_daemon
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" == *"issue-900/tmux-plugin"* ]]
+  [[ "$label" == *"orchardist"* ]]
+}
+
+@test "daemon reachable plus hook state: both worktree chrome and claude state render" {
+  _start_fake_daemon
+  _hook_state "alpha" "working" "/tmp/orchard-bats-wt"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" == *"issue-900/tmux-plugin"* ]]
+  [[ "$label" == *"⏺ working"* ]]
+}
