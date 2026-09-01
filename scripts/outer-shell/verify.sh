@@ -21,6 +21,11 @@ OUTER="orchard-shell-test"
 INNER="orchard-inner-test"
 OUTER_SESSION="shell"
 INNER_SESSION="work"
+OUTER2="orchard-shell-test2"  # second, independent outer wrapper -- used only
+                              # by the "switch-client only moves the
+                              # wrapper's own client" check below, so it
+                              # never collides with the primary $OUTER
+                              # instance the checks above are still using.
 
 SCRATCH="$(mktemp -d)"
 PYWRAP_PID=""
@@ -39,6 +44,7 @@ cleanup() {
   [[ -n "$PYWRAP_PID" ]] && kill "$PYWRAP_PID" 2>/dev/null
   [[ -n "$CHILD_ATTACH_PID" ]] && kill "$CHILD_ATTACH_PID" 2>/dev/null
   tmux -L "$OUTER" kill-server 2>/dev/null
+  tmux -L "$OUTER2" kill-server 2>/dev/null
   tmux -L "$INNER" kill-server 2>/dev/null
   rm -rf "$SCRATCH"
   return 0
@@ -73,6 +79,7 @@ check_width40() {
 
 # --- clean slate on the -test sockets only ---------------------------------
 tmux -L "$OUTER" kill-server 2>/dev/null
+tmux -L "$OUTER2" kill-server 2>/dev/null
 tmux -L "$INNER" kill-server 2>/dev/null
 
 # --- boot inner session with a 2-pane starting window -----------------------
@@ -337,6 +344,104 @@ fi
 wait "$PYWRAP_PID" 2>/dev/null
 PYWRAP_PID=""
 CHILD_ATTACH_PID=""
+
+# --- switch-client only moves the wrapper's own client ----------------------
+# Regression guard for the live-pass defect (#747 defect 2): on a SHARED
+# inner server, a plain `switch-client -t <session>` (no -c) lets tmux pick
+# an ARBITRARY attached client to move -- in the wild this hijacked the
+# user's unrelated terminal instead of the wrapper's own pane. The fix
+# scopes every switch to -c $ORCHARD_TMUX_CLIENT, which launch.sh resolves
+# from outer pane 0.1's #{pane_tty} (see launch.sh, INNER_TTY). This proves
+# BOTH halves: the scoped command moves only the wrapper's own client, and
+# -- informational only, never a gate -- that the OLD unscoped form really
+# is capable of moving a bystander, evidence the -c fix is load-bearing.
+tmux -L "$INNER" new-session -d -s A
+tmux -L "$INNER" new-session -d -s B
+
+# A second, independent outer wrapper attached to inner session A via the
+# REAL launch.sh, so the wrapper's own inner client below is produced
+# exactly the way production does it -- not synthesized.
+OUTER_SOCKET="$OUTER2" "$LAUNCH" "$INNER" A </dev/null >"$SCRATCH/boot_switchcheck.log" 2>&1
+
+SWITCH_INNER_TTY=""
+for _ in $(seq 1 20); do
+  if [[ "$(tmux -L "$INNER" list-clients -t A 2>/dev/null | wc -l | tr -d ' ')" -ge 1 ]]; then
+    SWITCH_INNER_TTY="$(tmux -L "$INNER" list-clients -t A -F '#{client_tty}' 2>/dev/null | head -1)"
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ -z "$SWITCH_INNER_TTY" ]]; then
+  record FAIL "switch-client only moves the wrapper's own client" "wrapper's own inner client never attached to A; see $SCRATCH/boot_switchcheck.log"
+else
+  # The bystander: a second, independent client attached to A, reusing the
+  # same real-pty-client helper the swallow/popup checks above use.
+  BYSTANDER_LOG="$SCRATCH/bystander.log"
+  BYSTANDER_OUT="$SCRATCH/bystanderattach.out"
+  : >"$BYSTANDER_OUT"
+
+  python3 "$PYHELPER" "$INNER" A 80 24 "$BYSTANDER_LOG" >"$BYSTANDER_OUT" 2>&1 &
+  PYWRAP_PID=$!
+
+  BYSTANDER_ATTACHED=0
+  for _ in $(seq 1 50); do
+    if grep -q '^PTY_PID=' "$BYSTANDER_OUT" 2>/dev/null; then
+      BYSTANDER_ATTACHED=1
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [[ "$BYSTANDER_ATTACHED" -ne 1 ]]; then
+    record FAIL "switch-client only moves the wrapper's own client" "bystander pty client never attached to A; see $BYSTANDER_OUT"
+  else
+    CHILD_ATTACH_PID="$(grep '^PTY_PID=' "$BYSTANDER_OUT" | head -1 | cut -d= -f2)"
+    sleep 0.3
+    BYSTANDER_TTY="$(tmux -L "$INNER" list-clients -t A -F '#{client_tty}' 2>/dev/null | grep -vF "$SWITCH_INNER_TTY" | head -1)"
+
+    if [[ -z "$BYSTANDER_TTY" ]]; then
+      record FAIL "switch-client only moves the wrapper's own client" "could not identify a distinct bystander client tty on A"
+    else
+      # The exact command the sidebar builds when ORCHARD_TMUX_CLIENT is
+      # set -- see switchClientArgs in cmd/orchard-sidebar/main.go.
+      tmux -L "$INNER" switch-client -c "$SWITCH_INNER_TTY" -t B
+
+      WRAPPER_SESS="$(tmux -L "$INNER" list-clients -F '#{client_tty} #{client_session}' 2>/dev/null | awk -v t="$SWITCH_INNER_TTY" '$1==t{print $2}')"
+      BYSTANDER_SESS="$(tmux -L "$INNER" list-clients -F '#{client_tty} #{client_session}' 2>/dev/null | awk -v t="$BYSTANDER_TTY" '$1==t{print $2}')"
+
+      if [[ "$WRAPPER_SESS" == "B" && "$BYSTANDER_SESS" == "A" ]]; then
+        record PASS "switch-client only moves the wrapper's own client" "scoped -c moved the wrapper to B; bystander stayed on A"
+      else
+        record FAIL "switch-client only moves the wrapper's own client" "wrapper_session=${WRAPPER_SESS:-<none>} (want B) bystander_session=${BYSTANDER_SESS:-<none>} (want A)"
+      fi
+
+      # Negative control (informational only -- never gates the run): put
+      # both clients back on a shared baseline, then run the OLD unscoped
+      # form and see which client tmux actually chose to move.
+      tmux -L "$INNER" switch-client -c "$SWITCH_INNER_TTY" -t A 2>/dev/null
+      tmux -L "$INNER" switch-client -c "$BYSTANDER_TTY" -t A 2>/dev/null
+      tmux -L "$INNER" switch-client -t B 2>/dev/null
+      MOVED_TO_B="$(tmux -L "$INNER" list-clients -F '#{client_tty} #{client_session}' 2>/dev/null | awk '$2=="B"{print $1}')"
+      if printf '%s\n' "$MOVED_TO_B" | grep -qF "$BYSTANDER_TTY"; then
+        echo "[INFO] evidence: unscoped 'switch-client -t B' (no -c) moved the BYSTANDER client -- proves the -c scoping fix is load-bearing, not defensive"
+      elif [[ -n "$MOVED_TO_B" ]]; then
+        echo "[INFO] unscoped 'switch-client -t B' moved a different client ($MOVED_TO_B) this run, not the bystander -- tmux's unscoped client choice isn't guaranteed reproducible; the -c fix removes the ambiguity regardless"
+      else
+        echo "[INFO] unscoped 'switch-client -t B' moved no client this run"
+      fi
+    fi
+
+    kill "$CHILD_ATTACH_PID" 2>/dev/null
+  fi
+
+  [[ -n "$PYWRAP_PID" ]] && kill "$PYWRAP_PID" 2>/dev/null
+  wait "$PYWRAP_PID" 2>/dev/null
+  PYWRAP_PID=""
+  CHILD_ATTACH_PID=""
+fi
+
+tmux -L "$OUTER2" kill-server 2>/dev/null
 
 # --- summary -----------------------------------------------------------------
 echo

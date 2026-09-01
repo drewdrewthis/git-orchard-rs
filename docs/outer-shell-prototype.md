@@ -73,6 +73,24 @@ and strip `TMUX` from the child env; unset — the sidebar's normal, unwrapped
 mode — they exec `tmux` exactly as before, byte-for-byte. `switchClient`
 also logs (rather than silently drops) a non-zero exit from `switch-client`.
 
+Socket routing alone isn't enough: the inner server can be **shared** by
+other, unrelated clients (a plain terminal attached to the same inner
+session for other reasons). `switch-client -t <session>` with no `-c` lets
+tmux pick *any* attached client to move — on a shared server that picked an
+unrelated client instead of the wrapper's own pane (#747 defect 2, seen
+live). `launch.sh` also sets `ORCHARD_TMUX_CLIENT=<tty>`, resolved from
+outer pane 0.1's `#{pane_tty}` right after sending the inner attach (that
+pane's pty *is* the inner client's `client_tty`, once attached).
+`switchClient` and `fetchClientSession`/`pickClient` scope every
+client-targeting exec to `-c $ORCHARD_TMUX_CLIENT` when it's set, so a
+switch only ever moves the wrapper's own client.
+
+If `ORCHARD_TMUX_SOCKET` is set but `ORCHARD_TMUX_CLIENT` is not — a
+configuration the shim shouldn't produce, but could reach via a stale
+launch script or manual invocation — the sidebar refuses to run
+`switch-client` at all and logs why, rather than falling back to an
+unscoped switch that risks hijacking a foreign client on that socket.
+
 This is an explicit interim shim, not the destination: the real fix is the
 daemon `switchClient` mutation from #726, at which point the client stops
 exec'ing tmux for this at all, per ADR-016.

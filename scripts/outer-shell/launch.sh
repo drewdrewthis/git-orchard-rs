@@ -25,6 +25,7 @@ SESSION="${2:?usage: launch.sh INNER_SOCKET SESSION}"
 OUTER_SOCKET="${OUTER_SOCKET:-orchard-shell}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
 OUTER_CONF="$SCRIPT_DIR/outer.conf"
 OUTER_SESSION="shell"
 
@@ -56,27 +57,51 @@ if ! outer has-session -t "$OUTER_SESSION" 2>/dev/null; then
   # into its already-running watch(1) TUI and swallowed, never executed.
   outer split-window -h -b -l 40 -t "$OUTER_SESSION:0"
 
-  # Pane 0.0 runs the real sidebar when it's on PATH — ORCHARD_TMUX_SOCKET
-  # tells its tmux execs (switch-client, list-clients, list-panes, width
-  # sync) to target the INNER server instead of the outer one they'd
-  # otherwise resolve to by virtue of running as an outer-server pane's
-  # command. See docs/outer-shell-prototype.md, "Routing orchard-sidebar's
-  # own tmux execs". Falls back to the watch(1) placeholder when the binary
-  # isn't installed.
-  if command -v orchard-sidebar >/dev/null 2>&1; then
-    outer send-keys -t "$OUTER_SESSION:0.0" \
-      "ORCHARD_TMUX_SOCKET=$INNER_SOCKET orchard-sidebar" Enter
-  else
-    outer send-keys -t "$OUTER_SESSION:0.0" \
-      "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
-  fi
-
   # TMUX= clears the outer session's own $TMUX before exec'ing the inner
   # attach. Without it tmux hard-refuses to nest: "sessions should be
   # nested with care, unset $TMUX to force" — the attach never connects,
   # this is not a cosmetic warning.
   outer send-keys -t "$OUTER_SESSION:0.1" \
     "TMUX= tmux -L $INNER_SOCKET attach -t $SESSION" Enter
+
+  # The inner attach above runs ITS tmux client on pane 0.1's own pty — same
+  # device, now also registered as a client on the INNER server — so that
+  # client's #{client_tty} (as the inner server sees it) equals outer's 0.1
+  # #{pane_tty} here. Resolved after the attach is sent so pane 0.0's
+  # sidebar can be told exactly which inner client is "this wrapper's own"
+  # (ORCHARD_TMUX_CLIENT, below) instead of guessing from activity.
+  INNER_TTY="$(outer display -p -t "$OUTER_SESSION:0.1" '#{pane_tty}')"
+
+  # Pane 0.0 runs the real sidebar when a binary can be found —
+  # ORCHARD_TMUX_SOCKET tells its tmux execs (switch-client, list-clients,
+  # list-panes, width sync) to target the INNER server instead of the outer
+  # one they'd otherwise resolve to by virtue of running as an outer-server
+  # pane's command, and ORCHARD_TMUX_CLIENT scopes switch-client/
+  # list-clients to the inner client on THIS wrapper's own pane 0.1 — on a
+  # shared inner server, an unscoped switch-client lets tmux pick an
+  # arbitrary attached client to move instead (#747 defect 2). See
+  # docs/outer-shell-prototype.md, "Routing orchard-sidebar's own tmux
+  # execs".
+  #
+  # Resolved to an absolute path rather than passed as a bare command name:
+  # a bare `orchard-sidebar` re-resolves against the pane shell's own PATH
+  # at exec time, which can silently pick a stale build instead of the one
+  # this launch actually meant. $REPO_ROOT/bin/orchard-sidebar (the local
+  # build output) wins when present; otherwise whatever `command -v` finds
+  # on PATH. Falls back to the watch(1) placeholder when neither exists.
+  if [[ -x "$REPO_ROOT/bin/orchard-sidebar" ]]; then
+    SIDEBAR_BIN="$REPO_ROOT/bin/orchard-sidebar"
+  else
+    SIDEBAR_BIN="$(command -v orchard-sidebar || true)"
+  fi
+
+  if [[ -n "$SIDEBAR_BIN" ]]; then
+    outer send-keys -t "$OUTER_SESSION:0.0" \
+      "ORCHARD_TMUX_SOCKET=$INNER_SOCKET ORCHARD_TMUX_CLIENT=$INNER_TTY $SIDEBAR_BIN" Enter
+  else
+    outer send-keys -t "$OUTER_SESSION:0.0" \
+      "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
+  fi
 fi
 
 exec tmux -L "$OUTER_SOCKET" -f "$OUTER_CONF" attach -t "$OUTER_SESSION"

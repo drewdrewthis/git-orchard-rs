@@ -840,45 +840,69 @@ type clientSessMsg struct {
 
 const clientEvery = 150 * time.Millisecond
 
-// fetchClientSession reports the session of the most recently active client.
-// With one client that is simply "where you are". With several, most-recent
-// activity is the closest thing to "the one you are driving" — and unlike the
-// daemon's flag it can never report two sessions at once.
+// fetchClientSession reports the session of the client this sidebar should
+// track. Unscoped (ORCHARD_TMUX_CLIENT unset — the sidebar's normal,
+// unwrapped mode) that's the most-recently-active client: with one client
+// that is simply "where you are", and with several it's the closest thing to
+// "the one you are driving" — unlike the daemon's flag it can never report
+// two sessions at once. Scoped (ORCHARD_TMUX_CLIENT set to this sidebar's
+// own client tty — #747 defect 2) it is instead the one client whose
+// #{client_tty} matches: on a shared inner server "most recent activity" can
+// pick a bystander client the user never touched from this sidebar.
 //
-// The shared pane width rides the same exec (width before session: names can
-// contain spaces, so the free-form field must come last).
+// The shared pane width rides the same exec (width before tty/session: tty
+// is fixed-format but session names can contain spaces, so the free-form
+// field must come last).
 func fetchClientSession(gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		out, err := tmuxCmdContext(ctx, "list-clients", "-F",
-			"#{client_activity} #{?@orchard_sidebar_width,#{@orchard_sidebar_width},0} #{client_session}").Output()
+			"#{client_activity} #{?@orchard_sidebar_width,#{@orchard_sidebar_width},0} #{client_tty} #{client_session}").Output()
 		if err != nil {
 			return clientSessMsg{gen: gen}
 		}
-		best, bestAct, width := "", int64(-1), 0
-		for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			act, rest, ok := strings.Cut(ln, " ")
-			if !ok {
-				continue
-			}
-			ws, name, ok := strings.Cut(rest, " ")
-			if !ok || name == "" {
-				continue
-			}
-			n, err := strconv.ParseInt(act, 10, 64)
-			if err != nil {
-				continue
-			}
-			if w, err := strconv.Atoi(ws); err == nil && w > 0 {
-				width = w
-			}
-			if n > bestAct {
-				best, bestAct = name, n
-			}
-		}
-		return clientSessMsg{name: best, width: width, gen: gen}
+		name, width := pickClient(string(out), os.Getenv("ORCHARD_TMUX_CLIENT"))
+		return clientSessMsg{name: name, width: width, gen: gen}
 	}
+}
+
+// pickClient selects the client this sidebar should report on from
+// list-clients output lines ("<activity> <width> <tty> <session>"). With
+// wantTTY set, only the line whose tty matches is eligible — a bystander
+// client on a shared inner server (#747 defect 2) is never considered, even
+// when it is more recently active. Unset, the most-recently-active client
+// wins (legacy, unwrapped mode).
+func pickClient(out, wantTTY string) (name string, width int) {
+	best, bestAct, w := "", int64(-1), 0
+	for _, ln := range strings.Split(strings.TrimSpace(out), "\n") {
+		act, rest, ok := strings.Cut(ln, " ")
+		if !ok {
+			continue
+		}
+		ws, rest, ok := strings.Cut(rest, " ")
+		if !ok {
+			continue
+		}
+		tty, sess, ok := strings.Cut(rest, " ")
+		if !ok || sess == "" {
+			continue
+		}
+		if wantTTY != "" && tty != wantTTY {
+			continue
+		}
+		n, err := strconv.ParseInt(act, 10, 64)
+		if err != nil {
+			continue
+		}
+		if v, err := strconv.Atoi(ws); err == nil && v > 0 {
+			w = v
+		}
+		if n > bestAct {
+			best, bestAct = sess, n
+		}
+	}
+	return best, w
 }
 
 // resizePane and setWidthOption are vars so tests can observe width traffic
@@ -893,6 +917,24 @@ var setWidthOption = func(w int) {
 	tmuxCmd("set-option", "-g", "@orchard_sidebar_width", strconv.Itoa(w)).Start()
 }
 
+// switchClientArgs builds the switch-client argv for session. With
+// ORCHARD_TMUX_CLIENT set (this sidebar's own client tty) it scopes the
+// switch to that client via -c — a plain `switch-client -t` on a SHARED
+// inner server lets tmux pick an arbitrary attached client to move, which
+// hijacked an unrelated terminal in the wild (#747 defect 2). Unset with
+// ORCHARD_TMUX_SOCKET set — wrapped but not yet told which client is its
+// own — ok is false: never fall back to an unscoped switch on a foreign
+// socket. Neither set (legacy, unwrapped mode) is unchanged.
+func switchClientArgs(session string) (args []string, ok bool) {
+	if client := os.Getenv("ORCHARD_TMUX_CLIENT"); client != "" {
+		return []string{"switch-client", "-c", client, "-t", session}, true
+	}
+	if os.Getenv("ORCHARD_TMUX_SOCKET") != "" {
+		return nil, false
+	}
+	return []string{"switch-client", "-t", session}, true
+}
+
 // switchClient is a var so tests can observe the switch without a live tmux.
 //
 // KNOWN VIOLATION, tracked in orchardist#726. RULES L7 / M2 and ADR-018 line
@@ -900,11 +942,16 @@ var setWidthOption = func(w int) {
 // mutation exists yet — sendTextToPane is the only tmux mutation in the
 // schema. Replace this exec with the mutation when #726 lands.
 var switchClient = func(session string) {
-	cmd := tmuxCmd("switch-client", "-t", session)
+	args, ok := switchClientArgs(session)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "orchard-sidebar: refusing switch-client -t %s: ORCHARD_TMUX_SOCKET set without ORCHARD_TMUX_CLIENT — would risk switching a foreign client\n", session)
+		return
+	}
+	cmd := tmuxCmd(args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "orchard-sidebar: switch-client -t %s: %v\n", session, err)
+		fmt.Fprintf(os.Stderr, "orchard-sidebar: %s: %v\n", strings.Join(args, " "), err)
 		return
 	}
 	// selectRow runs on the UI goroutine and must not block on tmux, so the
@@ -913,8 +960,8 @@ var switchClient = func(session string) {
 	// instead of dropping the exit status.
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			fmt.Fprintf(os.Stderr, "orchard-sidebar: switch-client -t %s: %v: %s\n",
-				session, err, strings.TrimSpace(stderr.String()))
+			fmt.Fprintf(os.Stderr, "orchard-sidebar: %s: %v: %s\n",
+				strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 		}
 	}()
 }
