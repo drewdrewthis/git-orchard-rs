@@ -79,6 +79,13 @@ tmux -L "$INNER" kill-server 2>/dev/null
 tmux -L "$INNER" new-session -d -s "$INNER_SESSION" -x 200 -y 50
 tmux -L "$INNER" split-window -h -t "$INNER_SESSION"
 
+# Marker visible in the inner session's active pane BEFORE outer ever
+# attaches to it. This is what lets the boot-correctness checks below
+# prove the inner attach actually landed in outer's 0.1 pane, rather than
+# just trusting that a pane exists there.
+tmux -L "$INNER" send-keys -t "$INNER_SESSION" 'echo INNER_MARKER_747' Enter
+sleep 0.2
+
 # --- boot outer via the REAL launch.sh --------------------------------------
 # stdin/stdout redirected away from a tty: launch.sh's final `exec ... attach`
 # fails fast ("not a terminal") without harming the session it just built —
@@ -93,6 +100,41 @@ if ! tmux -L "$OUTER" has-session -t "$OUTER_SESSION" 2>/dev/null; then
   exit 1
 fi
 record PASS "outer session boots" "launch.sh created session '$OUTER_SESSION' on socket '$OUTER'"
+
+# --- boot correctness: the right command must be in the right pane ---------
+# Regression guard for the send-keys-before-split bug: sending the sidebar
+# command to "0.0" before split-window runs lands it in the pre-split sole
+# pane, which the split then renumbers to 0.1 — so the sidebar command and
+# the inner attach both end up typed into the SAME physical pane (the
+# attach keystrokes get swallowed as input to the already-running watch
+# TUI and never reach a shell prompt), while the other pane stays a bare
+# shell. Neither check above (pane width) nor the "nested with care" check
+# further down would catch that regression: width is a window-geometry
+# property independent of what's running in the pane, and the warning
+# text never appears if the attach command was never actually executed.
+# Poll briefly: unlike pane_width (an instant window-flag read), this
+# waits on a real subprocess (nested tmux client) spawning and completing
+# its handshake with the inner server.
+CMD01=""
+for _ in $(seq 1 20); do
+  CMD01="$(tmux -L "$OUTER" display -p -t "$OUTER_SESSION:0.1" '#{pane_current_command}' 2>/dev/null)"
+  [[ "$CMD01" == "tmux" ]] && break
+  sleep 0.1
+done
+CMD00="$(tmux -L "$OUTER" display -p -t "$OUTER_SESSION:0.0" '#{pane_current_command}' 2>/dev/null)"
+CAP01_BOOT="$(tmux -L "$OUTER" capture-pane -p -t "$OUTER_SESSION:0.1" -S -100 2>/dev/null)"
+
+if printf '%s' "$CAP01_BOOT" | grep -q "INNER_MARKER_747"; then
+  record PASS "inner attach lands in right pane (0.1)" "INNER_MARKER_747 visible in outer 0.1 capture"
+else
+  record FAIL "inner attach lands in right pane (0.1)" "marker not found in outer 0.1 capture"
+fi
+
+if [[ "$CMD00" == "watch" && "$CMD01" == "tmux" ]]; then
+  record PASS "pane commands: 0.0=watch, 0.1=tmux" "0.0=$CMD00 0.1=$CMD01"
+else
+  record FAIL "pane commands: 0.0=watch, 0.1=tmux" "expected 0.0=watch 0.1=tmux; actual 0.0=${CMD00:-<none>} 0.1=${CMD01:-<none>}"
+fi
 
 # Pin to an exact, deterministic baseline size regardless of the calling
 # environment's own tty (verify.sh has none, so launch.sh's tput fallback

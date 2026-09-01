@@ -42,13 +42,22 @@ if ! outer has-session -t "$OUTER_SESSION" 2>/dev/null; then
   ROWS="$(tput lines 2>/dev/null || echo 45)"
 
   outer new-session -d -s "$OUTER_SESSION" -x "$COLS" -y "$ROWS"
-  outer send-keys -t "$OUTER_SESSION:0.0" \
-    "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
 
   # split-window -h -b -l 40: new pane goes before (-b, i.e. left of) the
-  # target, exact width 40. This is pane 0.0 above; the pre-existing pane
-  # becomes 0.1 (right) after the split.
+  # target, exact width 40. The NEW pane becomes 0.0 (left); the pane that
+  # existed before the split becomes 0.1 (right).
+  #
+  # Split MUST happen before either send-keys call. Sending a command to
+  # "0.0" before the split targets the pre-split sole pane — which the
+  # split then renumbers to 0.1 — so a command sent to "0.0" first and a
+  # command sent to "0.1" second both land in the SAME physical pane (the
+  # original one), while the true post-split 0.0 gets nothing. That was
+  # exactly the bug: watch ended up in 0.1 with the attach keystrokes typed
+  # into its already-running watch(1) TUI and swallowed, never executed.
   outer split-window -h -b -l 40 -t "$OUTER_SESSION:0"
+
+  outer send-keys -t "$OUTER_SESSION:0.0" \
+    "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
 
   # TMUX= clears the outer session's own $TMUX before exec'ing the inner
   # attach. Without it tmux hard-refuses to nest: "sessions should be
