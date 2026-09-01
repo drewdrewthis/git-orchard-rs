@@ -261,6 +261,44 @@ func pidAlive(pid int) bool {
 	return pid > 0 && syscall.Kill(pid, 0) == nil
 }
 
+// tmuxCmd builds a `tmux` invocation. Every tmux exec in this package routes
+// through it (or tmuxCmdContext) instead of calling exec.Command directly.
+func tmuxCmd(args ...string) *exec.Cmd {
+	return tmuxCmdContext(context.Background(), args...)
+}
+
+// tmuxCmdContext is tmuxCmd with a caller-supplied context (mirrors the
+// exec.Command/exec.CommandContext split).
+//
+// orchard-sidebar runs inside a real tmux pane, so a bare `tmux` exec
+// resolves against whichever server owns THAT pane. Inside the outer-shell
+// wrapper (docs/outer-shell-prototype.md) that pane belongs to the OUTER
+// server, never the inner one holding the sessions the sidebar actually
+// reads and switches — #747 defect: switch-client silently no-op'd and the
+// current-session highlight never anchored. launch.sh sets
+// ORCHARD_TMUX_SOCKET to the inner socket when it starts the sidebar
+// wrapped; when set, every exec targets it explicitly via -L instead of
+// relying on server inference, and TMUX is stripped from the child env so
+// tmux doesn't second-guess the explicit -L using the outer session
+// recorded there. Unset (the sidebar's normal, unwrapped mode) this is
+// exactly exec.Command("tmux", args...).
+func tmuxCmdContext(ctx context.Context, args ...string) *exec.Cmd {
+	sock := os.Getenv("ORCHARD_TMUX_SOCKET")
+	if sock == "" {
+		return exec.CommandContext(ctx, "tmux", args...)
+	}
+	cmd := exec.CommandContext(ctx, "tmux", append([]string{"-L", sock}, args...)...)
+	env := make([]string, 0, len(os.Environ()))
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "TMUX=") {
+			continue
+		}
+		env = append(env, e)
+	}
+	cmd.Env = env
+	return cmd
+}
+
 // paneToSession maps tmux pane ids (%5) to session names.
 //
 // DAEMON-DOWN FALLBACK ONLY. The daemon serves this same mapping on
@@ -275,7 +313,7 @@ func pidAlive(pid int) bool {
 func paneToSession() map[string]string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F",
+	out, err := tmuxCmdContext(ctx, "list-panes", "-a", "-F",
 		"#{pane_id} #{session_name}").Output()
 	m := map[string]string{}
 	if err != nil {
@@ -813,7 +851,7 @@ func fetchClientSession(gen int) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		out, err := exec.CommandContext(ctx, "tmux", "list-clients", "-F",
+		out, err := tmuxCmdContext(ctx, "list-clients", "-F",
 			"#{client_activity} #{?@orchard_sidebar_width,#{@orchard_sidebar_width},0} #{client_session}").Output()
 		if err != nil {
 			return clientSessMsg{gen: gen}
@@ -847,12 +885,12 @@ func fetchClientSession(gen int) tea.Cmd {
 // without a live tmux. Same client-side-exec exception as switchClient.
 var resizePane = func(w int) {
 	if p := os.Getenv("TMUX_PANE"); p != "" {
-		exec.Command("tmux", "resize-pane", "-t", p, "-x", strconv.Itoa(w)).Start()
+		tmuxCmd("resize-pane", "-t", p, "-x", strconv.Itoa(w)).Start()
 	}
 }
 
 var setWidthOption = func(w int) {
-	exec.Command("tmux", "set-option", "-g", "@orchard_sidebar_width", strconv.Itoa(w)).Start()
+	tmuxCmd("set-option", "-g", "@orchard_sidebar_width", strconv.Itoa(w)).Start()
 }
 
 // switchClient is a var so tests can observe the switch without a live tmux.
@@ -862,7 +900,23 @@ var setWidthOption = func(w int) {
 // mutation exists yet — sendTextToPane is the only tmux mutation in the
 // schema. Replace this exec with the mutation when #726 lands.
 var switchClient = func(session string) {
-	exec.Command("tmux", "switch-client", "-t", session).Start()
+	cmd := tmuxCmd("switch-client", "-t", session)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "orchard-sidebar: switch-client -t %s: %v\n", session, err)
+		return
+	}
+	// selectRow runs on the UI goroutine and must not block on tmux, so the
+	// switch itself stays fire-and-forget — but a failed switch used to
+	// vanish silently (#747 defect 1). Wait for it off-thread and log
+	// instead of dropping the exit status.
+	go func() {
+		if err := cmd.Wait(); err != nil {
+			fmt.Fprintf(os.Stderr, "orchard-sidebar: switch-client -t %s: %v: %s\n",
+				session, err, strings.TrimSpace(stderr.String()))
+		}
+	}()
 }
 
 // daemonDown is the one judgment "the daemon is actually unreachable" —

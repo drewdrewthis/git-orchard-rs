@@ -56,8 +56,20 @@ if ! outer has-session -t "$OUTER_SESSION" 2>/dev/null; then
   # into its already-running watch(1) TUI and swallowed, never executed.
   outer split-window -h -b -l 40 -t "$OUTER_SESSION:0"
 
-  outer send-keys -t "$OUTER_SESSION:0.0" \
-    "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
+  # Pane 0.0 runs the real sidebar when it's on PATH — ORCHARD_TMUX_SOCKET
+  # tells its tmux execs (switch-client, list-clients, list-panes, width
+  # sync) to target the INNER server instead of the outer one they'd
+  # otherwise resolve to by virtue of running as an outer-server pane's
+  # command. See docs/outer-shell-prototype.md, "Routing orchard-sidebar's
+  # own tmux execs". Falls back to the watch(1) placeholder when the binary
+  # isn't installed.
+  if command -v orchard-sidebar >/dev/null 2>&1; then
+    outer send-keys -t "$OUTER_SESSION:0.0" \
+      "ORCHARD_TMUX_SOCKET=$INNER_SOCKET orchard-sidebar" Enter
+  else
+    outer send-keys -t "$OUTER_SESSION:0.0" \
+      "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
+  fi
 
   # TMUX= clears the outer session's own $TMUX before exec'ing the inner
   # attach. Without it tmux hard-refuses to nest: "sessions should be

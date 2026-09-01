@@ -2,28 +2,33 @@
 
 Spike proving an outer tmux server can wrap a nested inner tmux server —
 sidebar pane pinned to a fixed width, inner session churning freely inside
-it — using shell + tmux only. No Rust/Go changes. Lives at
+it — using shell + tmux, plus one small Go-side routing shim in
+`cmd/orchard-sidebar` so the sidebar's own tmux execs reach the right
+server (see "Routing orchard-sidebar's own tmux execs" below). Lives at
 `scripts/outer-shell/`.
 
 ## How it works
 
 ```
-outer server  (-L orchard-shell, its own outer.conf, prefix C-a)
+outer server  (-L orchard-shell, its own outer.conf, no prefix — see below)
 └── session "shell", 1 window, 2 panes
     ┌────────────────────┬──────────────────────────────────────┐
     │ pane 0.0 (40 cols)  │ pane 0.1                              │
-    │ sidebar placeholder │ TMUX= tmux -L <inner> attach -t <sess>│
+    │ orchard-sidebar, or │ TMUX= tmux -L <inner> attach -t <sess>│
     │ watch -n1 tmux -L   │  → nested inner client, full tmux     │
     │   <inner> list-     │    prefix/keybindings/panes/windows   │
-    │   windows -a        │    all working normally               │
+    │   windows -a if not │    all working normally               │
+    │   on PATH           │                                        │
     └────────────────────┴──────────────────────────────────────┘
 ```
 
 pane 0.0 is a real tmux pane in the OUTER session — it never enters the
 inner server. pane 0.1 runs a normal `tmux attach` client INTO the inner
 server; from the user's perspective that pane becomes the inner session,
-prefix and all. Two independent tmux servers, two independent prefixes,
-one composited terminal.
+prefix and all. Two independent tmux servers, one composited terminal —
+but only one prefix in the traditional sense: outer has none (see
+"No outer prefix" below), so the inner session's own prefix is the only
+one the user ever needs to reach for.
 
 ## The one place `TMUX=` is needed
 
@@ -46,6 +51,32 @@ The attach never happens; the pane is left sitting at a dead shell prompt.
 because it's the only point where a second tmux client is created inside
 a pane already owned by the first.
 
+## Routing orchard-sidebar's own tmux execs
+
+The sidebar binary itself execs `tmux` for a few reads/writes ADR-016/017/018
+haven't grown a daemon mutation for yet (`switch-client`, `list-clients`,
+`list-panes`, pane-width sync — tracked in orchardist#726). Those execs are
+normally bare `tmux ...`, which resolves against whichever server owns the
+pane the process happens to be running in.
+
+Inside this wrapper that's wrong by default: `orchard-sidebar` runs as pane
+0.0's command on the **outer** server, but every session it needs to read or
+switch lives on the **inner** one. A bare exec would silently talk to the
+wrong server — `switch-client` no-ops, the "which session is current"
+highlight never anchors, and nothing on screen says why.
+
+`launch.sh` sets `ORCHARD_TMUX_SOCKET=<inner-socket>` when it starts the real
+sidebar in pane 0.0 (falling back to the `watch` placeholder when the binary
+isn't on PATH). `cmd/orchard-sidebar/main.go`'s `tmuxCmd`/`tmuxCmdContext`
+helpers check that var on every tmux exec: set, they prepend `-L <socket>`
+and strip `TMUX` from the child env; unset — the sidebar's normal, unwrapped
+mode — they exec `tmux` exactly as before, byte-for-byte. `switchClient`
+also logs (rather than silently drops) a non-zero exit from `switch-client`.
+
+This is an explicit interim shim, not the destination: the real fix is the
+daemon `switchClient` mutation from #726, at which point the client stops
+exec'ing tmux for this at all, per ADR-016.
+
 ## Keeping the sidebar pinned
 
 Two hooks in `outer.conf`, not one:
@@ -64,10 +95,24 @@ exist to correct outer-level resizes, not to defend against the inner one.
 
 ## Trade-offs
 
-- **Second prefix.** Outer uses `C-a`, inner keeps whatever it's configured
-  with (commonly `C-b` or the project's own). Two prefixes to remember;
-  outer's should stay minimal (resize hooks only, nothing else bound) so
-  it's rarely reached for on purpose.
+- **No outer prefix.** A prefix key at the outer layer swallows itself AND
+  the next keystroke before either ever reaches pane 0.1 — `send-keys`
+  bypasses a client's key-table dispatch entirely, so this only reproduces
+  through a real attached client, not `capture-pane` probing. With `C-a` as
+  outer's prefix this broke Ctrl-A (readline start-of-line) inside the
+  inner shell: the second keystroke was silently consumed by the (mostly
+  empty) prefix table before ever falling through. Fix: `set -g prefix
+  None` plus `unbind -a -T prefix` — outer has no prefix at all. Its three
+  actions live in the root key table on Alt bindings instead, which no
+  shell or inner tmux config reaches for: `M-s` toggles the sidebar
+  (`resize-pane -Z -t 0.1`), `M-p` opens a placeholder command palette
+  (`display-popup -E -w 80% -h 80% "$SHELL"`), `M-d` detaches. Nothing else
+  is bound outer-side, so every other keystroke — including the inner
+  session's own prefix — falls straight through untouched.
+  `scripts/outer-shell/verify.sh`'s "outer prefix does not swallow
+  keystrokes" check drives a real attached pty client (send-keys can't
+  exercise key-table dispatch) to prove this; confirmed it fails against
+  the old `C-a`-prefix config and passes against the current one.
 - **Second server, second config file.** A `-L` socket does **not**
   suppress loading the user's real `~/.tmux.conf`; omitting `-f <outer.conf>`
   on every invocation would silently pull in the user's actual config

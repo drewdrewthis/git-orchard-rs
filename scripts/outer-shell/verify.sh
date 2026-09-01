@@ -76,7 +76,11 @@ tmux -L "$OUTER" kill-server 2>/dev/null
 tmux -L "$INNER" kill-server 2>/dev/null
 
 # --- boot inner session with a 2-pane starting window -----------------------
-tmux -L "$INNER" new-session -d -s "$INNER_SESSION" -x 200 -y 50
+# -f /dev/null: this throwaway inner session is test scaffolding, not the
+# thing under test — it must not inherit the invoking user's real
+# ~/.tmux.conf (e.g. a coincidental C-a prefix rebind there would confound
+# the swallow-check below).
+tmux -L "$INNER" -f /dev/null new-session -d -s "$INNER_SESSION" -x 200 -y 50
 tmux -L "$INNER" split-window -h -t "$INNER_SESSION"
 
 # Marker visible in the inner session's active pane BEFORE outer ever
@@ -130,10 +134,10 @@ else
   record FAIL "inner attach lands in right pane (0.1)" "marker not found in outer 0.1 capture"
 fi
 
-if [[ "$CMD00" == "watch" && "$CMD01" == "tmux" ]]; then
-  record PASS "pane commands: 0.0=watch, 0.1=tmux" "0.0=$CMD00 0.1=$CMD01"
+if [[ ( "$CMD00" == "watch" || "$CMD00" == "orchard-sidebar" ) && "$CMD01" == "tmux" ]]; then
+  record PASS "pane commands: 0.0=watch|orchard-sidebar, 0.1=tmux" "0.0=$CMD00 0.1=$CMD01"
 else
-  record FAIL "pane commands: 0.0=watch, 0.1=tmux" "expected 0.0=watch 0.1=tmux; actual 0.0=${CMD00:-<none>} 0.1=${CMD01:-<none>}"
+  record FAIL "pane commands: 0.0=watch|orchard-sidebar, 0.1=tmux" "expected 0.0 in {watch,orchard-sidebar} 0.1=tmux; actual 0.0=${CMD00:-<none>} 0.1=${CMD01:-<none>}"
 fi
 
 # Pin to an exact, deterministic baseline size regardless of the calling
@@ -188,15 +192,23 @@ else
   record PASS "no 'nested with care' warning" "absent from both outer panes"
 fi
 
-# --- popup renders over the layout ------------------------------------------
-# capture-pane cannot see popup content: display-popup composites only into
-# an attached CLIENT's rendered stream, never into any pane's grid buffer.
-# Proof requires a real attached client whose raw pty bytes we can inspect.
+# --- shared real-attached-client helper --------------------------------------
+# Both the popup check and the prefix-swallow check below need a REAL
+# attached tmux client (not send-keys, not capture-pane): popups composite
+# only into an attached client's rendered stream, never into any pane's
+# grid buffer, and the per-client prefix/key-table dispatch this wrapper
+# depends on only runs for a real client's input, never for send-keys
+# (which injects straight into a pane, bypassing client-level dispatch
+# entirely). Optional argv[6] is a base64-encoded byte string written to
+# the client's stdin ~0.5s after attach, for checks that need to inject
+# real keystrokes rather than just observe output; omitted, behavior is
+# identical to the original 5-arg popup-only helper.
 PYHELPER="$SCRATCH/attach_client.py"
 cat > "$PYHELPER" <<'PY_EOF'
 #!/usr/bin/env python3
-import fcntl, os, pty, struct, sys, termios
+import base64, fcntl, os, pty, struct, sys, termios, time
 socket, session, cols, rows, logpath = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5]
+send_keys = base64.b64decode(sys.argv[6]) if len(sys.argv) > 6 else None
 master_fd, slave_fd = pty.openpty()
 fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
 pid = os.fork()
@@ -213,6 +225,9 @@ else:
     os.close(slave_fd)
     print(f'PTY_PID={pid}')
     sys.stdout.flush()
+    if send_keys is not None:
+        time.sleep(0.5)  # let the client finish attaching + set raw mode
+        os.write(master_fd, send_keys)
     with open(logpath, 'wb') as log:
         while True:
             try:
@@ -225,6 +240,63 @@ else:
             log.flush()
 PY_EOF
 
+# --- prefix-less outer: nothing typed at a real client gets eaten -----------
+# Regression guard for the double-swallow bug: with `C-a` as outer's prefix,
+# a real Ctrl-A consumed itself to enter prefix-table dispatch, then
+# consumed the NEXT keystroke too (unbound in that table, silently
+# dropped) before falling through — so "echo swallow747" arrived at the
+# inner shell as "cho swallow747", missing its leading char. send-keys
+# cannot reproduce this (it bypasses client-level key-table dispatch
+# entirely), so this drives a real attached pty client, the same way the
+# popup check below does.
+#
+# Force pane 0.1 active first: a brand-new client displays whatever pane is
+# already active on the window, and earlier checks in this script leave
+# 0.0 active (split-window's newly-created pane, which becomes 0.0, takes
+# focus at boot; nothing since has changed it). Key-table dispatch happens
+# client-side before a byte is routed to any pane, so forcing focus here
+# only sets up the precondition — it doesn't touch the mechanism under test.
+tmux -L "$OUTER" select-pane -t "$OUTER_SESSION:0.1" 2>/dev/null
+
+SWALLOW_SIZE="$(tmux -L "$OUTER" display -p -t "$OUTER_SESSION" '#{window_width}x#{window_height}' 2>/dev/null)"
+SWALLOW_COLS="${SWALLOW_SIZE%x*}"
+SWALLOW_ROWS="${SWALLOW_SIZE#*x}"
+SWALLOW_KEYS_B64="$(printf '\x01echo swallow747\r' | base64 | tr -d '\n')"
+SWALLOWLOG="$SCRATCH/swallow.log"
+SWALLOWOUT="$SCRATCH/swallowattach.out"
+: >"$SWALLOWOUT"
+
+python3 "$PYHELPER" "$OUTER" "$OUTER_SESSION" "$SWALLOW_COLS" "$SWALLOW_ROWS" "$SWALLOWLOG" "$SWALLOW_KEYS_B64" >"$SWALLOWOUT" 2>&1 &
+PYWRAP_PID=$!
+
+ATTACHED=0
+for _ in $(seq 1 50); do
+  if grep -q '^PTY_PID=' "$SWALLOWOUT" 2>/dev/null; then
+    ATTACHED=1
+    break
+  fi
+  sleep 0.1
+done
+
+if [[ "$ATTACHED" -eq 1 ]]; then
+  CHILD_ATTACH_PID="$(grep '^PTY_PID=' "$SWALLOWOUT" | head -1 | cut -d= -f2)"
+  sleep 1.2  # settle: attach handshake + injected keys (written ~0.5s in) + shell round-trip
+  INNER_CAP="$(tmux -L "$INNER" capture-pane -p -t "$INNER_SESSION" -S -200 2>/dev/null)"
+  if printf '%s' "$INNER_CAP" | grep -qF "echo swallow747"; then
+    record PASS "outer prefix does not swallow keystrokes" "'echo swallow747' landed intact in inner pane"
+  else
+    record FAIL "outer prefix does not swallow keystrokes" "'echo swallow747' missing/mangled in inner capture (a leading char was eaten)"
+  fi
+  kill "$CHILD_ATTACH_PID" 2>/dev/null
+else
+  record FAIL "outer prefix does not swallow keystrokes" "real pty client never attached (see $SWALLOWOUT)"
+fi
+[[ -n "$PYWRAP_PID" ]] && kill "$PYWRAP_PID" 2>/dev/null
+wait "$PYWRAP_PID" 2>/dev/null
+PYWRAP_PID=""
+CHILD_ATTACH_PID=""
+
+# --- popup renders over the layout ------------------------------------------
 CUR_SIZE="$(tmux -L "$OUTER" display -p -t "$OUTER_SESSION" '#{window_width}x#{window_height}' 2>/dev/null)"
 CUR_COLS="${CUR_SIZE%x*}"
 CUR_ROWS="${CUR_SIZE#*x}"
