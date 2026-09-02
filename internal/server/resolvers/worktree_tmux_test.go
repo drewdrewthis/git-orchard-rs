@@ -140,6 +140,20 @@ func buildPaneRowAt(session, paneID string, pid int, activityUnix int64) string 
 	}, tmuxprovider.FieldSep)
 }
 
+// TestStubPaneRowMatchesAdapterFieldCount binds the stub row builders to the
+// adapter's parser width. listAll drops any row whose field count is not
+// exactly ListAllFieldCount, so a new field in listAllFormat would otherwise
+// empty every tmux provider in these tests and surface as a dozen unrelated
+// assertion failures — the same silent-drop failure that the field separator
+// caused in #664. This fails in one obvious place instead.
+func TestStubPaneRowMatchesAdapterFieldCount(t *testing.T) {
+	row := buildPaneRow("session", "%1", 1234)
+	if got := len(strings.Split(row, tmuxprovider.FieldSep)); got != tmuxprovider.ListAllFieldCount {
+		t.Fatalf("buildPaneRow emits %d fields; adapter's listAll parses %d",
+			got, tmuxprovider.ListAllFieldCount)
+	}
+}
+
 // sessionRow builds a list-sessions row.
 func sessionRow(name string, activityUnix int64) string {
 	return strings.Join([]string{
