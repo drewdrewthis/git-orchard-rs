@@ -276,3 +276,38 @@ JSON
   label="$(printf '%s\n' "$output" | _label_for "%1")"
   _assert_no_live_format "$label"
 }
+
+# --- degradation edges (review findings 4, 10, 12) -------------------------
+
+@test "HOME unset: still labels every pane instead of crashing" {
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-elsewhere" "zsh" > "$TMPD/panes"
+
+  run env -u HOME bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" == *"/tmp/orchard-bats-elsewhere"* ]]
+  [[ "$label" == *"⏵ zsh"* ]]
+}
+
+@test "HOME set: the home prefix is still abbreviated to ~" {
+  _pane_row "%1" "alpha" "/home/orchard-bats/work" "zsh" > "$TMPD/panes"
+
+  run env HOME=/home/orchard-bats bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"~/work"* ]]
+}
+
+@test "HOME empty: the path is left alone rather than shredded" {
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-elsewhere" "zsh" > "$TMPD/panes"
+
+  run env HOME= bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  # An empty HOME must not be substituted between every character.
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"/tmp/orchard-bats-elsewhere"* ]]
+}

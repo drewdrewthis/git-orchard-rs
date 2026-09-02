@@ -335,7 +335,10 @@ with open(sys.argv[2]) as f:
                 cells.append(cell("fg=blue,italics", repo))
         else:
             # No worktree match — show truncated path; cmd is rendered separately below.
-            short = pane_path.replace(os.environ["HOME"], "~")
+            # HOME can be unset (cron, a stripped `env`, a systemd unit) and can be
+            # empty; str.replace("") would splice a `~` between every character.
+            home = os.environ.get("HOME") or ""
+            short = pane_path.replace(home, "~") if home else pane_path
             if len(short) > 50:
                 short = "…" + short[-49:]
             cells.append(cell("fg=brightblack", short))
