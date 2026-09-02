@@ -51,39 +51,188 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.path }}-${{ matrix.target.name }}
-      - name: Derive package name and tag
+      - name: Derive tag
         id: meta
         env:
           OUTPUTS_JSON: ${{ needs.release-please.outputs.outputs_json }}
           PATH_KEY: ${{ matrix.path }}
         run: |
-          pkg=$(basename "$PATH_KEY")
           tag=$(printf '%s' "$OUTPUTS_JSON" | jq -r --arg key "${PATH_KEY}--tag_name" '.[$key]')
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "error: no tag found for path $PATH_KEY" >&2
             exit 1
           fi
-          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Install cross-compilation tools
         if: matrix.target.cross
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target.name }} -p ${{ steps.meta.outputs.pkg }}
-      - name: Package
-        run: tar czf ${{ steps.meta.outputs.pkg }}-${{ matrix.target.name }}.tar.gz -C target/${{ matrix.target.name }}/release ${{ steps.meta.outputs.pkg }}
-      - name: Checksum
-        run: shasum -a 256 ${{ steps.meta.outputs.pkg }}-${{ matrix.target.name }}.tar.gz > ${{ steps.meta.outputs.pkg }}-${{ matrix.target.name }}.tar.gz.sha256
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      # matrix.path is crates/orchard -- the sole release-please-tracked
+      # package (ADR-022/D2) -- which houses two binaries: orchard-dispatcher
+      # crate's `orchard` (the CLI users invoke; npm/install.js hardcodes
+      # this tarball's name and contents, plan AC12) and this crate's own
+      # `orchard-tui`. Build, package, and checksum both explicitly: the
+      # prior single generic basename(matrix.path) step assumed one binary
+      # named after the package directory, which produced neither and broke
+      # every release's Package step (#747 boy-scout fix).
+      - name: Build dispatcher (orchard)
+        run: cargo build --release --target ${{ matrix.target.name }} -p orchard-dispatcher
+      - name: Package dispatcher
+        run: tar czf orchard-${{ matrix.target.name }}.tar.gz -C target/${{ matrix.target.name }}/release orchard
+      - name: Checksum dispatcher
+        run: shasum -a 256 orchard-${{ matrix.target.name }}.tar.gz > orchard-${{ matrix.target.name }}.tar.gz.sha256
+      - name: Build TUI (orchard-tui)
+        run: cargo build --release --target ${{ matrix.target.name }} -p orchard
+      - name: Package TUI
+        run: tar czf orchard-tui-${{ matrix.target.name }}.tar.gz -C target/${{ matrix.target.name }}/release orchard-tui
+      - name: Checksum TUI
+        run: shasum -a 256 orchard-tui-${{ matrix.target.name }}.tar.gz > orchard-tui-${{ matrix.target.name }}.tar.gz.sha256
       - name: Upload
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           files: |
-            ${{ steps.meta.outputs.pkg }}-${{ matrix.target.name }}.tar.gz
-            ${{ steps.meta.outputs.pkg }}-${{ matrix.target.name }}.tar.gz.sha256
+            orchard-${{ matrix.target.name }}.tar.gz
+            orchard-${{ matrix.target.name }}.tar.gz.sha256
+            orchard-tui-${{ matrix.target.name }}.tar.gz
+            orchard-tui-${{ matrix.target.name }}.tar.gz.sha256
+
+  build-go:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.paths_released != '' && needs.release-please.outputs.paths_released != '[]' && contains(fromJSON(needs.release-please.outputs.paths_released), 'crates/orchard') }}
+    name: Build Go binaries ${{ matrix.target.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { goos: linux, goarch: amd64, name: x86_64-unknown-linux-gnu }
+          - { goos: linux, goarch: arm64, name: aarch64-unknown-linux-gnu }
+          - { goos: darwin, goarch: amd64, name: x86_64-apple-darwin }
+          - { goos: darwin, goarch: arm64, name: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Derive tag and version
+        id: meta
+        env:
+          OUTPUTS_JSON: ${{ needs.release-please.outputs.outputs_json }}
+        run: |
+          tag=$(printf '%s' "$OUTPUTS_JSON" | jq -r '."crates/orchard--tag_name"')
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "error: no crates/orchard tag found in release-please outputs" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag##*v}" >> "$GITHUB_OUTPUT"
+      - name: Build, package, checksum
+        env:
+          GOOS: ${{ matrix.target.goos }}
+          GOARCH: ${{ matrix.target.goarch }}
+          CGO_ENABLED: "0"
+          TRIPLE: ${{ matrix.target.name }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Suite binaries baked with the release VERSION, mirroring
+          # scripts/dist.sh. A binary whose cmd/ dir doesn't exist yet is
+          # skipped (mid-rollout tolerance), not failed; an existing dir that
+          # fails to *compile* still fails this step, as it should.
+          for bin in orchard-daemon orchard-sidebar orchard-shell orchard-upgrade; do
+            if [ ! -d "cmd/$bin" ]; then
+              echo "skip $bin: cmd/$bin does not exist yet"
+              continue
+            fi
+            go build -ldflags "-X main.version=$VERSION" -o "$bin" "./cmd/$bin"
+            tar czf "$bin-$TRIPLE.tar.gz" "$bin"
+            shasum -a 256 "$bin-$TRIPLE.tar.gz" > "$bin-$TRIPLE.tar.gz.sha256"
+          done
+      - name: Upload
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          # fail_on_unmatched_files defaults to false: tolerates a binary
+          # skipped above because its cmd/ dir doesn't exist yet.
+          files: |
+            orchard-*-${{ matrix.target.name }}.tar.gz
+            orchard-*-${{ matrix.target.name }}.tar.gz.sha256
+
+  checksums:
+    needs: [release-please, build, build-go]
+    if: ${{ needs.release-please.outputs.paths_released != '' && needs.release-please.outputs.paths_released != '[]' && contains(fromJSON(needs.release-please.outputs.paths_released), 'crates/orchard') }}
+    name: Assemble suite tarballs + SHA256SUMS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Derive tag
+        id: meta
+        env:
+          OUTPUTS_JSON: ${{ needs.release-please.outputs.outputs_json }}
+        run: |
+          tag=$(printf '%s' "$OUTPUTS_JSON" | jq -r '."crates/orchard--tag_name"')
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "error: no crates/orchard tag found in release-please outputs" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Assemble per-triple suite tarballs + aggregate SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          triples="x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
+          # Mirrors internal/release/assets.go's SuiteBinaries -- the Go
+          # upgrade client's ground truth for what a release must contain.
+          suite_bins="orchard-daemon orchard-sidebar orchard-shell orchard-upgrade orchard-tui orchard"
+          mkdir -p dist
+          missing_dispatcher=""
+          for triple in $triples; do
+            # orchard-<triple>.tar.gz (the dispatcher) is the one asset
+            # npm/install.js hardcodes (plan AC12) -- its absence for any
+            # triple is a broken release, not a partial one. This is exactly
+            # the check that would have caught the pre-#747 build-job bug
+            # that shipped zero dispatcher assets.
+            if ! gh release download "$TAG" -R "$REPO" -p "orchard-${triple}.tar.gz" -D dist -c 2>/dev/null; then
+              missing_dispatcher="$missing_dispatcher orchard-${triple}.tar.gz"
+            fi
+            work="$(mktemp -d)"
+            got=0
+            for bin in $suite_bins; do
+              asset="${bin}-${triple}.tar.gz"
+              if gh release download "$TAG" -R "$REPO" -p "$asset" -D dist -c 2>/dev/null; then
+                tar xzf "dist/$asset" -C "$work"
+                got=$((got + 1))
+              else
+                echo "note: $asset not published for $triple"
+              fi
+            done
+            if [ "$got" -gt 0 ]; then
+              tar czf "dist/orchard-suite-${triple}.tar.gz" -C "$work" .
+              echo "wrote orchard-suite-${triple}.tar.gz ($got/6 binaries)"
+            else
+              echo "note: no suite binaries found for $triple, skipping orchard-suite-${triple}.tar.gz"
+            fi
+            rm -rf "$work"
+          done
+          if [ -n "$missing_dispatcher" ]; then
+            echo "FATAL: dispatcher asset(s) missing from release $TAG:$missing_dispatcher" >&2
+            echo "(npm/install.js hardcodes orchard-<triple>.tar.gz -- a release without it breaks every npm install)" >&2
+            exit 1
+          fi
+          cd dist
+          shasum -a 256 -- *.tar.gz > SHA256SUMS
+      - name: Upload suite tarballs + SHA256SUMS
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          files: |
+            dist/orchard-suite-*.tar.gz
+            dist/SHA256SUMS
 
   npm-publish:
     needs: [release-please, build]

@@ -7,6 +7,10 @@ node_modules/
 # Go daemon build artefacts (cmd/orchard → bin/orchard).
 /bin/
 
+# `make dist` release assembly output (#747 Step 6): per-binary tarballs,
+# per-triple orchard-suite-<triple>.tar.gz, SHA256SUMS.
+/dist/
+
 # conversation-contracts plugin MCP binary (built into plugin's bin/).
 /plugins/conversation-contracts/bin/
 /mcp
