@@ -89,9 +89,11 @@ STATE_DIR="${CLAUDE_SESSION_STATE_DIR:-$HOME/.local/state/claude-sessions/state}
            | .first_prompt = (.first_prompt // ($ev.prompt | trunc(500)))
          else . end)
     elif $event == "PreToolUse" then
-      .state = "working" | .last_tool = $ev.tool_name | .tool_calls += 1
+      # a tool call means the permission ask was answered — clear it, or a stale
+      # "needs your permission" rides along on a session that is plainly working
+      .state = "working" | .message = null | .last_tool = $ev.tool_name | .tool_calls += 1
     elif $event == "PostToolUse" then
-      .state = "working" | .last_tool = $ev.tool_name
+      .state = "working" | .message = null | .last_tool = $ev.tool_name
     elif $event == "Notification" then
       # the idle nag ("waiting for your input") is not a real input request —
       # keep it out of state=input, but never downgrade a pending permission ask

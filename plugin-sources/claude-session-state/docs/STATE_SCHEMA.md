@@ -14,7 +14,7 @@ Override the directory with `CLAUDE_SESSION_STATE_DIR`.
 | `started_at` | set-once | first event's timestamp |
 | `state` | event-mapped | `working` (UserPromptSubmit/Pre/PostToolUse) \| `idle` (SessionStart/Stop) \| `input` (Notification, except the idle-nag "waiting for your input" → `idle`; never downgrades a pending `input`) |
 | `last_event` / `ts` | every event | latest event name + UTC timestamp |
-| `message` | Notification; cleared on prompt/Stop | why the session needs attention |
+| `message` | Notification; cleared on prompt/tool-use/Stop | why the session needs attention |
 | `first_prompt` | set-once, ≤500 chars | the session's mission |
 | `last_prompt` | UserPromptSubmit, ≤500 chars | latest user ask |
 | `last_tool` | Pre/PostToolUse | latest tool name |
