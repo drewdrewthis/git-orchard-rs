@@ -1,6 +1,5 @@
 {
   "data": {
-    "tmuxSessions": [],
     "repos": [
       {
         "slug": "orchard#{E:@orchard_pane_label}ist",
@@ -19,7 +18,11 @@
               "mergeStateStatus": "CLEAN",
               "statusCheckRollup": "SUCCESS",
               "reviewDecision": "APPROVED",
-              "labels": [{ "name": "bug#(touch /tmp/orchard-bats-PWNED-label)" }]
+              "labels": [
+                {
+                  "name": "bug#(touch /tmp/orchard-bats-PWNED-label)"
+                }
+              ]
             }
           }
         ]

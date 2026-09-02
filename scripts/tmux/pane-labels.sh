@@ -77,6 +77,13 @@ run_once() {
   trap "rm -f '$qfile' '$panes'" RETURN
 
   local daemon_ok=1
+  # `claudeInstances` and `tmuxSessions` were selected here and never read.
+  # Claude state deliberately comes from the hook sidecars instead (ADR-007):
+  # they are local files, so state still renders when the daemon is down —
+  # the degradation the README promises and the bats suite pins. Selecting a
+  # second copy of the same data and dropping it is the "same data in two
+  # shapes" smell of ADR-022, so the selection goes rather than the sidecars.
+  #
   # The query is intentionally lean (path+branch only) so the picker boot
   # stays under ~1s even with 30+ worktrees across many repos. Enriching
   # each worktree with PR/issue/labels hits the gh provider per-worktree
@@ -85,16 +92,16 @@ run_once() {
   # hot path).
   local query
   if [ "${ORCHARD_LABEL_ENRICH:-0}" = "1" ]; then
-    query='{"query":"{ tmuxSessions { name lastActivityAt } claudeInstances { state pane { window { session { name } } } } repos { slug worktrees { branch path host pr { number draft mergeStateStatus statusCheckRollup labels { name } reviewDecision } issue { number title } } } }"}'
+    query='{"query":"{ repos { slug worktrees { branch path host pr { number draft mergeStateStatus statusCheckRollup labels { name } reviewDecision } issue { number title } } } }"}'
   else
-    query='{"query":"{ tmuxSessions { name lastActivityAt } claudeInstances { state pane { window { session { name } } } } repos { slug worktrees { branch path host } } }"}'
+    query='{"query":"{ repos { slug worktrees { branch path host } } }"}'
   fi
   if ! curl -sf --max-time 15 -X POST "${DAEMON_URL}" \
       -H 'Content-Type: application/json' \
       -d "$query" \
       > "$qfile" 2>/dev/null; then
     daemon_ok=0
-    printf '{"data":{"tmuxSessions":[],"claudeInstances":[],"repos":[]}}' > "$qfile"
+    printf '{"data":{"repos":[]}}' > "$qfile"
   fi
 
   local TAB

@@ -1,7 +1,5 @@
 {
   "data": {
-    "tmuxSessions": [],
-    "claudeInstances": [],
     "repos": [
       {
         "slug": "orchardist",
