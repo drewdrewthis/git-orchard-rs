@@ -58,19 +58,27 @@ func TestConversationChangedEmitter_EmitAfterWrite(t *testing.T) {
 		t.Fatalf("Refresh: %v", err)
 	}
 
-	// The emitter's goroutine calls GetBySessionUUID AFTER the cache
-	// write. It must see 3 records, not 2.
-	select {
-	case conv := <-ch:
-		if conv == nil {
-			t.Fatal("subscription emitted nil, want a Conversation")
+	// The emitter's goroutine calls GetBySessionUUID AFTER the cache write, so
+	// an emit carrying the post-write state (3 records) must arrive.
+	//
+	// Drain rather than take the first frame: Start runs a real watcher, so the
+	// rename above can produce its own emit alongside the explicit Refresh. An
+	// extra emit of the same post-write state is benign, and this still holds
+	// T6 — an implementation that emitted BEFORE the cache write would only
+	// ever publish the pre-write count and this loop would time out.
+	for {
+		select {
+		case conv := <-ch:
+			if conv == nil {
+				t.Fatal("subscription emitted nil, want a Conversation")
+			}
+			if conv.MessageCount == 3 {
+				return // T6 satisfied: post-write state was published
+			}
+			t.Logf("ignoring pre-write emit (MessageCount=%d), waiting for 3", conv.MessageCount)
+		case <-ctx.Done():
+			t.Fatal("timed out waiting for a subscription emit with the post-write state (3 records)")
 		}
-		// T6: post-write state (3 records) must be visible.
-		if conv.MessageCount != 3 {
-			t.Errorf("MessageCount = %d, want 3 (post-write state)", conv.MessageCount)
-		}
-	case <-ctx.Done():
-		t.Fatal("timed out waiting for subscription emit")
 	}
 }
 
@@ -139,17 +147,37 @@ type testRecord struct {
 	typ string
 }
 
+// writeTestJSONL replaces path atomically: it fills a sibling temp file and
+// renames it into place.
+//
+// os.Create would truncate in-place, and Provider.Start has a live fsnotify
+// watcher — so a refresh landing inside the truncate/write window read a
+// 0-byte file and cached a 0-message conversation. That is how
+// TestConversationChangedEmitter_EmitAfterWrite saw MessageCount=0 on CI
+// while passing on a fast dev machine, where the window is too narrow to hit.
+// Rename is atomic, so a reader sees either the whole old file or the whole
+// new one, which is also how production JSONLs behave (they are appended to,
+// never truncated). The temp name keeps the .jsonl.tmp suffix so neither the
+// directory walk (adapter.go:125) nor the watcher (adapter.go:312) treats it
+// as a session.
 func writeTestJSONL(t *testing.T, path string, records []testRecord) {
 	t.Helper()
-	f, err := os.Create(path)
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
-		t.Fatalf("create %s: %v", path, err)
+		t.Fatalf("create %s: %v", tmp, err)
 	}
-	defer func() { _ = f.Close() }()
 	for _, r := range records {
 		line := `{"timestamp":"` + r.ts.Format(time.RFC3339Nano) + `","type":"` + r.typ + `"}` + "\n"
 		if _, err := f.WriteString(line); err != nil {
+			_ = f.Close()
 			t.Fatalf("write record: %v", err)
 		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close %s: %v", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		t.Fatalf("rename %s -> %s: %v", tmp, path, err)
 	}
 }
