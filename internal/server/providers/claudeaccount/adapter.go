@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -42,7 +41,17 @@ type CommandRunner interface {
 // with a Cancel that signals SIGKILL to the entire process group, so
 // `bunx ccusage ...` (which forks bun) cannot leak children when the
 // daemon's context is cancelled.
-type execRunner struct{}
+//
+// The tool name is resolved to an absolute path before exec — see
+// toolpath.go for why bare-name lookup is not enough under launchd.
+type execRunner struct {
+	locator *toolLocator
+}
+
+// newExecRunner constructs the production runner. Logger may be nil.
+func newExecRunner(logger *slog.Logger) *execRunner {
+	return &execRunner{locator: newToolLocator(logger)}
+}
 
 // Run shells out and returns the merged stdout. On context cancel,
 // SIGKILL is sent to the negative pid (the process group) so any
@@ -55,8 +64,12 @@ type execRunner struct{}
 //
 // We deliberately do not log stdout — `claude auth status` includes
 // the user's email and PII rules say no raw stdout in logs.
-func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+func (r *execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	bin, err := r.locator.Locate(name)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	// New process group so Cancel can target all descendants with one
 	// signal. Without this, killing the parent would orphan helpers
 	// like the bun runtime that bunx forks.
@@ -96,7 +109,7 @@ func NewShellAdapter(hostID string, logger *slog.Logger) *ShellAdapter {
 	return &ShellAdapter{
 		hostID: hostID,
 		logger: logger,
-		runner: execRunner{},
+		runner: newExecRunner(logger),
 	}
 }
 
@@ -267,13 +280,4 @@ func parseResets(primary, fallback string) (time.Time, error) {
 		}
 	}
 	return time.Time{}, nil
-}
-
-// drainStdout is a defensive helper for tests that read stdout through
-// a pipe. Production runner.Run reads in one shot via cmd.Output so
-// this is never used; lives here so tests do not have to import io.
-//
-//nolint:unused // documents the read-pattern test runners may borrow
-func drainStdout(r io.Reader) ([]byte, error) {
-	return io.ReadAll(r)
 }

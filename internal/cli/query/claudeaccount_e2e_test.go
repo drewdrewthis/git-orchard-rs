@@ -105,9 +105,13 @@ func TestCLI_QueryClaudeAccount_E2E_HappyPath(t *testing.T) {
 }
 
 // TestCLI_QueryClaudeAccount_E2E_ToolNotInstalled compiles the
-// binary, points it at a daemon whose PATH has no `claude`/`ccusage`,
-// and asserts the CLI surfaces the typed GraphQL error rather than
-// silently returning [].
+// binary, points it at a daemon that can resolve neither `claude` nor
+// `ccusage`, and asserts the CLI surfaces the typed GraphQL error
+// rather than silently returning [].
+//
+// ORCHARD_BIN_DIRS is pinned empty alongside PATH: since #400 the
+// adapter also searches the well-known user bin dirs, where a dev
+// machine really does have `claude` installed.
 func TestCLI_QueryClaudeAccount_E2E_ToolNotInstalled(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("CLI e2e relies on POSIX shell scripts in PATH")
@@ -116,6 +120,7 @@ func TestCLI_QueryClaudeAccount_E2E_ToolNotInstalled(t *testing.T) {
 	binary := buildOrchard(t)
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
+	t.Setenv("ORCHARD_BIN_DIRS", "")
 
 	provider := claudeaccount.New("test-host", nil)
 	t.Cleanup(func() { _ = provider.Stop() })

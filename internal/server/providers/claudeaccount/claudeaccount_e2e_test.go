@@ -124,9 +124,13 @@ printf '%s\n' '{"blocks": [{"active": true, "used": 12.5, "cap": 50, "resetsAt":
 }
 
 // TestE2E_ToolNotInstalled_SurfacesGraphQLError is the briefing's
-// "tool not installed" case: empty PATH means neither `claude` nor
-// `ccusage` resolves. The resolver must surface a typed GraphQL error
-// on the claudeAccounts field rather than collapsing the daemon.
+// "tool not installed" case: neither `claude` nor `ccusage` resolves.
+// The resolver must surface a typed GraphQL error on the
+// claudeAccounts field rather than collapsing the daemon.
+//
+// ORCHARD_BIN_DIRS is pinned empty alongside PATH: since #400 the
+// adapter also searches the well-known user bin dirs, where a dev
+// machine really does have `claude` installed.
 func TestE2E_ToolNotInstalled_SurfacesGraphQLError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("e2e relies on POSIX shell scripts in PATH")
@@ -134,6 +138,7 @@ func TestE2E_ToolNotInstalled_SurfacesGraphQLError(t *testing.T) {
 
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
+	t.Setenv("ORCHARD_BIN_DIRS", "")
 
 	srv := newTestDaemon(t)
 	defer srv.Close()
