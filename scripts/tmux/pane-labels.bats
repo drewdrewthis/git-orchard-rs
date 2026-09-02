@@ -441,3 +441,91 @@ JSON
 
   [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"issue-900/tmux-plugin"* ]]
 }
+
+# --- sidecar provenance (review finding 2) ---------------------------------
+#
+# The heartbeat dir defaults to /tmp, which is world-writable, so any local
+# unprivileged process can drop an `orchard-claude-<session>.json` naming a
+# session it does not own. A sidecar is only believed when the caller owns it.
+
+@test "a sidecar owned by another user is ignored" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+
+  # `daemon` exists on both macOS and the CI image and is never the test user.
+  if ! chown daemon "$HOOKS/orchard-claude-alpha.json" 2>/dev/null; then
+    skip "cannot chown (not root)"
+  fi
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" != *"working"* ]]
+  [[ "$label" == *"⏵ claude"* ]]
+}
+
+@test "a world-writable sidecar is ignored" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  chmod 666 "$HOOKS/orchard-claude-alpha.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" != *"working"* ]]
+}
+
+@test "a sidecar that is a symlink is ignored" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  mv "$HOOKS/orchard-claude-alpha.json" "$TMPD/real.json"
+  ln -s "$TMPD/real.json" "$HOOKS/orchard-claude-alpha.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" != *"working"* ]]
+}
+
+@test "a world-writable heartbeat dir without the sticky bit is refused" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  chmod 777 "$HOOKS"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" != *"working"* ]]
+}
+
+@test "a world-writable sticky heartbeat dir is accepted (the /tmp default)" {
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  chmod 1777 "$HOOKS"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"⏺ working"* ]]
+}
+
+@test "a state value outside the known enum is dropped, not rendered" {
+  cat > "$HOOKS/orchard-claude-alpha.json" <<'JSON'
+{"state": "pwned", "tmux_session": "alpha", "cwd": "/tmp/orchard-bats-alpha"}
+JSON
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  [[ "$label" != *"pwned"* ]]
+  [[ "$label" == *"⏵ claude"* ]]
+}
