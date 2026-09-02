@@ -375,6 +375,7 @@ impl Client {
                       mergeStateStatus
                       mergeable
                       draft
+                      unresolvedThreadCount
                       labels { name }
                     }
                     issue {
@@ -573,6 +574,7 @@ mod tests {
                       mergeStateStatus
                       mergeable
                       draft
+                      unresolvedThreadCount
                       labels { name }
                     }
                     issue {

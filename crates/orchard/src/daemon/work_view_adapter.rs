@@ -359,7 +359,7 @@ fn work_view_pr_to_cached(
         ci_gate_state: None,
         ci_checks: crate::ci_state::CiChecks::default(),
         has_conflicts,
-        unresolved_threads: 0,
+        unresolved_threads: pr.unresolved_thread_count,
         linked_issue_state: None,
         labels: pr.labels.clone(),
         title: Some(pr.title.clone()),
@@ -628,6 +628,7 @@ mod tests {
             mergeable: Some("MERGEABLE".to_string()),
             draft: false,
             labels: Vec::new(),
+            unresolved_thread_count: 0,
         }
     }
 
@@ -902,6 +903,7 @@ mod tests {
             mergeable: mergeable.map(|s| s.to_string()),
             draft: false,
             labels: Vec::new(),
+            unresolved_thread_count: 0,
         };
 
         // CONFLICTING → has_conflicts true
@@ -1030,6 +1032,7 @@ mod tests {
             mergeable: Some("MERGEABLE".to_string()),
             draft: false,
             labels: Vec::new(),
+            unresolved_thread_count: 0,
         };
         let cached = work_view_pr_to_cached(&pr, "fix/something", Some(429));
         assert_eq!(

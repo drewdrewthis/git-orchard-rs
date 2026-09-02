@@ -342,6 +342,14 @@ pub struct WorkViewPr {
     /// [`labels_from_objects`] so consumers see a plain `Vec<String>`.
     #[serde(default, deserialize_with = "labels_from_objects")]
     pub labels: Vec<String>,
+
+    /// Review threads that still block a merge: unresolved and not outdated.
+    ///
+    /// Defaults to 0 so an older daemon that predates the field (#607) still
+    /// deserializes — the PR then reads as having nothing outstanding, which
+    /// matches the behaviour before the field existed.
+    #[serde(default, rename = "unresolvedThreadCount")]
+    pub unresolved_thread_count: u32,
 }
 
 /// Issue fields carried in a `workView` worktree. Narrow projection.
