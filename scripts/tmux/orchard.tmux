@@ -52,12 +52,27 @@ tmux_option() {
 # ...` as separate argv elements makes tmux's own top-level parser eat the
 # `;` and run choose-tree immediately instead of binding it.
 #
-# That means two nested quoting layers. Outer layer is tmux, which must use
-# SINGLE quotes — a tmux double-quoted string expands `#{...}`, which would
-# evaluate the choose-tree format at bind time. Inner layer is /bin/sh, which
-# run-shell invokes, so paths with spaces need sh double quotes.
+# That means THREE nested layers, not two:
+#
+#   1. tmux's command parser reads the bound string. It must use SINGLE quotes
+#      — a tmux double-quoted string expands `#{...}`, which would evaluate the
+#      choose-tree format at bind time.
+#   2. run-shell FORMAT-EXPANDS its command before running it. Measured on
+#      tmux 3.6a: `run-shell -b 'touch "/tmp/x#{session_name}"'` creates
+#      /tmp/xNAME, not a literal. So a `#` in any interpolated path or URL is
+#      a live format directive here and must be doubled.
+#   3. /bin/sh, which run-shell invokes, so paths with spaces need sh double
+#      quotes.
+#
+# Layer 2 was missing from this comment, and from the code — which is
+# plausibly how the label-side format injection (finding 1) went unnoticed.
 sh_dquote() {
   printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"$`]/\\&/g')"
+}
+
+# Layer 2's escape: tmux formats have no escape but doubling `#`.
+tmux_fmt_escape() {
+  printf '%s' "${1//#/##}"
 }
 
 # A literal single quote cannot appear inside a tmux single-quoted string, and
@@ -111,6 +126,9 @@ if [[ "$LABELS_OK" == "1" ]]; then
   if [[ -n "$HEARTBEAT_DIR" ]]; then
     LABEL_CMD="$LABEL_CMD --heartbeat-dir $(sh_dquote "$HEARTBEAT_DIR")"
   fi
+  # Applied to the whole assembled command: every `#` in it came from an
+  # interpolated value, since nothing this script writes contains one.
+  LABEL_CMD="$(tmux_fmt_escape "$LABEL_CMD")"
   # -b backgrounds the refresh: choose-tree opens immediately on the
   # previous labels rather than blocking on the daemon round-trip. A daemon
   # that is down or slow therefore costs the picker nothing — the helper

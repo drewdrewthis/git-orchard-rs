@@ -198,3 +198,24 @@ _set_opt() {
   [ "$status" -eq 0 ]
   [ "$(PATH="$TMPD/bin:$PATH" tmux show-option -gqv '@orchard_bound_key')" = "g" ]
 }
+
+# --- run-shell is a third expansion layer (review finding 8) ---------------
+
+@test "a hash in the daemon url survives run-shell format expansion" {
+  # run-shell format-expands its command before /bin/sh sees it, so a bare
+  # '#{' or '#(' in an interpolated value would be read as a tmux format
+  # directive rather than passed to the helper.
+  _set_opt "@orchard_daemon_url" 'http://127.0.0.1:7777/graphql#{session_name}'
+  _run_plugin
+  [ "$status" -eq 0 ]
+
+  [[ "$(_binding_for s)" == *'##{session_name}'* ]]
+}
+
+@test "a hash in the heartbeat dir survives run-shell format expansion" {
+  _set_opt "@orchard_heartbeat_dir" '/tmp/hb#(id)'
+  _run_plugin
+  [ "$status" -eq 0 ]
+
+  [[ "$(_binding_for s)" == *'##(id)'* ]]
+}
