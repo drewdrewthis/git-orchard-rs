@@ -65,6 +65,10 @@ func TestResolveToolPath_LaunchdPATH_FoundInFallbackBinDir(t *testing.T) {
 	// The launchd environment: a PATH with none of the user's prefixes.
 	t.Setenv("PATH", empty)
 	t.Setenv("HOME", home)
+	// t.Setenv first so the original value (set or unset) is restored at
+	// test end; os.Unsetenv alone would leak an unset var into the rest
+	// of the binary for anyone running with ORCHARD_BIN_DIRS exported.
+	t.Setenv(binDirsEnv, "")
 	os.Unsetenv(binDirsEnv) // exercise the real built-in fallback list
 
 	got, err := resolveToolPath("ccusage")
@@ -170,6 +174,7 @@ func TestToolPathEnv_DerivesOrchardVarName(t *testing.T) {
 func TestFallbackBinDirs_DefaultsCoverUserInstallPrefixes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv(binDirsEnv, "") // registers restoration; see the launchd test
 	os.Unsetenv(binDirsEnv)
 
 	got := fallbackBinDirs()
