@@ -390,3 +390,54 @@ JSON
   # A worktree registered at / genuinely contains /work, so its chrome applies.
   [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"rooted"* ]]
 }
+
+# --- daemon url shapes (review finding 6) ----------------------------------
+#
+# `--daemon-url` / `@orchard_daemon_url` are documented as FULL endpoints;
+# `$ORCHARD_DAEMON_URL` was historically a BASE url with /graphql appended.
+# Mirroring the documented option value into the env var must not produce
+# `.../graphql/graphql` and silently empty results.
+
+@test "ORCHARD_DAEMON_URL accepts a full endpoint without doubling /graphql" {
+  _start_fake_daemon
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  ORCHARD_DAEMON_URL="$FAKE_URL" run bash "$SCRIPT" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"issue-900/tmux-plugin"* ]]
+}
+
+@test "ORCHARD_DAEMON_URL still accepts a bare base url" {
+  _start_fake_daemon
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  ORCHARD_DAEMON_URL="${FAKE_URL%/graphql}" run bash "$SCRIPT" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"issue-900/tmux-plugin"* ]]
+}
+
+@test "a base url passed to --daemon-url is completed too" {
+  _start_fake_daemon
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "${FAKE_URL%/graphql}" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"issue-900/tmux-plugin"* ]]
+}
+
+@test "a trailing slash on the daemon url does not break the endpoint" {
+  _start_fake_daemon
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "${FAKE_URL}/" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"issue-900/tmux-plugin"* ]]
+}

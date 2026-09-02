@@ -11,9 +11,11 @@
 #   pane-labels.sh [--daemon-url URL] [--heartbeat-dir DIR]
 #                  [--panes-file FILE] [--print]
 #
-#   --daemon-url    Full GraphQL endpoint. Defaults to $ORCHARD_DAEMON_URL
-#                   (a base URL, with /graphql appended) or
-#                   http://127.0.0.1:7777/graphql.
+#   --daemon-url    The daemon's GraphQL endpoint. Either shape works — a
+#                   base URL ("http://host:7777") has /graphql appended, a
+#                   full endpoint is used as given. Defaults to
+#                   $ORCHARD_DAEMON_URL, which accepts the same two shapes,
+#                   then http://127.0.0.1:7777/graphql.
 #   --heartbeat-dir Directory holding orchard-claude-<session>.json hook
 #                   state files. Defaults to $ORCHARD_HEARTBEAT_DIR, then
 #                   $TMPDIR, then /tmp — mirroring claudeinstance.ResolveDir()
@@ -48,9 +50,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# --daemon-url is the full endpoint; ORCHARD_DAEMON_URL stays a base URL
-# for backwards compatibility with existing callers.
-[[ -z "$DAEMON_URL" ]] && DAEMON_URL="${DAEMON}/graphql"
+# One concept, one meaning. `--daemon-url` and `@orchard_daemon_url` are
+# documented as FULL endpoints while `$ORCHARD_DAEMON_URL` was historically a
+# BASE url with /graphql appended, so mirroring the documented option value
+# into the env var produced `.../graphql/graphql` and silently empty results.
+# Both spellings now accept either shape.
+normalize_daemon_url() {
+  local url="$1"
+  url="${url%/}"
+  case "$url" in
+    */graphql) printf '%s' "$url" ;;
+    *)         printf '%s/graphql' "$url" ;;
+  esac
+}
+
+[[ -z "$DAEMON_URL" ]] && DAEMON_URL="$DAEMON"
+DAEMON_URL="$(normalize_daemon_url "$DAEMON_URL")"
 
 run_once() {
   local qfile panes
