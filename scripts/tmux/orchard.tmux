@@ -95,6 +95,17 @@ if has_squote "@orchard_heartbeat_dir" "$HEARTBEAT_DIR"; then LABELS_OK=0; fi
 
 PICKER="choose-tree -Zs -F '$FORMAT'"
 
+# tmux keeps a binding until something removes it, so moving @orchard_key
+# would otherwise leave the picker on BOTH keys with no way back to the old
+# one short of a manual unbind or a server restart. Remember which key this
+# plugin took and vacate it first. The vacated key is left unbound rather
+# than restored to its stock binding — this plugin overwrote that binding and
+# does not know what it was.
+PREV_KEY="$(tmux show-option -gqv '@orchard_bound_key' 2>/dev/null || true)"
+if [[ -n "$PREV_KEY" && "$PREV_KEY" != "$KEY" ]]; then
+  tmux unbind-key -T prefix "$PREV_KEY" 2>/dev/null || true
+fi
+
 if [[ "$LABELS_OK" == "1" ]]; then
   LABEL_CMD="$(sh_dquote "$LABELER") --daemon-url $(sh_dquote "$DAEMON_URL")"
   if [[ -n "$HEARTBEAT_DIR" ]]; then
@@ -110,6 +121,8 @@ else
   # command + path, per the README's Degradation section.
   tmux bind-key -T prefix "$KEY" "$PICKER"
 fi
+
+tmux set-option -g '@orchard_bound_key' "$KEY"
 
 if [[ "$VERBOSE" == "1" ]]; then
   echo "orchard.tmux: dir=$CURRENT_DIR"

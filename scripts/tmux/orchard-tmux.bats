@@ -168,3 +168,33 @@ _set_opt() {
   [[ "$output" == *"single quote"* ]]
   [[ "$(_binding_for s)" == *"choose-tree"* ]]
 }
+
+# --- rebinding (review finding 11) -----------------------------------------
+
+@test "moving @orchard_key unbinds the key it previously took" {
+  _run_plugin
+  [ "$status" -eq 0 ]
+  [[ "$(_binding_for s)" == *"choose-tree"* ]]
+
+  _set_opt "@orchard_key" "g"
+  _run_plugin
+  [ "$status" -eq 0 ]
+
+  [[ "$(_binding_for g)" == *"choose-tree"* ]]
+  # The vacated key must not still open the picker.
+  [ -z "$(_binding_for s)" ]
+}
+
+@test "re-running on the same key leaves exactly one binding" {
+  _run_plugin
+  _run_plugin
+  [ "$status" -eq 0 ]
+  [[ "$(_binding_for s)" == *"choose-tree"* ]]
+}
+
+@test "the bound key is recorded so a later run can find it" {
+  _set_opt "@orchard_key" "g"
+  _run_plugin
+  [ "$status" -eq 0 ]
+  [ "$(PATH="$TMPD/bin:$PATH" tmux show-option -gqv '@orchard_bound_key')" = "g" ]
+}
