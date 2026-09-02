@@ -22,7 +22,6 @@
 //! See `docs/architecture.md` for the rationale.
 use std::collections::HashMap;
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::cache::{
     self, CachedIssue, CachedPr, CachedRepoMeta, CachedReview, CachedSubIssue, CachedTmuxSession,
@@ -40,31 +39,19 @@ use crate::remote;
 // Parse helpers
 // ---------------------------------------------------------------------------
 
-/// Counts review threads that are both unresolved and still actionable.
+/// Counts review threads that still block merge.
 ///
-/// A thread is counted iff `isResolved != true AND isOutdated != true`.
-/// Missing `isOutdated` is treated as "not outdated" — see below.
-///
-/// When a thread node lacks `isOutdated`, a warning is logged at most once
-/// per process to distinguish cache replay (old cache shape) from a real
-/// GraphQL schema regression without spamming the log for every PR.
+/// Matches GitHub's "Require conversation resolution before merging" gate,
+/// which blocks on `isResolved != true` alone — `isOutdated` has no bearing
+/// on it. An outdated thread (anchored to a diff hunk no longer on the head
+/// commit) still blocks merge until it is resolved. Mirrors the fix in
+/// `internal/server/providers/gh/types.go` `UnresolvedThreadCount()` (#607).
 fn count_actionable_threads(nodes: &serde_json::Value) -> u32 {
-    static WARNED_MISSING_OUTDATED: AtomicBool = AtomicBool::new(false);
-
     let Some(arr) = nodes.as_array() else {
         return 0;
     };
     arr.iter()
-        .filter(|t| {
-            if t.get("isOutdated").is_none()
-                && !WARNED_MISSING_OUTDATED.swap(true, Ordering::Relaxed)
-            {
-                LOG.warn(
-                    "cache_sources: reviewThread missing isOutdated field — treating as not outdated (cache replay or schema drift)",
-                );
-            }
-            t["isResolved"].as_bool() != Some(true) && t["isOutdated"].as_bool() != Some(true)
-        })
+        .filter(|t| t["isResolved"].as_bool() != Some(true))
         .count() as u32
 }
 
@@ -76,6 +63,10 @@ fn count_actionable_threads(nodes: &serde_json::Value) -> u32 {
 /// last comment timestamp cannot be parsed are silently skipped — the count
 /// field (`unresolved_threads`) is always authoritative for presence, this
 /// data is used only for `since_epoch`.
+///
+/// Deliberately still excludes outdated threads, unlike `count_actionable_threads`:
+/// this feeds a recency signal for a PR that's already blocking, not the
+/// blocking decision itself, so the two filters no longer need to match.
 fn collect_thread_comment_timestamps(nodes: &serde_json::Value) -> Vec<i64> {
     let Some(arr) = nodes.as_array() else {
         return Vec::new();
@@ -3578,7 +3569,7 @@ issue42/fix-bug 2026-04-12T14:30:00-07:00
         assert_eq!(session.pane_active, vec!["1"]);
     }
 
-    // -- unresolved_threads isOutdated filtering (Issue #252) -----------------
+    // -- unresolved_threads counting: isResolved gates it, isOutdated does not (#252, #607) --
 
     /// Builds a per-branch GraphQL response envelope with the given thread nodes.
     fn per_branch_prs_with_threads(threads: serde_json::Value) -> String {
@@ -3615,7 +3606,10 @@ issue42/fix-bug 2026-04-12T14:30:00-07:00
     }
 
     #[test]
-    fn unresolved_threads_counts_only_unresolved_and_not_outdated() {
+    fn unresolved_threads_counts_unresolved_regardless_of_outdated() {
+        // GitHub's merge gate blocks on isResolved alone (#607) — the
+        // outdated-but-unresolved thread below counts alongside the two
+        // ordinary unresolved ones.
         let threads = json!([
             {"isResolved": false, "isOutdated": false},
             {"isResolved": false, "isOutdated": false},
@@ -3636,20 +3630,23 @@ issue42/fix-bug 2026-04-12T14:30:00-07:00
             "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
         }]));
         let prs = parse_prs_graphql(&json, &empty_matcher());
-        assert_eq!(prs[0].unresolved_threads, 2);
+        assert_eq!(prs[0].unresolved_threads, 3);
 
         // parse_prs_graphql_per_branch path
         let per_branch_json = per_branch_prs_with_threads(threads);
         let prs_pb = parse_prs_graphql_per_branch(&per_branch_json, &empty_matcher());
-        assert_eq!(prs_pb[0].unresolved_threads, 2);
+        assert_eq!(prs_pb[0].unresolved_threads, 3);
     }
 
     #[test]
-    fn unresolved_threads_zero_when_all_resolved_or_outdated() {
+    fn unresolved_threads_zero_when_all_resolved() {
+        // Resolved excludes a thread regardless of its outdated state; an
+        // outdated-but-UNresolved thread is a different fixture (see
+        // `unresolved_threads_counts_outdated_unresolved_as_blocking`).
         let threads = json!([
-            {"isResolved": true,  "isOutdated": false},
-            {"isResolved": false, "isOutdated": true},
-            {"isResolved": true,  "isOutdated": true},
+            {"isResolved": true, "isOutdated": false},
+            {"isResolved": true, "isOutdated": true},
+            {"isResolved": true, "isOutdated": true},
         ]);
 
         let json = graphql_prs(json!([{
@@ -3671,8 +3668,39 @@ issue42/fix-bug 2026-04-12T14:30:00-07:00
     }
 
     #[test]
+    fn unresolved_threads_counts_outdated_unresolved_as_blocking() {
+        // PR #764 review finding: an outdated-but-unresolved thread must still
+        // count. GitHub's "Require conversation resolution before merging" gate
+        // blocks on isResolved alone (#607) — isOutdated has no bearing on it.
+        let threads = json!([
+            {"isResolved": true,  "isOutdated": false}, // resolved -> excluded
+            {"isResolved": false, "isOutdated": false}, // unresolved -> counted
+            {"isResolved": false, "isOutdated": true},  // outdated, unresolved -> counted
+            {"isResolved": true,  "isOutdated": true},  // outdated, resolved -> excluded
+        ]);
+
+        let json = graphql_prs(json!([{
+            "number": 1,
+            "headRefName": "feat/branch",
+            "state": "OPEN",
+            "reviewDecision": null,
+            "mergeable": "MERGEABLE",
+            "reviewThreads": { "nodes": threads.clone() },
+            "closingIssuesReferences": { "nodes": [] },
+            "commits": { "nodes": [{ "commit": { "statusCheckRollup": null } }] }
+        }]));
+        let prs = parse_prs_graphql(&json, &empty_matcher());
+        assert_eq!(prs[0].unresolved_threads, 2);
+
+        let per_branch_json = per_branch_prs_with_threads(threads);
+        let prs_pb = parse_prs_graphql_per_branch(&per_branch_json, &empty_matcher());
+        assert_eq!(prs_pb[0].unresolved_threads, 2);
+    }
+
+    #[test]
     fn parser_counts_thread_missing_is_outdated_as_unresolved() {
-        // Thread with only isResolved (no isOutdated key) — must be treated as not outdated.
+        // Thread with only isResolved (no isOutdated key at all) — isOutdated is
+        // never read by count_actionable_threads, so its absence cannot matter.
         let threads = json!([{"isResolved": false}]);
 
         let json = graphql_prs(json!([{
