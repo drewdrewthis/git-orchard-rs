@@ -20,8 +20,8 @@ func getJSONL(t *testing.T, h http.Handler, uuid string) *httptest.ResponseRecor
 }
 
 // TestConversationsJSONL_RootSymlinkedAfterStart_StillServes is the #513
-// regression. The daemon boots before ~/.claude/projects exists, so
-// computeCleanRoot falls back to Clean(Abs) — an unresolved root. When the
+// regression. The daemon boots before ~/.claude/projects exists, so the
+// root cannot be symlink-resolved and falls back to Clean(Abs). When the
 // user later creates that path as a symlink to storage elsewhere, every
 // candidate resolves through the symlink while the root does not, so
 // filepath.Rel yields a ".."-prefixed result and the handler 404s every
