@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	provider "github.com/drewdrewthis/orchardist/internal/server/adapter"
@@ -43,6 +44,13 @@ type Provider struct {
 
 	mu     sync.RWMutex
 	server ServerInfo
+
+	// snapshotCalls counts Snapshot() invocations so the O9 hot-path
+	// allocation audit has a number to assert on. Snapshot() clones the
+	// whole cached graph; a field resolver that calls it is the #612
+	// regression, and TestTmuxFieldResolvers_NoSnapshotClone_Issue612
+	// asserts this counter stays at zero across a field traversal.
+	snapshotCalls atomic.Int64
 
 	subsMu       sync.Mutex
 	sessionSubs  []chan provider.InvalidationEvent[SessionKey]
@@ -180,6 +188,7 @@ type RuntimeSnapshot struct {
 // Snapshot returns the cached graph. Empty when no tmux daemon is
 // running (poll loop puts EmptySnapshot through the stores in that case).
 func (p *Provider) Snapshot() RuntimeSnapshot {
+	p.snapshotCalls.Add(1)
 	p.mu.RLock()
 	server := p.server
 	p.mu.RUnlock()
@@ -191,6 +200,13 @@ func (p *Provider) Snapshot() RuntimeSnapshot {
 		Clients:  p.clients.Snapshot(),
 	}
 }
+
+// SnapshotCalls returns how many times Snapshot() has been called on this
+// provider. Snapshot() clones the entire cached graph, so this counter is
+// the O9 hot-path allocation audit for the tmux domain: it must not grow
+// while GraphQL field resolvers run (R3). Mirrors the loader package's
+// PaneByIDBatchCount() observability hook.
+func (p *Provider) SnapshotCalls() int64 { return p.snapshotCalls.Load() }
 
 // Server returns the cached ServerInfo. Provided separately so resolvers
 // for TmuxServer.alive / .pid don't pay the snapshot copy cost.
