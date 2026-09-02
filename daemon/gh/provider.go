@@ -256,6 +256,7 @@ func (p *Provider) GetPullRequest(ctx context.Context, key PullRequestKey) (Pull
 	if e, ok := p.prs[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		v := e.value
 		p.prMu.RUnlock()
+		p.logCacheHit("GetPullRequest", key.Owner+"/"+key.Name)
 		return v, nil
 	}
 	p.prMu.RUnlock()
@@ -299,6 +300,7 @@ func (p *Provider) ListIssues(ctx context.Context, owner, name string, state Iss
 	if e, ok := p.listIssCache[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		out := append([]Issue(nil), e.values...)
 		p.listMu.RUnlock()
+		p.logCacheHit("ListIssues", owner+"/"+name)
 		return out, nil
 	}
 	p.listMu.RUnlock()
@@ -330,6 +332,7 @@ func (p *Provider) GetIssue(ctx context.Context, key IssueKey) (Issue, error) {
 	if e, ok := p.issues[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		v := e.value
 		p.issueMu.RUnlock()
+		p.logCacheHit("GetIssue", key.Owner+"/"+key.Name)
 		return v, nil
 	}
 	p.issueMu.RUnlock()
@@ -364,6 +367,7 @@ func (p *Provider) ListWorkflowRuns(ctx context.Context, owner, name string) ([]
 	if e, ok := p.listRunCache[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		out := append([]WorkflowRun(nil), e.values...)
 		p.listMu.RUnlock()
+		p.logCacheHit("ListWorkflowRuns", owner+"/"+name)
 		return out, nil
 	}
 	p.listMu.RUnlock()
@@ -395,6 +399,7 @@ func (p *Provider) GetWorkflowRun(ctx context.Context, key WorkflowRunKey) (Work
 	if e, ok := p.runs[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		v := e.value
 		p.runMu.RUnlock()
+		p.logCacheHit("GetWorkflowRun", key.Owner+"/"+key.Name)
 		return v, nil
 	}
 	p.runMu.RUnlock()

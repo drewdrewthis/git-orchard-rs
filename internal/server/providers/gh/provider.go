@@ -247,13 +247,17 @@ func carryEnrichment(next *PullRequest, prev PullRequest) {
 // share one round-trip.
 func (p *Provider) ListPullRequests(ctx context.Context, owner, name string, state PullRequestState) ([]PullRequest, error) {
 	key := listPRsKey{Owner: owner, Name: name, State: state}
+	repo := owner + "/" + name
 	p.listMu.RLock()
 	if e, ok := p.listPRsCache[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		out := append([]PullRequest(nil), e.values...)
+		age := p.clock().Sub(e.at)
 		p.listMu.RUnlock()
+		p.logCacheHit("ListPullRequests", repo, age)
 		return out, nil
 	}
 	p.listMu.RUnlock()
+	p.logCacheMiss("ListPullRequests", repo)
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
@@ -294,13 +298,17 @@ func (p *Provider) ListPullRequests(ctx context.Context, owner, name string, sta
 // GetPullRequest fetches one PR. Cache hit when fresh; otherwise the
 // adapter is consulted and the result cached.
 func (p *Provider) GetPullRequest(ctx context.Context, key PullRequestKey) (PullRequest, error) {
+	repo := key.Owner + "/" + key.Name
 	p.prMu.RLock()
 	if e, ok := p.prs[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		v := e.value
+		age := p.clock().Sub(e.at)
 		p.prMu.RUnlock()
+		p.logCacheHit("GetPullRequest", repo, age)
 		return v, nil
 	}
 	p.prMu.RUnlock()
+	p.logCacheMiss("GetPullRequest", repo)
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
@@ -327,13 +335,17 @@ func (p *Provider) GetPullRequest(ctx context.Context, key PullRequestKey) (Pull
 // ListIssues fetches and caches the issue list for a repo.
 func (p *Provider) ListIssues(ctx context.Context, owner, name string, state IssueState) ([]Issue, error) {
 	key := listIssKey{Owner: owner, Name: name, State: state}
+	repo := owner + "/" + name
 	p.listMu.RLock()
 	if e, ok := p.listIssCache[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		out := append([]Issue(nil), e.values...)
+		age := p.clock().Sub(e.at)
 		p.listMu.RUnlock()
+		p.logCacheHit("ListIssues", repo, age)
 		return out, nil
 	}
 	p.listMu.RUnlock()
+	p.logCacheMiss("ListIssues", repo)
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
@@ -359,13 +371,17 @@ func (p *Provider) ListIssues(ctx context.Context, owner, name string, state Iss
 
 // GetIssue fetches one issue.
 func (p *Provider) GetIssue(ctx context.Context, key IssueKey) (Issue, error) {
+	repo := key.Owner + "/" + key.Name
 	p.issueMu.RLock()
 	if e, ok := p.issues[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		v := e.value
+		age := p.clock().Sub(e.at)
 		p.issueMu.RUnlock()
+		p.logCacheHit("GetIssue", repo, age)
 		return v, nil
 	}
 	p.issueMu.RUnlock()
+	p.logCacheMiss("GetIssue", repo)
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
@@ -384,13 +400,17 @@ func (p *Provider) GetIssue(ctx context.Context, key IssueKey) (Issue, error) {
 // ListWorkflowRuns fetches and caches the workflow-run list.
 func (p *Provider) ListWorkflowRuns(ctx context.Context, owner, name string) ([]WorkflowRun, error) {
 	key := listRunKey{Owner: owner, Name: name}
+	repo := owner + "/" + name
 	p.listMu.RLock()
 	if e, ok := p.listRunCache[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		out := append([]WorkflowRun(nil), e.values...)
+		age := p.clock().Sub(e.at)
 		p.listMu.RUnlock()
+		p.logCacheHit("ListWorkflowRuns", repo, age)
 		return out, nil
 	}
 	p.listMu.RUnlock()
+	p.logCacheMiss("ListWorkflowRuns", repo)
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
@@ -416,13 +436,17 @@ func (p *Provider) ListWorkflowRuns(ctx context.Context, owner, name string) ([]
 
 // GetWorkflowRun fetches one workflow run.
 func (p *Provider) GetWorkflowRun(ctx context.Context, key WorkflowRunKey) (WorkflowRun, error) {
+	repo := key.Owner + "/" + key.Name
 	p.runMu.RLock()
 	if e, ok := p.runs[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		v := e.value
+		age := p.clock().Sub(e.at)
 		p.runMu.RUnlock()
+		p.logCacheHit("GetWorkflowRun", repo, age)
 		return v, nil
 	}
 	p.runMu.RUnlock()
+	p.logCacheMiss("GetWorkflowRun", repo)
 
 	c, err := p.httpClient(ctx)
 	if err != nil {

@@ -45,10 +45,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# json_escape backslash-escapes a string for embedding in a JSON string
+# literal. `\` and `"` are the only bytes that break the envelope here —
+# paths and error messages are the only values that flow through, and
+# neither is expected to carry control characters.
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
 emit_err() {
   local code="$1" msg="$2"
   if $JSON; then
-    printf '{"ok":false,"error":{"code":"%s","message":"%s"}}\n' "$code" "$msg"
+    printf '{"ok":false,"error":{"code":"%s","message":"%s"}}\n' "$code" "$(json_escape "$msg")"
   else
     echo "error: $msg" >&2
   fi
@@ -95,7 +106,8 @@ render > "$PLIST_PATH" || emit_err "write_failed" "cannot write $PLIST_PATH"
 
 if $JSON; then
   printf '{"ok":true,"data":{"path":"%s","stateDir":"%s","outLog":"%s","errLog":"%s"}}\n' \
-    "$PLIST_PATH" "$STATE_DIR" "$STATE_DIR/orchard.out.log" "$STATE_DIR/orchard.err.log"
+    "$(json_escape "$PLIST_PATH")" "$(json_escape "$STATE_DIR")" \
+    "$(json_escape "$STATE_DIR/orchard.out.log")" "$(json_escape "$STATE_DIR/orchard.err.log")"
 else
   echo "installed $PLIST_PATH"
   echo "logs: $STATE_DIR/orchard.out.log, $STATE_DIR/orchard.err.log"

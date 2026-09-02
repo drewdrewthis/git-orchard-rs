@@ -1,12 +1,16 @@
 // logging.go — auditable observability for the gh domain (issue #749).
 //
-// Two things are logged here and nowhere else:
+// Three things are logged here and nowhere else:
 //
 //   - One Info line per OUTBOUND GitHub call, emitted at the HTTP boundary so
 //     no endpoint helper can accidentally skip it. Info, not Debug: the daemon
 //     runs at Info by default, and a rate-limit audit that has to be
 //     reconstructed from source instead of observed call volume is exactly the
 //     failure #749 reported.
+//   - One Info line per cache-serving Provider read (ListPullRequests,
+//     GetPullRequest, ListIssues, GetIssue, ListWorkflowRuns,
+//     GetWorkflowRun), hit or miss, so a hit — which makes no outbound call
+//     — is not invisible next to the call line a miss produces.
 //   - Warn lines for the backoff decisions (rate-limit cooldown, stale-serve).
 //     These change what the daemon does for minutes at a time and were
 //     previously invisible.
@@ -39,6 +43,12 @@ const (
 	// throttle window the sidebar re-polls continuously, and per-PR lines
 	// would bury the cooldown line that explains them.
 	staleBatchLogMessage = "gh: serving stale enrichment (batch)"
+	// cacheLogMessage marks a read served by a cache lookup, hit or miss
+	// (O4). A hit makes no outbound call, so without this line it would be
+	// invisible next to callLogMessage; a miss gets the same message (with
+	// hit=false) so both are attributable to one kind/repo grouping instead
+	// of a miss being inferred from the call log's endpoint shape.
+	cacheLogMessage = "gh: cache"
 )
 
 // Call kinds distinguish the three outbound surfaces. They share one message
@@ -140,6 +150,31 @@ func repoFromGraphQLVariables(vars map[string]any) string {
 		return ""
 	}
 	return owner + "/" + name
+}
+
+// logCacheHit records a read answered without an outbound call (O4). age is
+// how long the entry had been cached — cheap to compute (the freshness
+// check just did the same p.clock().Sub) and reported only on a hit, since a
+// miss has no cached age to give.
+func (p *Provider) logCacheHit(kind, repo string, age time.Duration) {
+	p.logger.Info(cacheLogMessage,
+		slog.String("kind", kind),
+		slog.String("repo", repo),
+		slog.Bool("hit", true),
+		slog.Int64("age_ms", age.Milliseconds()),
+	)
+}
+
+// logCacheMiss records a read falling through to an outbound call. The call
+// itself is logged separately by logCall; this line exists so the miss is
+// attributed to the same kind/repo grouping as a hit rather than left to be
+// inferred from the call log's endpoint shape.
+func (p *Provider) logCacheMiss(kind, repo string) {
+	p.logger.Info(cacheLogMessage,
+		slog.String("kind", kind),
+		slog.String("repo", repo),
+		slog.Bool("hit", false),
+	)
 }
 
 // enterRateLimitCooldown arms the rate-limit cooldown and says so at Warn.
