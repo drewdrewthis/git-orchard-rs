@@ -169,13 +169,14 @@ type PullRequest struct {
 }
 
 // UnresolvedThreadCount reports how many review threads still block a
-// merge: unresolved AND not outdated. An outdated thread is anchored to a
-// diff hunk that no longer exists on the head commit, so GitHub itself
-// stops treating it as actionable.
+// merge: unresolved, regardless of outdated state. GitHub's "Require
+// conversation resolution before merging" gate blocks on isResolved ==
+// false alone — an outdated thread (anchored to a diff hunk no longer on
+// the head commit) still blocks merge until it is resolved.
 func (p PullRequest) UnresolvedThreadCount() int {
 	n := 0
 	for _, t := range p.ReviewThreads {
-		if !t.IsResolved && !t.IsOutdated {
+		if !t.IsResolved {
 			n++
 		}
 	}

@@ -482,8 +482,10 @@ type PullRequest struct {
 	// Every thread is returned regardless of state; use
 	// `unresolvedThreadCount` for the merge-gate number.
 	ReviewThreads []*ReviewThread `json:"reviewThreads"`
-	// Threads that still block a merge: `isResolved == false AND isOutdated
-	// == false` (#607). Derived from the same fetch as `reviewThreads` so a
+	// Threads that still block a merge: `isResolved == false`, regardless of
+	// `isOutdated` (#607). GitHub's "Require conversation resolution before
+	// merging" gate blocks on isResolved alone; an outdated thread still blocks
+	// merge until resolved. Derived from the same fetch as `reviewThreads` so a
 	// merge gate can read the count without walking the list.
 	UnresolvedThreadCount int64 `json:"unresolvedThreadCount"`
 }

@@ -525,7 +525,7 @@ func (r *pullRequestResolver) ReviewThreads(ctx context.Context, obj *graphql1.P
 	return toGraphQLReviewThreads(pr.ReviewThreads), nil
 }
 
-// UnresolvedThreadCount is the resolver for the pullRequest.unresolvedThreadCount field (#607). Counts threads that are unresolved AND not outdated — the Rule-4 merge gate reads this instead of walking reviewThreads.
+// UnresolvedThreadCount is the resolver for the pullRequest.unresolvedThreadCount field (#607). Counts unresolved threads regardless of outdated state, matching GitHub's merge-conversation-resolution gate — the Rule-4 merge gate reads this instead of walking reviewThreads.
 func (r *pullRequestResolver) UnresolvedThreadCount(ctx context.Context, obj *graphql1.PullRequest) (int64, error) {
 	key, ok := prKeyFromGraphQL(r.Resolver, obj)
 	if !ok {
