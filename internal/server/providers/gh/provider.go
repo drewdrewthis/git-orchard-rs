@@ -17,6 +17,12 @@ import (
 // is precious."
 const CacheTTL = 2 * time.Minute
 
+// rateLimitCooldown is how long the enrichment paths stop calling GitHub after
+// a rate-limit response. GitHub resets hourly; five minutes is short enough to
+// recover from a one-off burst and long enough to stop wasting quota when we
+// are genuinely throttled.
+const rateLimitCooldown = 5 * time.Minute
+
 // Provider is the gh provider. It owns three sub-providers — one per
 // node type — each with its own typed cache. Resolvers call into the
 // Provider's high-level methods (ListPullRequests, ListIssues, etc.);
@@ -198,6 +204,9 @@ func (p *Provider) httpClient(ctx context.Context) (*Client, error) {
 			return
 		}
 		p.client = NewClient(p.baseURL, token)
+		// The client owns the per-call audit line (#749) and needs the
+		// provider's leveled logger to emit it.
+		p.client.Logger = p.logger
 	})
 	if p.clientErr != nil {
 		return nil, p.clientErr

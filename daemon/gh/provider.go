@@ -44,6 +44,12 @@ const staleEnrichmentTTL = 1 * time.Hour
 // issueDepsTTL governs how long an enriched dependency snapshot is trusted.
 const issueDepsTTL = 60 * time.Second
 
+// rateLimitCooldown is how long the enrichment paths stop calling GitHub after
+// a rate-limit response. GitHub resets hourly; five minutes is short enough to
+// recover from a one-off burst and long enough to stop wasting quota when we
+// are genuinely throttled.
+const rateLimitCooldown = 5 * time.Minute
+
 // Provider is the gh domain in-process cache and subscription broadcaster.
 // It owns three sub-caches (PR, issue, workflow run), the rate-limit
 // cooldown, and the webhook subscriber fanout.
@@ -197,6 +203,9 @@ func (p *Provider) httpClient(ctx context.Context) (*Client, error) {
 			return
 		}
 		p.client = NewClient(p.baseURL, token)
+		// The client owns the per-call audit line (#749) and needs the
+		// provider's leveled logger to emit it.
+		p.client.Logger = p.logger
 	})
 	if p.clientErr != nil {
 		return nil, p.clientErr
@@ -212,7 +221,7 @@ func (p *Provider) ListPullRequests(ctx context.Context, owner, name string, sta
 	if e, ok := p.listPRsCache[key]; ok && p.clock().Sub(e.at) < CacheTTL {
 		out := append([]PullRequest(nil), e.values...)
 		p.listMu.RUnlock()
-		p.logger.Debug("gh: ListPullRequests cache hit", slog.String("repo", owner+"/"+name))
+		p.logCacheHit("ListPullRequests", owner+"/"+name)
 		return out, nil
 	}
 	p.listMu.RUnlock()
@@ -554,7 +563,7 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 
 	serveStale := func(reason error) (PullRequest, error) {
 		if ok && hasEnriched && p.clock().Sub(enrichedAt) < staleEnrichmentTTL {
-			p.logger.Debug("gh: EnrichPullRequest serving stale", slog.String("key", key.String()), slog.String("reason", reason.Error()))
+			p.logServingStale(key, reason)
 			return entry.value, nil
 		}
 		return PullRequest{}, reason
@@ -590,16 +599,12 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 		}
 		joined := strings.Join(msgs, "; ")
 		if strings.Contains(strings.ToLower(joined), "rate limit") {
-			p.prMu.Lock()
-			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-			p.prMu.Unlock()
+			p.enterRateLimitCooldown("EnrichPullRequest", joined)
 		}
 		return serveStale(fmt.Errorf("EnrichPullRequest graphql errors: %s", joined))
 	}
 
-	p.prMu.Lock()
-	p.rateLimitedUntil = time.Time{}
-	p.prMu.Unlock()
+	p.clearRateLimitCooldown()
 
 	return p.applyEnrichment(key, envelope.Data.Repository.PullRequest, p.clock()), nil
 }
@@ -663,18 +668,28 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 		return PullRequest{}
 	}
 
-	if !rateLimitedUntil.IsZero() && p.clock().Before(rateLimitedUntil) {
+	// serveStaleAll fills every outstanding key from cache and reports the
+	// fallback once for the whole batch (#749).
+	serveStaleAll := func(reason error) {
+		served := 0
 		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
+			v := serveStaleForKey(k)
+			if v.Number != 0 {
+				served++
+			}
+			result[k] = v
 		}
+		p.logServingStaleBatch(served, len(toFetch), reason)
+	}
+
+	if !rateLimitedUntil.IsZero() && p.clock().Before(rateLimitedUntil) {
+		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests: rate limit cooldown until %s", rateLimitedUntil.Format(time.RFC3339)))
 		return result, nil
 	}
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(err)
 		return result, err
 	}
 
@@ -709,13 +724,9 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 	raw, err := c.GraphQL(ctx, qb.String(), nil)
 	if err != nil {
 		if IsRateLimited(err) {
-			p.prMu.Lock()
-			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-			p.prMu.Unlock()
+			p.enterRateLimitCooldown("BatchEnrichPullRequests", err.Error())
 		}
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(err)
 		return result, err
 	}
 
@@ -726,9 +737,7 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 		} `json:"errors,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests decode: %w", err))
 		return result, fmt.Errorf("BatchEnrichPullRequests decode: %w", err)
 	}
 
@@ -739,19 +748,13 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 		}
 		joined := strings.Join(msgs, "; ")
 		if strings.Contains(strings.ToLower(joined), "rate limit") {
-			p.prMu.Lock()
-			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-			p.prMu.Unlock()
+			p.enterRateLimitCooldown("BatchEnrichPullRequests", joined)
 		}
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined))
 		return result, fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined)
 	}
 
-	p.prMu.Lock()
-	p.rateLimitedUntil = time.Time{}
-	p.prMu.Unlock()
+	p.clearRateLimitCooldown()
 
 	for _, pos := range positions {
 		repoAlias := fmt.Sprintf("r%d", pos.repoIdx)

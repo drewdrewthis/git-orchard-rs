@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -44,10 +45,16 @@ const graphqlPath = "/graphql"
 // Per ADR-011 §12: "ten endpoints, not a heavy library".
 // Hand-rolled net/http with json.Decoder; no go-github, no oauth2.
 type Client struct {
-	BaseURL          string
-	Token            string
-	HTTP             *http.Client
-	UserAgent        string
+	BaseURL   string
+	Token     string
+	HTTP      *http.Client
+	UserAgent string
+
+	// Logger receives the one Info line per outbound call (issue #749).
+	// The Provider wires its own logger here; a nil Logger falls back to
+	// slog.Default() rather than dropping the audit trail silently.
+	Logger *slog.Logger
+
 	MaxPagesOverride int
 }
 
@@ -115,7 +122,11 @@ func (c *Client) do(ctx context.Context, path string, q url.Values, out any) err
 		req.Header.Set("User-Agent", ua)
 	}
 
+	start := time.Now()
 	resp, err := c.httpClient().Do(req)
+	// Logged before any status branching so a 403/404/rate-limited response
+	// counts exactly like a 200 — each consumed one attempt (#749).
+	c.logCall(callKindREST, path, repoFromRESTPath(path), 0, start, resp, err)
 	if err != nil {
 		return fmt.Errorf("github GET %s: %w", path, err)
 	}
@@ -203,7 +214,11 @@ func walkPaginated(ctx context.Context, c *Client, firstURL, logPath string, dec
 			req.Header.Set("User-Agent", ua)
 		}
 
+		start := time.Now()
 		resp, err := c.httpClient().Do(req)
+		// One line per page: every page is a separate request against the same
+		// rate-limit budget, so collapsing them would under-report volume (#749).
+		c.logCall(callKindRESTPage, logPath, repoFromRESTPath(logPath), page+1, start, resp, err)
 		if err != nil {
 			return fmt.Errorf("github GET %s: %w", logPath, err)
 		}
@@ -315,7 +330,9 @@ func (c *Client) GraphQLWithHeaders(ctx context.Context, query string, variables
 		req.Header.Set(k, v)
 	}
 
+	start := time.Now()
 	resp, err := c.httpClient().Do(req)
+	c.logCall(callKindGraphQL, graphqlPath, repoFromGraphQLVariables(variables), 0, start, resp, err)
 	if err != nil {
 		return nil, fmt.Errorf("github POST %s: %w", graphqlPath, err)
 	}
