@@ -88,6 +88,14 @@ print(m.group(1) if m else 'MISSING')
   [ "$(echo "$output" | _json_data_field errLog)" = "$FAKE_HOME/.local/state/orchard/orchard.err.log" ]
 }
 
+@test "install --json: escapes a quote in the resolved state dir" {
+  weird_home="$FAKE_HOME/qu\"ote"
+  mkdir -p "$weird_home"
+  output="$(HOME="$weird_home" XDG_STATE_HOME= "$SCRIPT" --json --dest "$DEST_DIR")"
+  [ "$(echo "$output" | _json_field ok)" = "True" ]
+  [ "$(echo "$output" | _json_data_field stateDir)" = "$weird_home/.local/state/orchard" ]
+}
+
 @test "no HOME and no XDG_STATE_HOME: ok=false, code=no_home" {
   output="$(env -u HOME -u XDG_STATE_HOME "$SCRIPT" --json --print 2>/dev/null || true)"
   [ "$(echo "$output" | _json_field ok)" = "False" ]

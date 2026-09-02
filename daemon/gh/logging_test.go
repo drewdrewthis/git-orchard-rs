@@ -417,3 +417,124 @@ func TestRepoFromGraphQLVariables(t *testing.T) {
 		}
 	}
 }
+
+// cacheHitProbe drives one cache-serving Provider method to a hit for the
+// table-driven test below. name is both the subtest name and the "op"
+// attribute the method under test must log.
+type cacheHitProbe struct {
+	name string
+	repo string
+	seed func(p *Provider, now time.Time)
+	call func(p *Provider, ctx context.Context) error
+}
+
+// cacheHitProbes covers the four cache-serving Provider methods that were
+// missing logCacheHit coverage (issue #763 non-blocking note: only
+// ListPullRequests was wired up, tested separately by
+// TestListPullRequestsLogsCacheHitAtInfo). GetPullRequest, ListIssues,
+// GetIssue, ListWorkflowRuns, and GetWorkflowRun all share the same
+// read-through cache shape.
+func cacheHitProbes() []cacheHitProbe {
+	prKey := PullRequestKey{Owner: "alice", Name: "repo", Number: 7}
+	issueKey := IssueKey{Owner: "alice", Name: "repo", Number: 7}
+	runKey := WorkflowRunKey{Owner: "alice", Name: "repo", RunID: 99}
+
+	return []cacheHitProbe{
+		{
+			name: "GetPullRequest",
+			repo: "alice/repo",
+			seed: func(p *Provider, now time.Time) {
+				p.prs[prKey] = prEntry{value: PullRequest{RepoOwner: "alice", RepoName: "repo", Number: 7}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.GetPullRequest(ctx, prKey)
+				return err
+			},
+		},
+		{
+			name: "ListIssues",
+			repo: "alice/repo",
+			seed: func(p *Provider, now time.Time) {
+				k := listIssKey{Owner: "alice", Name: "repo", State: IssueStateOpen}
+				p.listIssCache[k] = listIssEntry{values: []Issue{{RepoOwner: "alice", RepoName: "repo", Number: 7}}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.ListIssues(ctx, "alice", "repo", IssueStateOpen)
+				return err
+			},
+		},
+		{
+			name: "GetIssue",
+			repo: "alice/repo",
+			seed: func(p *Provider, now time.Time) {
+				p.issues[issueKey] = issueEntry{value: Issue{RepoOwner: "alice", RepoName: "repo", Number: 7}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.GetIssue(ctx, issueKey)
+				return err
+			},
+		},
+		{
+			name: "ListWorkflowRuns",
+			repo: "alice/repo",
+			seed: func(p *Provider, now time.Time) {
+				k := listRunKey{Owner: "alice", Name: "repo"}
+				p.listRunCache[k] = listRunEntry{values: []WorkflowRun{{RepoOwner: "alice", RepoName: "repo", RunID: 99}}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.ListWorkflowRuns(ctx, "alice", "repo")
+				return err
+			},
+		},
+		{
+			name: "GetWorkflowRun",
+			repo: "alice/repo",
+			seed: func(p *Provider, now time.Time) {
+				p.runs[runKey] = runEntry{value: WorkflowRun{RepoOwner: "alice", RepoName: "repo", RunID: 99}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.GetWorkflowRun(ctx, runKey)
+				return err
+			},
+		},
+	}
+}
+
+// TestCacheServingMethodsLogHitAtInfo is the twin-coverage-consistency fix
+// (issue #763): every cache-serving Provider method logs cacheHitLogMessage
+// on a hit, not just ListPullRequests.
+func TestCacheServingMethodsLogHitAtInfo(t *testing.T) {
+	t.Parallel()
+
+	for _, probe := range cacheHitProbes() {
+		t.Run(probe.name, func(t *testing.T) {
+			t.Parallel()
+
+			tr := &fakeTransport{respond: func(_ int, _ *http.Request) (*http.Response, error) {
+				return nil, errors.New("cache hit must not reach the transport")
+			}}
+			cap := newLogCapture(slog.LevelInfo)
+			now := time.Now()
+			p := newLoggedProvider(t, tr, cap, func() time.Time { return now })
+			probe.seed(p, now)
+
+			if err := probe.call(p, context.Background()); err != nil {
+				t.Fatalf("%s: %v", probe.name, err)
+			}
+			if tr.calls != 0 {
+				t.Fatalf("%s: fake transport saw %d requests, want 0 (must be served from cache)", probe.name, tr.calls)
+			}
+
+			rec := requireOne(t, cap, cacheHitLogMessage)
+			if rec["level"] != "INFO" {
+				t.Errorf("%s: cache hit log level = %v, want INFO", probe.name, rec["level"])
+			}
+			if got, want := rec["op"], probe.name; got != want {
+				t.Errorf("%s: op = %v, want %v", probe.name, got, want)
+			}
+			if got, want := rec["repo"], probe.repo; got != want {
+				t.Errorf("%s: repo = %v, want %v", probe.name, got, want)
+			}
+		})
+	}
+}

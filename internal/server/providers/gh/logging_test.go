@@ -467,3 +467,194 @@ func TestServeStaleEnrichmentLogsAtWarn(t *testing.T) {
 	}
 	assertHasAttrs(t, recs[0], "key", "reason")
 }
+
+// cacheProbe drives one cache-serving Provider method through both a hit and
+// a miss for the table-driven tests below. name is both the subtest name and
+// the "kind" attribute the method under test must log.
+type cacheProbe struct {
+	name string
+	repo string
+	// seedHit populates p's cache so the next call is a hit.
+	seedHit func(p *Provider, now time.Time)
+	// call invokes the method under test. Only the miss test's transport
+	// actually errors, and even then only the log line — not the error — is
+	// asserted on.
+	call func(p *Provider, ctx context.Context) error
+}
+
+// cacheProbes covers every cache-serving Provider method (issue #749 AC4):
+// the three List/Get pairs backed by listPRsCache/prs, listIssCache/issues,
+// and listRunCache/runs. Methods with no cache (ListPullRequestReviews,
+// ListPullRequestComments, ListIssueComments, GetRepository, GraphQL) are
+// intentionally absent — there is nothing to hit or miss.
+func cacheProbes() []cacheProbe {
+	prKey := PullRequestKey{Owner: "alice", Name: "repo", Number: 7}
+	issueKey := IssueKey{Owner: "alice", Name: "repo", Number: 7}
+	runKey := WorkflowRunKey{Owner: "alice", Name: "repo", RunID: 99}
+
+	return []cacheProbe{
+		{
+			name: "ListPullRequests",
+			repo: "alice/repo",
+			seedHit: func(p *Provider, now time.Time) {
+				k := listPRsKey{Owner: "alice", Name: "repo", State: PullRequestStateOpen}
+				p.listPRsCache[k] = listPRsEntry{values: []PullRequest{{RepoOwner: "alice", RepoName: "repo", Number: 7}}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.ListPullRequests(ctx, "alice", "repo", PullRequestStateOpen)
+				return err
+			},
+		},
+		{
+			name: "GetPullRequest",
+			repo: "alice/repo",
+			seedHit: func(p *Provider, now time.Time) {
+				p.prs[prKey] = prEntry{value: PullRequest{RepoOwner: "alice", RepoName: "repo", Number: 7}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.GetPullRequest(ctx, prKey)
+				return err
+			},
+		},
+		{
+			name: "ListIssues",
+			repo: "alice/repo",
+			seedHit: func(p *Provider, now time.Time) {
+				k := listIssKey{Owner: "alice", Name: "repo", State: IssueStateOpen}
+				p.listIssCache[k] = listIssEntry{values: []Issue{{RepoOwner: "alice", RepoName: "repo", Number: 7}}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.ListIssues(ctx, "alice", "repo", IssueStateOpen)
+				return err
+			},
+		},
+		{
+			name: "GetIssue",
+			repo: "alice/repo",
+			seedHit: func(p *Provider, now time.Time) {
+				p.issues[issueKey] = issueEntry{value: Issue{RepoOwner: "alice", RepoName: "repo", Number: 7}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.GetIssue(ctx, issueKey)
+				return err
+			},
+		},
+		{
+			name: "ListWorkflowRuns",
+			repo: "alice/repo",
+			seedHit: func(p *Provider, now time.Time) {
+				k := listRunKey{Owner: "alice", Name: "repo"}
+				p.listRunCache[k] = listRunEntry{values: []WorkflowRun{{RepoOwner: "alice", RepoName: "repo", RunID: 99}}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.ListWorkflowRuns(ctx, "alice", "repo")
+				return err
+			},
+		},
+		{
+			name: "GetWorkflowRun",
+			repo: "alice/repo",
+			seedHit: func(p *Provider, now time.Time) {
+				p.runs[runKey] = runEntry{value: WorkflowRun{RepoOwner: "alice", RepoName: "repo", RunID: 99}, at: now}
+			},
+			call: func(p *Provider, ctx context.Context) error {
+				_, err := p.GetWorkflowRun(ctx, runKey)
+				return err
+			},
+		},
+	}
+}
+
+// TestCacheServingMethodsLogHitAtInfo is the headline AC4 assertion: every
+// cache-serving Provider method logs one Info "gh: cache" record with
+// hit=true and an age when it answers from cache, while making zero
+// outbound calls.
+func TestCacheServingMethodsLogHitAtInfo(t *testing.T) {
+	t.Parallel()
+
+	for _, probe := range cacheProbes() {
+		t.Run(probe.name, func(t *testing.T) {
+			t.Parallel()
+
+			tr := &fakeTransport{respond: func(_ int, _ *http.Request) (*http.Response, error) {
+				return nil, errors.New("cache hit must not reach the transport")
+			}}
+			cap := newLogCapture(slog.LevelInfo)
+			now := time.Now()
+			p := NewWith(cap.logger, "https://api.github.test", &StaticAuthSource{TokenValue: "token"}, func() time.Time { return now })
+			SetHTTPClientForTest(p, &http.Client{Transport: tr})
+			probe.seedHit(p, now)
+
+			if err := probe.call(p, context.Background()); err != nil {
+				t.Fatalf("%s: %v", probe.name, err)
+			}
+			if tr.calls != 0 {
+				t.Fatalf("%s: fake transport saw %d requests, want 0 (must be served from cache)", probe.name, tr.calls)
+			}
+
+			recs := cap.withMessage(t, cacheLogMessage)
+			if len(recs) != 1 {
+				t.Fatalf("%s: got %d %q records, want 1; captured:\n%s", probe.name, len(recs), cacheLogMessage, cap.buf.String())
+			}
+			rec := recs[0]
+			if rec["level"] != "INFO" {
+				t.Errorf("%s: cache log level = %v, want INFO", probe.name, rec["level"])
+			}
+			if got, want := rec["kind"], probe.name; got != want {
+				t.Errorf("%s: kind = %v, want %v", probe.name, got, want)
+			}
+			if got, want := rec["repo"], probe.repo; got != want {
+				t.Errorf("%s: repo = %v, want %v", probe.name, got, want)
+			}
+			if got, want := rec["hit"], true; got != want {
+				t.Errorf("%s: hit = %v, want %v", probe.name, got, want)
+			}
+			assertHasAttrs(t, rec, "age_ms")
+		})
+	}
+}
+
+// TestCacheServingMethodsLogMissAtInfo is the miss half of the AC4 pair:
+// every cache-serving Provider method logs one Info "gh: cache" record with
+// hit=false — and no age, since there is nothing cached to age — before it
+// ever reaches the transport. The transport errors on purpose so only the
+// cache line, not a successful fetch, is under test.
+func TestCacheServingMethodsLogMissAtInfo(t *testing.T) {
+	t.Parallel()
+
+	for _, probe := range cacheProbes() {
+		t.Run(probe.name, func(t *testing.T) {
+			t.Parallel()
+
+			tr := &fakeTransport{respond: func(_ int, _ *http.Request) (*http.Response, error) {
+				return nil, errors.New("dial tcp: connection refused")
+			}}
+			cap := newLogCapture(slog.LevelInfo)
+			p := NewWith(cap.logger, "https://api.github.test", &StaticAuthSource{TokenValue: "token"}, nil)
+			SetHTTPClientForTest(p, &http.Client{Transport: tr})
+
+			_ = probe.call(p, context.Background())
+
+			recs := cap.withMessage(t, cacheLogMessage)
+			if len(recs) != 1 {
+				t.Fatalf("%s: got %d %q records, want 1; captured:\n%s", probe.name, len(recs), cacheLogMessage, cap.buf.String())
+			}
+			rec := recs[0]
+			if rec["level"] != "INFO" {
+				t.Errorf("%s: cache log level = %v, want INFO", probe.name, rec["level"])
+			}
+			if got, want := rec["kind"], probe.name; got != want {
+				t.Errorf("%s: kind = %v, want %v", probe.name, got, want)
+			}
+			if got, want := rec["repo"], probe.repo; got != want {
+				t.Errorf("%s: repo = %v, want %v", probe.name, got, want)
+			}
+			if got, want := rec["hit"], false; got != want {
+				t.Errorf("%s: hit = %v, want %v", probe.name, got, want)
+			}
+			if _, ok := rec["age_ms"]; ok {
+				t.Errorf("%s: miss record has an age_ms attribute; want it omitted", probe.name)
+			}
+		})
+	}
+}
