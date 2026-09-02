@@ -75,6 +75,12 @@ type Client struct {
 	dialer     *websocket.Dialer
 	now        func() time.Time
 
+	// readWait bounds how long a read may sit with no frame at all —
+	// see defaultReadWait in keepalive.go. Immutable after construction;
+	// tests shrink it before the first Subscribe, which is what starts
+	// the read loop.
+	readWait time.Duration
+
 	mu       sync.Mutex
 	conn     *websocket.Conn
 	connOnce *sync.Once
@@ -124,6 +130,7 @@ func newClient(address string, tls bool, httpc *http.Client, dialer *websocket.D
 		httpClient: httpc,
 		dialer:     &d,
 		now:        clock,
+		readWait:   defaultReadWait,
 		connOnce:   &sync.Once{},
 		subs:       map[string]chan QueryResult{},
 	}
@@ -270,41 +277,34 @@ func (c *Client) ensureConn(ctx context.Context) error {
 	once.Do(func() {
 		conn, _, err := c.dialer.DialContext(ctx, c.wsURL(), nil)
 		if err != nil {
-			c.mu.Lock()
-			c.connErr = fmt.Errorf("dial %s: %w", c.wsURL(), err)
-			c.mu.Unlock()
+			c.failOpen(nil, fmt.Errorf("dial %s: %w", c.wsURL(), err))
 			return
 		}
+		// HandshakeTimeout is spent by the time the upgrade completes, so
+		// the ack read below needs its own bound.
+		armReads(conn, c.readWait)
 
 		// graphql-transport-ws handshake: client → connection_init,
 		// server → connection_ack. The server may attach a payload to
 		// the ack; we ignore it in v1.
 		init := map[string]any{"type": "connection_init"}
 		if err := c.writeJSON(conn, init); err != nil {
-			_ = conn.Close()
-			c.mu.Lock()
-			c.connErr = fmt.Errorf("write connection_init: %w", err)
-			c.mu.Unlock()
+			c.failOpen(conn, fmt.Errorf("write connection_init: %w", err))
 			return
 		}
 		var ack map[string]any
 		if err := conn.ReadJSON(&ack); err != nil {
-			_ = conn.Close()
-			c.mu.Lock()
-			c.connErr = fmt.Errorf("read connection_ack: %w", err)
-			c.mu.Unlock()
+			c.failOpen(conn, fmt.Errorf("read connection_ack: %w", err))
 			return
 		}
 		if t, _ := ack["type"].(string); t != "connection_ack" {
-			_ = conn.Close()
-			c.mu.Lock()
-			c.connErr = fmt.Errorf("expected connection_ack, got %q", t)
-			c.mu.Unlock()
+			c.failOpen(conn, fmt.Errorf("expected connection_ack, got %q", t))
 			return
 		}
 
 		c.mu.Lock()
 		c.conn = conn
+		c.connErr = nil
 		c.mu.Unlock()
 		go c.readLoop(conn)
 	})
@@ -323,6 +323,9 @@ func (c *Client) readLoop(conn *websocket.Conn) {
 			Type    string          `json:"type"`
 			Payload json.RawMessage `json:"payload,omitempty"`
 		}
+		// Every read gets a fresh deadline, so any frame — data or
+		// keepalive — re-arms it; only total silence trips it.
+		rearm(conn, c.readWait)
 		if err := conn.ReadJSON(&msg); err != nil {
 			c.failAll(fmt.Errorf("ws read: %w", err))
 			return
@@ -379,6 +382,21 @@ func (c *Client) removeSub(id string) {
 	if ok {
 		close(ch)
 	}
+}
+
+// failOpen records why an open failed and re-arms connOnce so the next
+// Subscribe redials. Without the re-arm the first failure is cached for
+// the life of the Client: Provider.runPeer retries Subscribe every 5s and
+// would get the same stale error back forever, so a handshake that hits
+// readWait would trade a hang for a permanently dead peer.
+func (c *Client) failOpen(conn *websocket.Conn, err error) {
+	if conn != nil {
+		_ = conn.Close()
+	}
+	c.mu.Lock()
+	c.connErr = err
+	c.connOnce = &sync.Once{}
+	c.mu.Unlock()
 }
 
 // failAll closes every subscription channel after pushing one final
