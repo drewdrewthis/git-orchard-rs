@@ -678,6 +678,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case slowTickMsg:
 		return m, fetchSlow
 	case fastDataMsg:
+		// Sampled every fast tick regardless of whether this particular read
+		// succeeded: it is the only thing that notices the push lane going
+		// quietly stale (subFresh, no error ever arrives) rather than erroring
+		// outright (PR #757 review, discussion_r3918791010).
+		m.clientTick.observePushHealth(m.subLive())
 		m.err = msg.err
 		if msg.err == nil {
 			m.rows = msg.rows
@@ -723,10 +728,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// lane's, and this message carries nothing about them.
 		if msg.err != nil {
 			m.subErr = msg.err
+			// The lane cannot trust attach signals it isn't receiving: pin the
+			// client lane at the fast rung until the push lane recovers, rather
+			// than leaving an externally-driven switch-client bounded by
+			// whatever cadence it had already decayed to (PR #757 review,
+			// discussion_r3918791010).
+			m.clientTick.observePushHealth(false)
 			return m, nil
 		}
 		m.subErr = nil
 		m.subAt = time.Now()
+		m.clientTick.observePushHealth(true)
 		attached, created, p2s := foldSessions(msg.sessions)
 		// An attach or detach anywhere means "which session is THIS client on"
 		// is about to move, and it is the only such event the sidebar sees

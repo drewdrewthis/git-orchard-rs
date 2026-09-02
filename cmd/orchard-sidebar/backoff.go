@@ -35,19 +35,26 @@ var clientLadder = []time.Duration{
 const clientFastHold = 8
 
 // idleBackoff is the client lane's tick policy. Pure state: no clock, no I/O,
-// no tmux — the whole ladder is decided from the sequence of reads alone. The
-// zero value is a lane that has read nothing yet and ticks at the fast rung.
+// no tmux — the whole ladder is decided from the sequence of reads and push-
+// lane health alone. The zero value is a lane that has read nothing yet,
+// assumes a healthy push lane, and ticks at the fast rung.
 type idleBackoff struct {
-	last clientRead
-	idle int // consecutive identical reads since the last change
+	last     clientRead
+	idle     int  // consecutive identical reads since the last change
+	pushDown bool // true while the push lane cannot be trusted to re-arm us
 }
 
 // observe records one read and returns how long to wait before the next. A
 // read that differs from the previous one drops back to the fast rung;
 // identical reads hold there for clientFastHold, then step down one rung per
-// read until the cap.
+// read until the cap. While the push lane is down, every read is pinned to
+// the fast rung regardless of whether it changed: the push lane's
+// attach/detach signal is what normally re-arms the lane for a switch it
+// didn't cause itself, and a lane that cannot receive that signal cannot
+// afford to coast on the assumption nothing is happening (PR #757 review,
+// discussion_r3918791010).
 func (b *idleBackoff) observe(r clientRead) time.Duration {
-	if r != b.last {
+	if b.pushDown || r != b.last {
 		b.last = r
 		b.idle = 0
 		return b.interval()
@@ -62,6 +69,19 @@ func (b *idleBackoff) observe(r clientRead) time.Duration {
 // It restarts the hold window, so the following identical read does not
 // immediately resume decaying.
 func (b *idleBackoff) reset() { b.idle = 0 }
+
+// observePushHealth records whether the push lane is currently delivering.
+// Going down snaps the lane back to the fast rung immediately, the same as
+// any other reset trigger; observe then holds it there for as long as
+// pushDown stays true. The lane cannot rely on attach signals it isn't
+// receiving, so it cannot climb past the one rung it can still get right on
+// its own (PR #757 review, discussion_r3918791010).
+func (b *idleBackoff) observePushHealth(live bool) {
+	b.pushDown = !live
+	if b.pushDown {
+		b.idle = 0
+	}
+}
 
 // interval reports the current cadence without advancing it.
 func (b *idleBackoff) interval() time.Duration {
