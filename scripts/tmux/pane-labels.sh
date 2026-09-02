@@ -76,7 +76,6 @@ run_once() {
   # shellcheck disable=SC2064
   trap "rm -f '$qfile' '$panes'" RETURN
 
-  local daemon_ok=1
   # `claudeInstances` and `tmuxSessions` were selected here and never read.
   # Claude state deliberately comes from the hook sidecars instead (ADR-007):
   # they are local files, so state still renders when the daemon is down —
@@ -100,7 +99,6 @@ run_once() {
       -H 'Content-Type: application/json' \
       -d "$query" \
       > "$qfile" 2>/dev/null; then
-    daemon_ok=0
     printf '{"data":{"repos":[]}}' > "$qfile"
   fi
 
@@ -113,13 +111,11 @@ run_once() {
     tmux list-panes -aF "#{pane_id}${TAB}#{session_name}${TAB}#{window_index}${TAB}#{pane_index}${TAB}#{pane_current_path}${TAB}#{pane_current_command}" > "$panes" 2>/dev/null || return 1
   fi
 
-  ORCHARD_DAEMON_OK=$daemon_ok \
   ORCHARD_PRINT_MODE=$PRINT_MODE \
   ORCHARD_HEARTBEAT_DIR_ARG="$HEARTBEAT_DIR" \
   python3 - "$qfile" "$panes" <<'PY'
 import json, subprocess, sys, datetime, os, glob, stat
 
-DAEMON_OK = os.environ.get("ORCHARD_DAEMON_OK", "1") == "1"
 PRINT_MODE = os.environ.get("ORCHARD_PRINT_MODE", "0") == "1"
 
 # `curl -sf` only rejects non-2xx, so a proxy error page, a truncated body or
@@ -415,7 +411,6 @@ with open(sys.argv[2]) as f:
         #   CLAUDE  : per-state (green/brightblack/yellow) — hook state
         #   CMD     : green,bold         (running process — claude/zsh/vim/etc.)
         #   PATH    : brightblack        (only when no worktree)
-        #   DOWN    : red                (daemon down badge)
 
         if wt:
             s_g, s_c = status_glyph(wt.get("pr"))
@@ -479,12 +474,6 @@ with open(sys.argv[2]) as f:
             else:
                 cells.append(cell("fg=cyan", f"⏵ {cmd_str}"))
 
-        # Daemon-down badge only on panes that ARE attached to an orchard worktree —
-        # otherwise it pollutes the labels on shells/editors that have no orchard data
-        # to be "down" about. Status-line indicator (see ~/.tmux.conf) carries the
-        # global signal.
-        if not DAEMON_OK and wt:
-            cells.append(cell("fg=red", "⚠ stale"))
 
         label = "  ".join(cells)
         if PRINT_MODE:
