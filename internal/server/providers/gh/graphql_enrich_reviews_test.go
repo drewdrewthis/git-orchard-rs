@@ -83,7 +83,8 @@ func newReviewRefreshProvider(t *testing.T, graphqlBody []byte, clock func() tim
 
 // TestEnrichPullRequest_MapsReviewSurface asserts the single-PR enrichment
 // path maps every new field: head sha, reviews, threads, and the derived
-// count that filters resolved and outdated threads.
+// count that filters resolved threads (outdated ones still count — GitHub's
+// merge gate does not exempt them).
 func TestEnrichPullRequest_MapsReviewSurface(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, 4, 2, 14, 0, 0, 0, time.UTC)}
 	p, _ := newEnrichProvider(t, singlePREnrichBody(t), clock.Now)
@@ -131,8 +132,10 @@ func TestEnrichPullRequest_MapsReviewSurface(t *testing.T) {
 		t.Errorf("ReviewThreads[0].NodeID() = %q, want %q", got, want)
 	}
 
-	// Thread 2 is resolved, thread 3 is outdated — neither blocks merge.
-	if got, want := pr.UnresolvedThreadCount(), 2; got != want {
+	// Thread 2 is resolved — doesn't block merge. Thread 3 is outdated but
+	// still unresolved — it still blocks merge; GitHub's conversation-
+	// resolution gate does not exempt outdated threads.
+	if got, want := pr.UnresolvedThreadCount(), 3; got != want {
 		t.Errorf("UnresolvedThreadCount() = %d, want %d", got, want)
 	}
 }
@@ -182,7 +185,7 @@ func TestListPullRequests_CarriesReviewSurfaceForward(t *testing.T) {
 	if got, want := len(after.ReviewThreads), len(enriched.ReviewThreads); got != want {
 		t.Errorf("len(ReviewThreads) after REST refresh = %d, want %d", got, want)
 	}
-	if got, want := after.UnresolvedThreadCount(), 2; got != want {
+	if got, want := after.UnresolvedThreadCount(), 3; got != want {
 		t.Errorf("UnresolvedThreadCount() after REST refresh = %d, want %d", got, want)
 	}
 }

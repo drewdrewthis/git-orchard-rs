@@ -230,11 +230,12 @@ func TestPRReviewSurface_E2E(t *testing.T) {
 		t.Errorf("reviewThreads[0].lastUpdatedAt = %v, want the newest comment's createdAt", got)
 	}
 
-	// --- #607: unresolvedThreadCount excludes resolved AND outdated ---
+	// --- #607: unresolvedThreadCount excludes resolved threads only ---
 	// Fixture: 4 threads — unresolved, resolved, unresolved-but-outdated,
-	// unresolved. Only the two unresolved-and-current threads block merge.
-	if got := pr["unresolvedThreadCount"]; got != float64(2) {
-		t.Errorf("unresolvedThreadCount = %v, want 2 (resolved and outdated threads excluded)", got)
+	// unresolved. GitHub's merge gate does not exempt outdated threads, so
+	// three of the four still block merge; only the resolved one is excluded.
+	if got := pr["unresolvedThreadCount"]; got != float64(3) {
+		t.Errorf("unresolvedThreadCount = %v, want 3 (only resolved threads excluded)", got)
 	}
 
 	// One enrichment round-trip covers all four fields.
@@ -269,8 +270,8 @@ func TestPRReviewSurface_NoNPlusOne(t *testing.T) {
 	}
 	for i, raw := range prs {
 		pr, _ := raw.(map[string]any)
-		if got := pr["unresolvedThreadCount"]; got != float64(2) {
-			t.Errorf("pr[%d].unresolvedThreadCount = %v, want 2", i, got)
+		if got := pr["unresolvedThreadCount"]; got != float64(3) {
+			t.Errorf("pr[%d].unresolvedThreadCount = %v, want 3", i, got)
 		}
 	}
 	if got := graphqlCalls.Load(); got != 1 {
