@@ -23,9 +23,8 @@ import (
 
 // TestConversationsJSONL_LargeFile_StreamsRangeWithoutFullSlurp proves that a
 // Range request against a 5 MiB jsonl file does not load the whole file into
-// memory. The test measures HeapAlloc before and after the request and asserts
-// the delta is well below the file size (threshold: 3 MiB, which accommodates
-// the 1 MiB body allocation + GC noise but rejects a full 5 MiB slurp).
+// memory. It measures the TotalAlloc delta across the request and asserts it
+// stays far enough below "baseline + one whole file" to rule out a slurp.
 //
 // Feature: "A 5+ MB jsonl fixture serves a Range read without loading the full file into memory"
 func TestConversationsJSONL_LargeFile_StreamsRangeWithoutFullSlurp(t *testing.T) {
@@ -35,14 +34,22 @@ func TestConversationsJSONL_LargeFile_StreamsRangeWithoutFullSlurp(t *testing.T)
 		wantBodyLen = fileSize - rangeStart // 1 MiB tail
 		uuid        = "big-uuid-1"
 
-		// heapThreshold is set just below file size: this catches a true
-		// full-file slurp (which would push delta to 5 MiB+) without
-		// flaking on framework overhead, race-detector bookkeeping, or
-		// future stdlib chunk-size tweaks. The body itself is 1 MiB and
-		// is expected to allocate; what we want to forbid is the handler
-		// holding the whole 5 MiB file in memory at once. A delta below
-		// fileSize structurally rules that out.
-		heapThreshold = fileSize
+		// heapThreshold budgets the request's cumulative allocation.
+		//
+		// The old bound was fileSize (5 MiB), which assumed the streaming
+		// baseline was near zero. It is not: io.ReadAll below grows its
+		// buffer geometrically (512B, 1K, 2K … 1M, 2M), so reading the
+		// 1 MiB body allocates ~4 MiB cumulatively all by itself. Add the
+		// client and server bufio buffers and the honest streaming
+		// baseline lands just over 5 MiB — under the bound on macOS, over
+		// it on Linux. The handler was never at fault; the budget simply
+		// never accounted for the test's own reader (#712).
+		//
+		// 8 MiB keeps the assertion sharp. A real slurp reads the whole
+		// file on top of that baseline, landing at ~10 MiB, so this bound
+		// still rejects one with ~2 MiB to spare while leaving ~3 MiB of
+		// headroom for allocator and stdlib variation across platforms.
+		heapThreshold = 8 * 1024 * 1024
 	)
 
 	// Generate a 5 MiB jsonl fixture. Each record is a small JSON object.
@@ -122,18 +129,13 @@ func TestConversationsJSONL_LargeFile_StreamsRangeWithoutFullSlurp(t *testing.T)
 	var afterMS runtime.MemStats
 	runtime.ReadMemStats(&afterMS)
 
-	// TotalAlloc delta must be below file size. If the handler had slurped
-	// the whole 5 MiB file at once, TotalAlloc would jump by 5 MiB + the
-	// 1 MiB body buffer + framework overhead, well above the file size.
-	// Holding strictly below file size proves no full-file copy lives in
-	// memory simultaneously with the body — which is the contract.
-	//
-	// TotalAlloc is monotonically increasing across the program lifetime,
-	// so the delta captures every transient allocation between the two
-	// ReadMemStats calls (GCed objects included). Race-detector
-	// bookkeeping inflates this; a future stdlib io.copyBuffer change
-	// could too. The bound is set so neither breaks the assertion while
-	// still catching a real slurp.
+	// TotalAlloc is monotonically increasing, so the delta captures every
+	// transient allocation between the two ReadMemStats calls, GCed objects
+	// included. That makes it a budget on total allocation churn, not on
+	// peak residency: the handler streams via http.ServeContent, which
+	// seeks to the range start and copies in 32 KiB chunks, so a slurp
+	// shows up as one extra file-sized block of churn on top of the
+	// baseline rather than as a spike this counter could see directly.
 	totalAllocDelta := afterMS.TotalAlloc - beforeMS.TotalAlloc
 	if totalAllocDelta >= heapThreshold {
 		t.Errorf(
