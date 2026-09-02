@@ -28,7 +28,8 @@ const HeartbeatThreshold = 60 * time.Second
 // Owns:
 //   - one FSAdapter (filesystem walk + jsonl parse).
 //   - one fsnotify watcher (started by adapter.Watch).
-//   - an in-memory cache keyed by ConversationID.
+//   - an in-memory cache keyed by ConversationID, plus a SessionUUID
+//     index over it (uuid_index.go) for the by-uuid lookups.
 //   - a fan-out for Subscribers.
 //
 // Per ADR-011 §2 the surface is read-only — writes happen out-of-band
@@ -43,6 +44,7 @@ type Provider struct {
 
 	mu     sync.RWMutex
 	cache  map[ConversationID]Conversation
+	byUUID uuidIndex // SessionUUID -> ConversationID; see uuid_index.go
 	fresh  map[ConversationID]adapter.Freshness
 	loaded bool
 
@@ -80,6 +82,7 @@ func NewWith(a *FSAdapter, logger *slog.Logger, clock func() time.Time, heartbea
 		clock:     clock,
 		heartbeat: heartbeat,
 		cache:     map[ConversationID]Conversation{},
+		byUUID:    uuidIndex{},
 		fresh:     map[ConversationID]adapter.Freshness{},
 		subs:      map[chan adapter.InvalidationEvent[ConversationID]]struct{}{},
 		stopCh:    make(chan struct{}),
@@ -343,6 +346,7 @@ func (p *Provider) refreshOne(ctx context.Context, key ConversationID) error {
 		if errors.Is(err, fs.ErrNotExist) {
 			p.mu.Lock()
 			delete(p.cache, key)
+			p.byUUID.drop(key)
 			delete(p.fresh, key)
 			p.mu.Unlock()
 			p.broadcast([]ConversationID{key}, "watcher-remove", now)
@@ -368,6 +372,7 @@ func (p *Provider) reload(ctx context.Context, reason string, source adapter.Fre
 	p.mu.Lock()
 	old := p.cache
 	p.cache = all
+	p.byUUID = newUUIDIndex(all)
 	p.fresh = make(map[ConversationID]adapter.Freshness, len(all))
 	for k := range all {
 		p.fresh[k] = adapter.Freshness{LastFetchedAt: now, Source: source}
@@ -456,42 +461,6 @@ func (p *Provider) broadcast(keys []ConversationID, reason string, at time.Time)
 	}
 }
 
-// PathForSessionUUID returns the on-disk path for the conversation
-// whose session UUID matches uuid, scanning the current in-memory
-// cache. Returns ("", false) when no match is found. The caller should
-// not infer anything from a false return beyond "not currently known";
-// the watcher may populate the cache later.
-//
-// Locking mirrors cacheGet — RLock is sufficient because we only read.
-func (p *Provider) PathForSessionUUID(_ context.Context, uuid string) (string, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for id, c := range p.cache {
-		if id.SessionUUID == uuid {
-			return c.Path, true
-		}
-	}
-	return "", false
-}
-
-// GetBySessionUUID returns the cached Conversation whose JSONL filename
-// matches uuid (Claude Code names files by sessionId so this is the
-// natural lookup key). Returns (zero, false) when not in cache. Used by
-// the ClaudeInstance.conversation resolver to expose Conversation
-// metadata without forcing a separate `conversations` query.
-//
-// Locking mirrors PathForSessionUUID — RLock only.
-func (p *Provider) GetBySessionUUID(_ context.Context, uuid string) (Conversation, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for id, c := range p.cache {
-		if id.SessionUUID == uuid {
-			return c, true
-		}
-	}
-	return Conversation{}, false
-}
-
 func (p *Provider) cacheGet(k ConversationID) (Conversation, adapter.Freshness, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -506,5 +475,6 @@ func (p *Provider) cachePut(k ConversationID, v Conversation, f adapter.Freshnes
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cache[k] = v
+	p.byUUID.put(k)
 	p.fresh[k] = f
 }

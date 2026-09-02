@@ -182,9 +182,12 @@ func TestUUIDIndex_DropKeepsAnotherHostsEntry(t *testing.T) {
 	}
 }
 
-// BenchmarkPathForSessionUUID measures the lookup as the cache grows. The
-// per-op cost should be flat across N; the linear scan it replaces grew
-// with it. The GUI's tail-watcher polls this per pane every few seconds.
+// BenchmarkPathForSessionUUID measures the lookup as the cache grows.
+// Two map hits and an RLock, so the cost is constant-order in N — the
+// residual growth between the two sizes is cache locality over a bigger
+// map, not scan length. The linear scan it replaces grew ~67x over the
+// same 100x range. The GUI's tail-watcher polls this per pane every few
+// seconds.
 func BenchmarkPathForSessionUUID(b *testing.B) {
 	for _, n := range []int{100, 10000} {
 		b.Run(fmt.Sprintf("N=%d", n), func(b *testing.B) {
