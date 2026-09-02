@@ -311,3 +311,32 @@ JSON
   # An empty HOME must not be substituted between every character.
   [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"/tmp/orchard-bats-elsewhere"* ]]
 }
+
+@test "daemon returns 200 with a non-JSON body: still labels every pane" {
+  # A proxy error page or a truncated response passes `curl -sf` (2xx) and
+  # then fails to parse — a worse outcome than the handled unreachable case
+  # if it is left to raise.
+  _start_fake_daemon_with "$TESTDATA/daemon-response-malformed.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+  _pane_row "%2" "beta" "/tmp/orchard-bats-elsewhere" "vim" >> "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  # Same fallback as the unreachable daemon: no worktree chrome, but every
+  # pane still gets a label from local data.
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"/tmp/orchard-bats-wt"* ]]
+  [[ "$(printf '%s\n' "$output" | _label_for "%2")" == *"⏵ vim"* ]]
+}
+
+@test "daemon returns 200 with JSON that is not an object: still labels every pane" {
+  printf '[]' > "$TMPD/array-response.json"
+  _start_fake_daemon_with "$TMPD/array-response.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+  [ -n "$(printf '%s\n' "$output" | _label_for "%1")" ]
+}

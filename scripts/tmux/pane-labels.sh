@@ -100,18 +100,39 @@ import json, subprocess, sys, datetime, os, glob
 DAEMON_OK = os.environ.get("ORCHARD_DAEMON_OK", "1") == "1"
 PRINT_MODE = os.environ.get("ORCHARD_PRINT_MODE", "0") == "1"
 
-with open(sys.argv[1]) as f:
-    resp = json.load(f)
-data = resp.get("data") or {}
+# `curl -sf` only rejects non-2xx, so a proxy error page, a truncated body or
+# a JSON document of the wrong shape all arrive here as a "successful"
+# response. Fall back to the same empty result set the unreachable-daemon
+# branch installs, rather than raising and labelling nothing at all.
+try:
+    with open(sys.argv[1]) as f:
+        resp = json.load(f)
+except (OSError, ValueError):
+    print("orchard-tmux-labels: daemon response was not valid JSON; "
+          "labelling from local state only", file=sys.stderr)
+    resp = {}
+if not isinstance(resp, dict):
+    print("orchard-tmux-labels: daemon response was not a JSON object; "
+          "labelling from local state only", file=sys.stderr)
+    resp = {}
+
+data = resp.get("data")
+if not isinstance(data, dict):
+    data = {}
 # v0.8 schema renamed `projects` → `repos` (ADR-015). Each repo has `slug`
 # (was `name`) and the same nested worktree shape.
 repos = data.get("repos") or []
 
-# (worktree_path, worktree_data, repo_slug) sorted longest-prefix first
+# (worktree_path, worktree_data, repo_slug) sorted longest-prefix first.
+# Entries of the wrong shape are skipped, not fatal — see the JSON guard above.
 all_worktrees = []
-for r in repos:
+for r in repos if isinstance(repos, list) else []:
+    if not isinstance(r, dict):
+        continue
     for wt in (r.get("worktrees") or []):
-        all_worktrees.append((wt["path"], wt, r["slug"]))
+        if not isinstance(wt, dict) or not isinstance(wt.get("path"), str):
+            continue
+        all_worktrees.append((wt["path"], wt, r.get("slug")))
 all_worktrees.sort(key=lambda x: -len(x[0]))
 
 now = datetime.datetime.now(datetime.timezone.utc)
