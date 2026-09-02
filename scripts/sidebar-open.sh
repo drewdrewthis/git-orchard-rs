@@ -8,7 +8,6 @@ set -u
 target="${1:-}"
 seeded="$(tmux show-option -gqv @orchard_sidebar_width)"
 width="${seeded:-42}"
-width="${width:-42}"
 # floor: below this the sidebar drops to name-only compact mode (minWidth in
 # cmd/orchard-sidebar/main.go), so never open one narrower than it.
 case "$width" in
