@@ -5,6 +5,10 @@
 // clones the entire graph and is reserved for collection entrypoints that
 // genuinely need it; a field resolver reaching for it is the #612 60s
 // cold-lens-load regression (RULES.md R3, O9).
+//
+// Immutability: a returned value is never a window onto a cached entry.
+// Scalar-only types (Session, Window, Client) are safe as plain struct
+// copies; Pane carries a slice, so it goes through Pane.clone().
 
 package tmux
 
@@ -14,18 +18,121 @@ import (
 )
 
 // ----------------------------------------------------------------------
-// Typed secondary-axis accessors (ADR-022: Pane is the node, one
-// snapshot read per accessor, no N+1 in the callers).
+// Keyed accessors — one map lookup, no clone.
 // ----------------------------------------------------------------------
 
 // PaneByID returns the pane whose stable pane id (e.g. "%26") matches on
 // the given host, or (Pane{}, false) when not found.
 func (p *Provider) PaneByID(host, paneID string) (Pane, bool) {
-	snap := p.panes.Snapshot()
-	key := PaneKey{Host: HostID(host), PaneID: paneID}
-	pn, ok := snap[key]
-	return pn, ok
+	pn, _, ok := p.panes.Get(PaneKey{Host: HostID(host), PaneID: paneID})
+	if !ok {
+		return Pane{}, false
+	}
+	return pn.clone(), true
 }
+
+// SessionByName returns the session named `name` on the given host, or
+// (Session{}, false) when not found.
+func (p *Provider) SessionByName(host, name string) (Session, bool) {
+	s, _, ok := p.sessions.Get(SessionKey{Host: HostID(host), Name: name})
+	return s, ok
+}
+
+// WindowByKey returns the window at `index` within `session` on the given
+// host, or (Window{}, false) when not found.
+func (p *Provider) WindowByKey(host, session string, index int) (Window, bool) {
+	w, _, ok := p.windows.Get(WindowKey{Host: HostID(host), Session: session, Index: index})
+	return w, ok
+}
+
+// ClientByName returns the client named `clientName` on the given host,
+// or (Client{}, false) when not found.
+func (p *Provider) ClientByName(host, clientName string) (Client, bool) {
+	c, _, ok := p.clients.Get(ClientKey{Host: HostID(host), ClientName: clientName})
+	return c, ok
+}
+
+// ----------------------------------------------------------------------
+// Filtered accessors — one pass over a single store, allocating only for
+// the entries that match. Order is unspecified; the result is never nil.
+// ----------------------------------------------------------------------
+
+// WindowsOf returns every window belonging to `session` on the given host.
+func (p *Provider) WindowsOf(host, session string) []Window {
+	if session == "" {
+		return []Window{}
+	}
+	return orEmpty(p.windows.Filter(func(k WindowKey, _ Window) bool {
+		return string(k.Host) == host && k.Session == session
+	}))
+}
+
+// PanesOf returns every pane in the window at `index` within `session` on
+// the given host.
+func (p *Provider) PanesOf(host, session string, index int) []Pane {
+	if session == "" {
+		return []Pane{}
+	}
+	return clonePanes(p.panes.Filter(func(k PaneKey, pn Pane) bool {
+		return string(k.Host) == host &&
+			pn.WindowKey.Session == session &&
+			pn.WindowKey.Index == index
+	}))
+}
+
+// PanesOnHost returns every cached pane on the given host.
+//
+// This is the widest accessor here and exists for the one read that
+// genuinely needs every pane: the worktree join resolves each pane's cwd
+// through the ps provider, and cwd is not in the tmux cache to filter on.
+// It still beats Snapshot() — one slice of one store, not four maps.
+func (p *Provider) PanesOnHost(host string) []Pane {
+	return clonePanes(p.panes.Filter(func(k PaneKey, _ Pane) bool {
+		return string(k.Host) == host
+	}))
+}
+
+// PanesBySession returns every pane whose tmux session name equals
+// sessionName on the given host.
+func (p *Provider) PanesBySession(host, sessionName string) []Pane {
+	if sessionName == "" {
+		return []Pane{}
+	}
+	return clonePanes(p.panes.Filter(func(k PaneKey, pn Pane) bool {
+		return string(k.Host) == host && pn.WindowKey.Session == sessionName
+	}))
+}
+
+// ClientsOfSession returns every client attached to `session` on the given
+// host.
+func (p *Provider) ClientsOfSession(host, session string) []Client {
+	if session == "" {
+		return []Client{}
+	}
+	return orEmpty(p.clients.Filter(func(k ClientKey, c Client) bool {
+		return string(k.Host) == host && c.Session == session
+	}))
+}
+
+// ClientsWatchingPane returns every client whose currently-active pane is
+// paneID on the given host.
+func (p *Provider) ClientsWatchingPane(host, paneID string) []Client {
+	if paneID == "" {
+		return []Client{}
+	}
+	return orEmpty(p.clients.Filter(func(k ClientKey, c Client) bool {
+		return string(k.Host) == host && c.CurrentPane == paneID
+	}))
+}
+
+// ----------------------------------------------------------------------
+// ps-backed axis accessors (ADR-022: Pane is the node, one cache read per
+// accessor, no N+1 in the callers).
+//
+// These resolve a pid through the ps provider, which does I/O. They read
+// the pane set first and filter afterwards, so no ps call ever runs while
+// the store's read lock is held.
+// ----------------------------------------------------------------------
 
 // PanesByCwd returns every pane on host whose foreground-process cwd
 // equals cwd exactly or has cwd+"/" as a prefix. The cwd is resolved via
@@ -39,12 +146,8 @@ func (p *Provider) PanesByCwd(host, cwd string, ps PanePsGetter) []Pane {
 	if cwd == "" {
 		return []Pane{}
 	}
-	snap := p.panes.Snapshot()
 	var out []Pane
-	for _, pn := range snap {
-		if string(pn.Key.Host) != host {
-			continue
-		}
+	for _, pn := range p.PanesOnHost(host) {
 		if pn.CurrentPid <= 0 {
 			continue
 		}
@@ -57,10 +160,7 @@ func (p *Provider) PanesByCwd(host, cwd string, ps PanePsGetter) []Pane {
 		}
 		out = append(out, pn)
 	}
-	if out == nil {
-		return []Pane{}
-	}
-	return out
+	return orEmpty(out)
 }
 
 // PanesByCommand returns every pane on host whose foreground command
@@ -73,20 +173,13 @@ func (p *Provider) PanesByCommand(host, basenameContains string, ps PanePsGetter
 		return []Pane{}
 	}
 	needle := strings.ToLower(basenameContains)
-	snap := p.panes.Snapshot()
 	var out []Pane
-	for _, pn := range snap {
-		if string(pn.Key.Host) != host {
-			continue
-		}
+	for _, pn := range p.PanesOnHost(host) {
 		if paneCommandMatchesClaude(pn, host, ps, needle) {
 			out = append(out, pn)
 		}
 	}
-	if out == nil {
-		return []Pane{}
-	}
-	return out
+	return orEmpty(out)
 }
 
 // PaneRunsCommand reports whether pn is running needle, matched
@@ -99,29 +192,6 @@ func PaneRunsCommand(pn Pane, host string, ps PanePsGetter, needle string) bool 
 		return false
 	}
 	return paneCommandMatchesClaude(pn, host, ps, strings.ToLower(needle))
-}
-
-// PanesBySession returns every pane whose tmux session name equals
-// sessionName on the given host. Returns [] (never nil).
-func (p *Provider) PanesBySession(host, sessionName string) []Pane {
-	if sessionName == "" {
-		return []Pane{}
-	}
-	snap := p.panes.Snapshot()
-	var out []Pane
-	for _, pn := range snap {
-		if string(pn.Key.Host) != host {
-			continue
-		}
-		if pn.WindowKey.Session != sessionName {
-			continue
-		}
-		out = append(out, pn)
-	}
-	if out == nil {
-		return []Pane{}
-	}
-	return out
 }
 
 // paneCommandMatchesClaude reports whether a pane is running needle
@@ -160,4 +230,28 @@ type PanePsGetter interface {
 	// CommandForPid returns the command basename (e.g. "claude") for the
 	// given pid on the host, or "" when unavailable.
 	CommandForPid(host string, pid int) string
+}
+
+// ----------------------------------------------------------------------
+// Result shaping.
+// ----------------------------------------------------------------------
+
+// clonePanes copies each pane's reference-typed fields so the caller holds
+// nothing the store also holds. Returns an empty (non-nil) slice for an
+// empty input.
+func clonePanes(panes []Pane) []Pane {
+	out := make([]Pane, len(panes))
+	for i, pn := range panes {
+		out[i] = pn.clone()
+	}
+	return out
+}
+
+// orEmpty substitutes an empty slice for a nil one, so an accessor never
+// hands a caller a nil to distinguish from "no matches".
+func orEmpty[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }

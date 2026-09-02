@@ -80,6 +80,27 @@ func (s *Store[K, V]) Snapshot() map[K]V {
 	return out
 }
 
+// Filter returns a copy of every value whose entry satisfies match. It
+// allocates only for the values it returns, so a narrow read never pays
+// the whole-population clone Snapshot() does — the #612 hot-path
+// allocation. Order is unspecified; the result is nil when nothing
+// matches.
+//
+// match runs while the read lock is held. It must be pure and must not
+// call back into this store: sync.RWMutex is not reentrant, so a nested
+// read deadlocks against a ReplaceAll waiting for the write lock.
+func (s *Store[K, V]) Filter(match func(K, V) bool) []V {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []V
+	for k, e := range s.entries {
+		if match(k, e.value) {
+			out = append(out, e.value)
+		}
+	}
+	return out
+}
+
 // ReplaceAll atomically swaps the entire population to `next`, marking
 // every entry with the given source. Keys present in the prior
 // population but absent from `next` are evicted. Returns the set of
