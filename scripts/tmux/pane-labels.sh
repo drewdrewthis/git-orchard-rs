@@ -152,6 +152,22 @@ def fmt_escape(value):
     return str(value).replace("#", "##")
 
 
+def path_under(parent, child):
+    """True when `child` is `parent` itself or lives beneath it.
+
+    The boundary is a path separator, not a string prefix, so
+    `/a/b` never claims `/a/bc`. `/` (and any trailing-slash form of it) is
+    the parent of every absolute path: naive `parent + "/"` concatenation
+    would build `//`, which no absolute path starts with.
+    """
+    if not parent or not child:
+        return False
+    parent = parent.rstrip("/")
+    if not parent:
+        return child.startswith("/")
+    return child == parent or child.startswith(parent + "/")
+
+
 def cell(style, text):
     """Build one label cell.
 
@@ -227,8 +243,7 @@ def hook_state_for_pane(session, pane_path, is_claude_pane):
     st = HOOK_STATES.get(session)
     if not st:
         return None
-    cwd = st.get("cwd") or ""
-    if cwd and (pane_path == cwd or pane_path.startswith(cwd + "/")):
+    if path_under(st.get("cwd") or "", pane_path):
         return st
     if is_claude_pane:
         return st
@@ -285,7 +300,7 @@ def pick_worktree(pane_path):
     seen = set()
     for wt_path, wt, repo in all_worktrees:
         if wt_path in seen: continue
-        if pane_path == wt_path or pane_path.startswith(wt_path + "/"):
+        if path_under(wt_path, pane_path):
             matches.append((wt_path, wt, repo))
             seen.add(wt_path)
     if not matches:

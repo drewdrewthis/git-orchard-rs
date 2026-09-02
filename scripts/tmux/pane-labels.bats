@@ -340,3 +340,53 @@ JSON
   [ "$status" -eq 0 ]
   [ -n "$(printf '%s\n' "$output" | _label_for "%1")" ]
 }
+
+@test "hook state with cwd=/ attaches a non-claude pane beneath it" {
+  # "/" + "/" == "//", which no absolute pane path starts with, so the pane
+  # used to fall through to the is_claude_pane fallback and miss.
+  _hook_state "alpha" "working" "/"
+  _pane_row "%1" "alpha" "/work" "vim" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"⏺ working"* ]]
+}
+
+@test "hook state with a trailing slash in cwd still attaches its pane" {
+  _hook_state "alpha" "idle" "/tmp/orchard-bats-alpha/"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha/sub" "vim" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"⏸ idle"* ]]
+}
+
+@test "hook state cwd is still a path boundary, not a string prefix" {
+  # /tmp/orchard-bats-alpha must not claim /tmp/orchard-bats-alpha-other.
+  _hook_state "alpha" "working" "/tmp/orchard-bats-alpha"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha-other" "vim" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" != *"working"* ]]
+}
+
+@test "worktree at / does not swallow the branch match for a pane beneath it" {
+  printf '{"data":{"repos":[{"slug":"rooted","worktrees":[{"branch":"main","path":"/","host":"local"}]}]}}' \
+    > "$TMPD/root-wt.json"
+  _start_fake_daemon_with "$TMPD/root-wt.json"
+  _pane_row "%1" "alpha" "/work" "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  # A worktree registered at / genuinely contains /work, so its chrome applies.
+  [[ "$(printf '%s\n' "$output" | _label_for "%1")" == *"rooted"* ]]
+}
