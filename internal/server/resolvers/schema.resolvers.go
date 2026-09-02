@@ -419,6 +419,32 @@ func (r *processResolver) ClaudeInstance(ctx context.Context, obj *graphql1.Proc
 	return nil, nil
 }
 
+// HeadRefOid is the resolver for the pullRequest.headRefOid field (#658). Shares the enrichment fetch with statusCheckRollup, so the sha and the CI verdict always describe the same commit. Empty string until an enrichment fetch has succeeded.
+func (r *pullRequestResolver) HeadRefOid(ctx context.Context, obj *graphql1.PullRequest) (string, error) {
+	key, ok := prKeyFromGraphQL(r.Resolver, obj)
+	if !ok {
+		return "", nil
+	}
+	pr, err := enrichPR(ctx, r.Resolver, key)
+	if err != nil {
+		return "", err
+	}
+	return pr.HeadRefOid, nil
+}
+
+// Reviews is the resolver for the pullRequest.reviews field (#651). The field was previously auto-bound to the model struct, which nothing populated, so it always resolved null.
+func (r *pullRequestResolver) Reviews(ctx context.Context, obj *graphql1.PullRequest) ([]*graphql1.PullRequestReview, error) {
+	key, ok := prKeyFromGraphQL(r.Resolver, obj)
+	if !ok {
+		return []*graphql1.PullRequestReview{}, nil
+	}
+	pr, err := enrichPR(ctx, r.Resolver, key)
+	if err != nil {
+		return nil, err
+	}
+	return toGraphQLReviews(pr.Reviews), nil
+}
+
 // Mergeable is the resolver for the pullRequest.mergeable field. Routes
 // through the PullRequestEnrichment dataloader so all enrichment calls
 // within one GraphQL request coalesce into one HTTP call per repository.
@@ -484,6 +510,32 @@ func (r *pullRequestResolver) Labels(ctx context.Context, obj *graphql1.PullRequ
 		return nil, err
 	}
 	return toGraphQLLabels(pr.Labels), nil
+}
+
+// ReviewThreads is the resolver for the pullRequest.reviewThreads field (#607). Returns every thread the enrichment fetched, in every state; unresolvedThreadCount is the merge-gate number.
+func (r *pullRequestResolver) ReviewThreads(ctx context.Context, obj *graphql1.PullRequest) ([]*graphql1.ReviewThread, error) {
+	key, ok := prKeyFromGraphQL(r.Resolver, obj)
+	if !ok {
+		return []*graphql1.ReviewThread{}, nil
+	}
+	pr, err := enrichPR(ctx, r.Resolver, key)
+	if err != nil {
+		return nil, err
+	}
+	return toGraphQLReviewThreads(pr.ReviewThreads), nil
+}
+
+// UnresolvedThreadCount is the resolver for the pullRequest.unresolvedThreadCount field (#607). Counts threads that are unresolved AND not outdated — the Rule-4 merge gate reads this instead of walking reviewThreads.
+func (r *pullRequestResolver) UnresolvedThreadCount(ctx context.Context, obj *graphql1.PullRequest) (int64, error) {
+	key, ok := prKeyFromGraphQL(r.Resolver, obj)
+	if !ok {
+		return 0, nil
+	}
+	pr, err := enrichPR(ctx, r.Resolver, key)
+	if err != nil {
+		return 0, err
+	}
+	return int64(pr.UnresolvedThreadCount()), nil
 }
 
 // Health is the resolver for the health field.

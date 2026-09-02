@@ -1,18 +1,19 @@
 // Package gh — GraphQL enrichment for PullRequest.
 //
-// This file adds EnrichPullRequest, which fetches the five fields that
-// the GitHub REST list endpoint does not return: mergeable, mergeStateStatus,
-// reviewDecision, statusCheckRollup, and labels. These require a dedicated
-// GraphQL round-trip.
+// This file adds EnrichPullRequest, which fetches the fields the GitHub REST
+// list endpoint does not return: mergeable, mergeStateStatus, reviewDecision,
+// statusCheckRollup, labels, headRefOid, reviews and reviewThreads. These
+// require a dedicated GraphQL round-trip. The selection set and wire shapes
+// live in graphql_enrich_query.go; the batched multi-PR path lives in
+// graphql_enrich_batch.go. Both funnel through applyEnrichment here, so the
+// wire→domain mapping exists exactly once.
 //
 // The result is merged back into the per-key prs cache so subsequent
-// GetPullRequest calls return the enriched view. Cache TTL is 60s
-// (enrichmentTTL) — shorter than CacheTTL because mergeable and CI
-// status change faster than basic PR metadata.
+// GetPullRequest calls return the enriched view.
 //
-// UNKNOWN mergeable on an open PR is never written to the cache so the next call
-// always re-fetches. This avoids the #367 flap pattern where a
-// transient UNKNOWN hardens into a stale cached value.
+// UNKNOWN mergeable on an open PR is never written to the cache so the next
+// call always re-fetches. This avoids the #367 flap pattern where a transient
+// UNKNOWN hardens into a stale cached value.
 package gh
 
 import (
@@ -22,34 +23,6 @@ import (
 	"strings"
 	"time"
 )
-
-// enrichPRFields is the shared field fragment for aliased batch enrichment
-// queries. Each aliased PR block expands this.
-const enrichPRFields = `mergeable mergeStateStatus reviewDecision labels(first:50){nodes{name color description}} commits(last:1){nodes{commit{statusCheckRollup{state}}}}`
-
-// enrichPRAlias is the wire-level shape of a single pull request block
-// inside an aliased batch response. Mirrors enrichRaw.Data.Repository.PullRequest.
-type enrichPRAlias struct {
-	Mergeable        string  `json:"mergeable"`
-	MergeStateStatus string  `json:"mergeStateStatus"`
-	ReviewDecision   *string `json:"reviewDecision"`
-	Labels           struct {
-		Nodes []struct {
-			Name        string `json:"name"`
-			Color       string `json:"color"`
-			Description string `json:"description"`
-		} `json:"nodes"`
-	} `json:"labels"`
-	Commits struct {
-		Nodes []struct {
-			Commit struct {
-				StatusCheckRollup *struct {
-					State string `json:"state"`
-				} `json:"statusCheckRollup"`
-			} `json:"commit"`
-		} `json:"nodes"`
-	} `json:"commits"`
-}
 
 // enrichmentTTL governs how often we re-fetch PR enrichment from GitHub's
 // GraphQL API. PR state doesn't change second-to-second; longer TTL means
@@ -62,22 +35,6 @@ const enrichmentTTL = 5 * time.Minute
 // freshness TTL — the user's choice is "slightly stale data" vs "broken
 // sidebar", and slightly-stale always wins.
 const staleEnrichmentTTL = 1 * time.Hour
-
-// enrichPRQuery is the GitHub GraphQL query that fetches the five
-// enrichment fields. The statusCheckRollup is read from the head
-// commit rather than from a separate check-runs endpoint so we get
-// the aggregated state in a single round-trip.
-const enrichPRQuery = `query($owner:String!,$name:String!,$number:Int!){
-  repository(owner:$owner,name:$name){
-    pullRequest(number:$number){
-      mergeable
-      mergeStateStatus
-      reviewDecision
-      labels(first:50){ nodes{ name color description } }
-      commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } }
-    }
-  }
-}`
 
 // PhaseLabels are orchard lifecycle tags that are excluded from
 // PullRequest.Labels. Only user-assigned labels are surfaced.
@@ -93,61 +50,12 @@ var phaseLabels = map[string]struct{}{
 	"blocked":       {},
 }
 
-// enrichRaw is the wire-level shape of the GitHub GraphQL enrichment
-// response. Kept package-private; callers see the typed PullRequest.
-type enrichRaw struct {
-	Data struct {
-		Repository struct {
-			PullRequest struct {
-				Mergeable        string  `json:"mergeable"`
-				MergeStateStatus string  `json:"mergeStateStatus"`
-				ReviewDecision   *string `json:"reviewDecision"`
-				Labels           struct {
-					Nodes []struct {
-						Name        string `json:"name"`
-						Color       string `json:"color"`
-						Description string `json:"description"`
-					} `json:"nodes"`
-				} `json:"labels"`
-				Commits struct {
-					Nodes []struct {
-						Commit struct {
-							StatusCheckRollup *struct {
-								State string `json:"state"`
-							} `json:"statusCheckRollup"`
-						} `json:"commit"`
-					} `json:"nodes"`
-				} `json:"commits"`
-			} `json:"pullRequest"`
-		} `json:"repository"`
-	} `json:"data"`
-	Errors []struct {
-		Message string `json:"message"`
-	} `json:"errors,omitempty"`
-}
-
-// prEnrichEntry holds a cached enriched PullRequest and the time it was
-// last fetched. Stored in the per-key prs map alongside the base entry.
-type prEnrichEntry struct {
-	value PullRequest
-	at    time.Time
-}
-
-// enrichedAt stores the enrichment timestamps separately from the base
-// prEntry so we can apply the shorter enrichmentTTL without touching
-// the CacheTTL-governed REST data. Protected by prMu.
-//
-// We reuse the existing prs map value for storage — the enrichment is
-// merged into the PullRequest struct in place, and the enrichAt map
-// tracks when that last happened.
-
-// EnrichPullRequest fetches the GraphQL-only enrichment fields
-// (mergeable, mergeStateStatus, reviewDecision, statusCheckRollup,
-// labels) for the given PR key, merges the result into the per-key
-// prs cache, and returns the fully-enriched PullRequest.
+// EnrichPullRequest fetches the GraphQL-only enrichment fields for the given
+// PR key, merges the result into the per-key prs cache, and returns the
+// fully-enriched PullRequest.
 //
 // Cache behaviour:
-//   - A hit within enrichmentTTL (60s) returns the cached enriched value.
+//   - A hit within enrichmentTTL returns the cached enriched value.
 //   - UNKNOWN mergeable is never cached — the next call re-fetches so
 //     the transient computing state does not stick (#367 contract).
 //   - A miss fetches from GitHub GraphQL and caches (unless UNKNOWN).
@@ -212,18 +120,7 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 		}
 		hasData := json.Unmarshal(raw, &dataProbe) == nil && hasRawData(dataProbe.Data)
 		if !hasData {
-			msgs := make([]string, 0, len(envelope.Errors))
-			for _, e := range envelope.Errors {
-				msgs = append(msgs, e.Message)
-			}
-			joined := strings.Join(msgs, "; ")
-			// Detect rate-limit and set a cooldown so we stop hammering. GitHub
-			// resets the limit hourly; default to a 5-minute cooldown which is
-			// short enough to recover quickly if the user invoked a one-off
-			// burst, long enough to avoid waste if we're truly throttled.
-			if strings.Contains(strings.ToLower(joined), "rate limit") {
-				p.enterRateLimitCooldown("EnrichPullRequest", joined)
-			}
+			joined := p.noteGraphQLErrors("EnrichPullRequest", envelope.Errors)
 			return serveStale(fmt.Errorf("EnrichPullRequest graphql errors: %s", joined))
 		}
 	}
@@ -233,9 +130,13 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 		p.clearRateLimitCooldown()
 	}
 
-	wire := envelope.Data.Repository.PullRequest
+	return p.applyEnrichment(key, envelope.Data.Repository.PullRequest, p.clock()), nil
+}
 
-	// --- map fields ---
+// applyEnrichment maps an enrichPRAlias wire value onto the provider cache and
+// returns the enriched PullRequest. Both enrichment paths land here, so the
+// wire→domain projection and the cache-write rules exist in one place.
+func (p *Provider) applyEnrichment(key PullRequestKey, wire enrichPRAlias, now time.Time) PullRequest {
 	mergeable := mapMergeableState(wire.Mergeable)
 
 	var rd *ReviewDecision
@@ -244,36 +145,21 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 		rd = &mapped
 	}
 
-	labels := make([]Label, 0, len(wire.Labels.Nodes))
-	for _, n := range wire.Labels.Nodes {
-		labels = append(labels, Label{
-			Name:        n.Name,
-			Color:       n.Color,
-			Description: n.Description,
-		})
-	}
-
-	ciStatus := CiStatusUnknown
-	if len(wire.Commits.Nodes) > 0 {
-		commit := wire.Commits.Nodes[0].Commit
-		if commit.StatusCheckRollup != nil {
-			ciStatus = mapStatusCheckRollup(commit.StatusCheckRollup.State)
-		}
-	}
-
-	// --- merge into existing base entry ---
 	p.prMu.Lock()
 	base := p.prs[key]
 	base.value.Mergeable = mergeable
 	base.value.MergeStateStatus = wire.MergeStateStatus
 	base.value.ReviewDecision = rd
-	base.value.StatusCheckRollup = ciStatus
-	base.value.Labels = filterPhaseLabels(labels)
+	base.value.StatusCheckRollup = mapRollupFromCommits(wire.Commits.Nodes)
+	base.value.Labels = filterPhaseLabels(mapLabels(wire.Labels.Nodes))
+	base.value.HeadRefOid = wire.HeadRefOid
+	base.value.Reviews = mapReviews(wire.Reviews.Nodes)
+	base.value.ReviewThreads = mapReviewThreads(wire.ReviewThreads.Nodes)
 
 	wrote := false
 	if shouldCacheEnrichment(mergeable, base.value.State) {
 		p.prs[key] = base
-		p.enrichAt[key] = p.clock()
+		p.enrichAt[key] = now
 		wrote = true
 	}
 	enriched := base.value
@@ -282,10 +168,28 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	// R16/M7: broadcast only after the cache write is visible to readers,
 	// so a subscriber re-fetching on this event sees the fresh value.
 	if wrote {
-		p.invalidate(prNodeID(key), "enrich", p.clock())
+		p.invalidate(prNodeID(key), "enrich", now)
 	}
 
-	return enriched, nil
+	return enriched
+}
+
+// noteGraphQLErrors joins the GraphQL error messages and, when they signal a
+// rate limit, arms the cooldown via enterRateLimitCooldown (Warn logging +
+// backoff). Returns the joined message so the caller can wrap it. site names
+// the calling path so the two enrichment paths back off and log independently.
+func (p *Provider) noteGraphQLErrors(site string, errs []struct {
+	Message string `json:"message"`
+}) string {
+	msgs := make([]string, 0, len(errs))
+	for _, e := range errs {
+		msgs = append(msgs, e.Message)
+	}
+	joined := strings.Join(msgs, "; ")
+	if strings.Contains(strings.ToLower(joined), "rate limit") {
+		p.enterRateLimitCooldown(site, joined)
+	}
+	return joined
 }
 
 // hasRawData reports whether a GraphQL envelope carried a usable data
@@ -360,6 +264,69 @@ func mapStatusCheckRollup(state string) CiStatus {
 	}
 }
 
+// mapRollupFromCommits reads the aggregated CI state off the PR's head
+// commit. The enrichment query selects `commits(last:1)`, so the single node
+// (when present) is the head commit — the same commit headRefOid names.
+func mapRollupFromCommits(nodes []enrichCommitNode) CiStatus {
+	if len(nodes) == 0 {
+		return CiStatusUnknown
+	}
+	rollup := nodes[0].Commit.StatusCheckRollup
+	if rollup == nil {
+		return CiStatusUnknown
+	}
+	return mapStatusCheckRollup(rollup.State)
+}
+
+// mapLabels projects the label connection onto the domain type.
+func mapLabels(nodes []enrichLabelNode) []Label {
+	out := make([]Label, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, Label{Name: n.Name, Color: n.Color, Description: n.Description})
+	}
+	return out
+}
+
+// mapReviews projects the reviews connection onto the domain type (#651).
+func mapReviews(nodes []enrichReviewNode) []PullRequestReview {
+	out := make([]PullRequestReview, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, PullRequestReview{
+			GitHubID:    n.DatabaseID,
+			AuthorLogin: n.Author.login(),
+			State:       n.State,
+			Body:        n.Body,
+			SubmittedAt: n.SubmittedAt,
+		})
+	}
+	return out
+}
+
+// mapReviewThreads projects the reviewThreads connection onto the domain
+// type (#607). AuthorLogin comes from the thread's first comment (whoever
+// opened it); LastUpdatedAt from its last (how fresh the conversation is).
+func mapReviewThreads(nodes []enrichThreadNode) []ReviewThread {
+	out := make([]ReviewThread, 0, len(nodes))
+	for _, n := range nodes {
+		t := ReviewThread{
+			GitHubID:     n.ID,
+			IsResolved:   n.IsResolved,
+			IsOutdated:   n.IsOutdated,
+			Path:         n.Path,
+			CommentCount: n.Comments.TotalCount,
+		}
+		if first := n.Comments.Nodes; len(first) > 0 {
+			t.AuthorLogin = first[0].Author.login()
+			t.LastUpdatedAt = first[0].CreatedAt
+		}
+		if last := n.LatestComment.Nodes; len(last) > 0 {
+			t.LastUpdatedAt = last[0].CreatedAt
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // filterPhaseLabels returns the input slice with orchard phase labels
 // removed, preserving the relative order of the remaining labels.
 func filterPhaseLabels(in []Label) []Label {
@@ -370,273 +337,4 @@ func filterPhaseLabels(in []Label) []Label {
 		}
 	}
 	return out
-}
-
-// BatchEnrichPullRequests fetches enrichment fields for multiple PRs,
-// collapsing all PRs from the same repository into a single GitHub GraphQL
-// HTTP request using query aliases. One HTTP call per unique (owner, name)
-// pair is fired regardless of how many PRs are requested.
-//
-// Cache semantics (same as EnrichPullRequest, applied per-key):
-//   - Keys fresh within enrichmentTTL are served from cache, no network call.
-//   - UNKNOWN mergeable results are not cached — the next batch re-fetches.
-//   - When the rate-limit cooldown is active, stale values are returned for
-//     all keys that have a cached enrichment; keys with no cache get an error.
-//   - On a rate-limit error response, the cooldown is set and stale is served.
-//
-// The returned map contains an entry for every key in keys. Errors per key
-// are embedded in the returned error only when the entire batch fails; per-PR
-// parse failures result in a zero PullRequest value for that key.
-func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullRequestKey) (map[PullRequestKey]PullRequest, error) {
-	if len(keys) == 0 {
-		return map[PullRequestKey]PullRequest{}, nil
-	}
-
-	now := p.clock()
-
-	// Snapshot cache state and rate-limit once under read lock.
-	type cacheSnap struct {
-		entry      prEntry
-		hasEntry   bool
-		enrichedAt time.Time
-		hasEnrich  bool
-	}
-	snaps := make(map[PullRequestKey]cacheSnap, len(keys))
-	var rateLimitedUntil time.Time
-	p.prMu.RLock()
-	for _, k := range keys {
-		e, hasEntry := p.prs[k]
-		at, hasEnrich := p.enrichAt[k]
-		snaps[k] = cacheSnap{entry: e, hasEntry: hasEntry, enrichedAt: at, hasEnrich: hasEnrich}
-	}
-	rateLimitedUntil = p.rateLimitedUntil
-	p.prMu.RUnlock()
-
-	result := make(map[PullRequestKey]PullRequest, len(keys))
-
-	// Deduplicate keys.
-	seen := make(map[PullRequestKey]struct{}, len(keys))
-	var unique []PullRequestKey
-	for _, k := range keys {
-		if _, ok := seen[k]; !ok {
-			seen[k] = struct{}{}
-			unique = append(unique, k)
-		}
-	}
-
-	// Separate keys into: fresh (serve from cache), and stale/missing (need fetch).
-	var toFetch []PullRequestKey
-	for _, k := range unique {
-		snap := snaps[k]
-		if snap.hasEntry && snap.hasEnrich && now.Sub(snap.enrichedAt) < enrichmentTTL {
-			result[k] = snap.entry.value
-		} else {
-			toFetch = append(toFetch, k)
-		}
-	}
-
-	if len(toFetch) == 0 {
-		return result, nil
-	}
-
-	// serveStaleForKey returns cached value or zero, matching EnrichPullRequest.
-	serveStaleForKey := func(k PullRequestKey) PullRequest {
-		snap := snaps[k]
-		if snap.hasEntry && snap.hasEnrich && now.Sub(snap.enrichedAt) < staleEnrichmentTTL {
-			return snap.entry.value
-		}
-		return PullRequest{}
-	}
-
-	// serveStaleAll fills every outstanding key from cache and reports the
-	// fallback once for the whole batch (#749).
-	serveStaleAll := func(reason error) {
-		served := 0
-		for _, k := range toFetch {
-			v := serveStaleForKey(k)
-			if v.Number != 0 {
-				served++
-			}
-			result[k] = v
-		}
-		p.logServingStaleBatch(served, len(toFetch), reason)
-	}
-
-	// Rate-limit cooldown: skip network, serve stale for all keys.
-	if !rateLimitedUntil.IsZero() && p.clock().Before(rateLimitedUntil) {
-		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests: rate limit cooldown until %s", rateLimitedUntil.Format(time.RFC3339)))
-		return result, nil
-	}
-
-	c, err := p.httpClient(ctx)
-	if err != nil {
-		serveStaleAll(err)
-		return result, err
-	}
-
-	// Group keys by (owner, name) repo for aliased batch queries.
-	type repoKey struct{ owner, name string }
-	repoGroups := make(map[repoKey][]PullRequestKey)
-	for _, k := range toFetch {
-		rk := repoKey{k.Owner, k.Name}
-		repoGroups[rk] = append(repoGroups[rk], k)
-	}
-
-	// Fire one aliased GraphQL query per repo group.
-	// Alias scheme: r<repoIdx>: repository(...) { pr<prIdx>: pullRequest(...) { ... } }
-	// We flatten all repos into one query document so a single HTTP call covers
-	// everything. GitHub supports multiple top-level aliases in one query.
-	type prPosition struct {
-		key     PullRequestKey
-		repoIdx int
-		prIdx   int
-	}
-	var positions []prPosition
-
-	var qb strings.Builder
-	qb.WriteString("{")
-	repoIdx := 0
-	for rk, rkKeys := range repoGroups {
-		fmt.Fprintf(&qb, " r%d: repository(owner:%q,name:%q){", repoIdx, rk.owner, rk.name)
-		for prIdx, k := range rkKeys {
-			fmt.Fprintf(&qb, " pr%d: pullRequest(number:%d){%s}", prIdx, k.Number, enrichPRFields)
-			positions = append(positions, prPosition{key: k, repoIdx: repoIdx, prIdx: prIdx})
-		}
-		qb.WriteString(" }")
-		repoIdx++
-	}
-	qb.WriteString(" }")
-
-	raw, err := c.GraphQL(ctx, qb.String(), nil)
-	if err != nil {
-		// Rate-limit HTTP error: set cooldown, serve stale.
-		if IsRateLimited(err) {
-			p.enterRateLimitCooldown("BatchEnrichPullRequests", err.Error())
-		}
-		serveStaleAll(err)
-		return result, err
-	}
-
-	// Parse the aliased response envelope.
-	// Shape: { "data": { "r0": { "pr0": {...}, "pr1": {...} }, "r1": { ... } }, "errors": [...] }
-	var envelope struct {
-		Data   map[string]json.RawMessage `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors,omitempty"`
-	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests decode: %w", err))
-		return result, fmt.Errorf("BatchEnrichPullRequests decode: %w", err)
-	}
-
-	if len(envelope.Errors) > 0 {
-		msgs := make([]string, 0, len(envelope.Errors))
-		for _, e := range envelope.Errors {
-			msgs = append(msgs, e.Message)
-		}
-		joined := strings.Join(msgs, "; ")
-		if strings.Contains(strings.ToLower(joined), "rate limit") {
-			p.enterRateLimitCooldown("BatchEnrichPullRequests", joined)
-		}
-		// Partial success: aliases that resolved are real; only a response
-		// with no usable data discards them all.
-		if len(envelope.Data) == 0 {
-			serveStaleAll(fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined))
-			return result, fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined)
-		}
-	}
-
-	if len(envelope.Errors) == 0 {
-		// Successful response — clear the cooldown.
-		p.clearRateLimitCooldown()
-	}
-
-	// For each aliased repo block, decode each aliased PR block.
-	// Then each repo block is itself a map[string]json.RawMessage.
-	for _, pos := range positions {
-		repoAlias := fmt.Sprintf("r%d", pos.repoIdx)
-		prAlias := fmt.Sprintf("pr%d", pos.prIdx)
-
-		repoRaw, ok := envelope.Data[repoAlias]
-		if !ok {
-			result[pos.key] = serveStaleForKey(pos.key)
-			continue
-		}
-
-		var repoBlock map[string]json.RawMessage
-		if err := json.Unmarshal(repoRaw, &repoBlock); err != nil {
-			result[pos.key] = serveStaleForKey(pos.key)
-			continue
-		}
-
-		prRaw, ok := repoBlock[prAlias]
-		if !ok {
-			result[pos.key] = serveStaleForKey(pos.key)
-			continue
-		}
-
-		var wire enrichPRAlias
-		if err := json.Unmarshal(prRaw, &wire); err != nil {
-			result[pos.key] = serveStaleForKey(pos.key)
-			continue
-		}
-
-		result[pos.key] = p.applyEnrichment(pos.key, wire, now)
-	}
-
-	return result, nil
-}
-
-// applyEnrichment maps an enrichPRAlias wire value onto the provider cache and
-// returns the enriched PullRequest. Called by BatchEnrichPullRequests after a
-// successful GraphQL response. Mirrors EnrichPullRequest's cache-write logic.
-func (p *Provider) applyEnrichment(key PullRequestKey, wire enrichPRAlias, now time.Time) PullRequest {
-	mergeable := mapMergeableState(wire.Mergeable)
-
-	var rd *ReviewDecision
-	if wire.ReviewDecision != nil {
-		mapped := ReviewDecision(*wire.ReviewDecision)
-		rd = &mapped
-	}
-
-	labels := make([]Label, 0, len(wire.Labels.Nodes))
-	for _, n := range wire.Labels.Nodes {
-		labels = append(labels, Label{
-			Name:        n.Name,
-			Color:       n.Color,
-			Description: n.Description,
-		})
-	}
-
-	ciStatus := CiStatusUnknown
-	if len(wire.Commits.Nodes) > 0 {
-		commit := wire.Commits.Nodes[0].Commit
-		if commit.StatusCheckRollup != nil {
-			ciStatus = mapStatusCheckRollup(commit.StatusCheckRollup.State)
-		}
-	}
-
-	p.prMu.Lock()
-	base := p.prs[key]
-	base.value.Mergeable = mergeable
-	base.value.MergeStateStatus = wire.MergeStateStatus
-	base.value.ReviewDecision = rd
-	base.value.StatusCheckRollup = ciStatus
-	base.value.Labels = filterPhaseLabels(labels)
-
-	var emitted []PullRequestKey
-	if shouldCacheEnrichment(mergeable, base.value.State) {
-		p.prs[key] = base
-		p.enrichAt[key] = now
-		emitted = append(emitted, key)
-	}
-	enriched := base.value
-	p.prMu.Unlock()
-
-	for _, k := range emitted {
-		p.invalidate(prNodeID(k), "enrich", now)
-	}
-
-	return enriched
 }

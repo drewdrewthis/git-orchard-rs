@@ -1187,9 +1187,24 @@ type PullRequest implements Node {
   authorLogin: String!
   baseRef: String!
   headRef: String!
+
+  """
+  Head commit sha of the PR branch (#658). Read from the same GraphQL
+  enrichment snapshot as `statusCheckRollup`, so the two always describe
+  the same commit — a consumer can trust "CI green on this sha". Empty
+  string until an enrichment fetch has succeeded.
+  """
+  headRefOid: String!
   url: String!
   createdAt: String!
   updatedAt: String!
+
+  """
+  Reviews submitted on this PR, oldest-first, capped at the 20 most
+  recent. Sourced from the shared enrichment fetch (#651). The cap is
+  deliberately tighter than `reviewThreads` because review bodies are
+  unbounded prose and this rides the sidebar hot path.
+  """
   reviews: [PullRequestReview!]
   comments: [IssueComment!]
   mergeable: MergeableState!
@@ -1197,6 +1212,20 @@ type PullRequest implements Node {
   reviewDecision: ReviewDecisionEnum
   statusCheckRollup: CiStatus!
   labels: [Label!]!
+
+  """
+  Review comment threads on this PR, capped at the 50 oldest (#607).
+  Every thread is returned regardless of state; use
+  `unresolvedThreadCount` for the merge-gate number.
+  """
+  reviewThreads: [ReviewThread!]!
+
+  """
+  Threads that still block a merge: `isResolved == false AND isOutdated
+  == false` (#607). Derived from the same fetch as `reviewThreads` so a
+  merge gate can read the count without walking the list.
+  """
+  unresolvedThreadCount: Int!
 }
 
 "A review submitted on a pull request."
@@ -1206,6 +1235,38 @@ type PullRequestReview {
   state: String!
   body: String!
   submittedAt: String!
+}
+
+"""
+A review comment thread on a pull request — one inline conversation
+anchored to a file. Deliberately flat: the merge gate needs to know
+whether a thread blocks, where it is, and who is waiting, not to render
+the conversation. Fetch the comments via `Query.gh` when the body text
+is actually needed.
+"""
+type ReviewThread {
+  id: ID!
+
+  "Whether a reviewer marked the thread resolved."
+  isResolved: Boolean!
+
+  """
+  Whether the thread is anchored to a diff hunk that no longer exists on
+  the head commit. Outdated threads do not block a merge.
+  """
+  isOutdated: Boolean!
+
+  "Repository-relative path the thread is anchored to."
+  path: String!
+
+  "Total comments in the thread, including any beyond the fetched page."
+  commentCount: Int!
+
+  "Login of the reviewer who opened the thread."
+  authorLogin: String!
+
+  "ISO-8601 timestamp of the most recent comment in the thread."
+  lastUpdatedAt: String!
 }
 
 """

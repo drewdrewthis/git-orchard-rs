@@ -448,6 +448,35 @@ func toGraphQLReview(r gh.PullRequestReview) *graphql1.PullRequestReview {
 	}
 }
 
+// toGraphQLReviews projects the enrichment's review slice, preserving order.
+// Returns an empty (non-nil) slice so `reviews` resolves to `[]` rather than
+// null on a PR nobody has reviewed (#651).
+func toGraphQLReviews(in []gh.PullRequestReview) []*graphql1.PullRequestReview {
+	out := make([]*graphql1.PullRequestReview, 0, len(in))
+	for _, r := range in {
+		out = append(out, toGraphQLReview(r))
+	}
+	return out
+}
+
+// toGraphQLReviewThreads projects the enrichment's review threads (#607).
+// Returns an empty (non-nil) slice — the schema declares the list non-null.
+func toGraphQLReviewThreads(in []gh.ReviewThread) []*graphql1.ReviewThread {
+	out := make([]*graphql1.ReviewThread, 0, len(in))
+	for _, t := range in {
+		out = append(out, &graphql1.ReviewThread{
+			ID:            t.NodeID(),
+			IsResolved:    t.IsResolved,
+			IsOutdated:    t.IsOutdated,
+			Path:          t.Path,
+			CommentCount:  int64(t.CommentCount),
+			AuthorLogin:   t.AuthorLogin,
+			LastUpdatedAt: t.LastUpdatedAt,
+		})
+	}
+	return out
+}
+
 func toGraphQLComment(c gh.IssueComment) *graphql1.IssueComment {
 	return &graphql1.IssueComment{
 		ID:          c.NodeID(),

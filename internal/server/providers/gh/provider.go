@@ -234,12 +234,19 @@ func enrichmentStillValid(prev, next PullRequest) bool {
 // next. REST payloads never carry these, so a refresh that overwrote the
 // cached entry wholesale would zero them while enrichAt still claimed the
 // entry was freshly enriched.
+//
+// Every field applyEnrichment writes must be listed here — an omission is
+// invisible until a list refresh lands inside the enrichment TTL and silently
+// blanks the field.
 func carryEnrichment(next *PullRequest, prev PullRequest) {
 	next.Mergeable = prev.Mergeable
 	next.MergeStateStatus = prev.MergeStateStatus
 	next.ReviewDecision = prev.ReviewDecision
 	next.StatusCheckRollup = prev.StatusCheckRollup
 	next.Labels = prev.Labels
+	next.HeadRefOid = prev.HeadRefOid
+	next.Reviews = prev.Reviews
+	next.ReviewThreads = prev.ReviewThreads
 }
 
 // ListPullRequests fetches and caches the PR list for a repo. The
