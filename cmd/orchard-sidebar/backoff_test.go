@@ -4,8 +4,10 @@ package main
 //
 // fetchClientSession execs `tmux list-clients` on every tick. At a flat 150ms
 // that is ~7 forks/sec per sidebar and ~40 across a desktop of six, forever,
-// whether or not the answer moved. These tests pin the two halves of the fix:
-// the pure ladder (idleBackoff), and the four events that snap it back to fast.
+// whether or not the answer moved. These tests pin the three halves of the
+// fix: the pure ladder (idleBackoff), the four events that snap it back to
+// fast, and the push-lane health gate that holds it there while push is down
+// (PR #757 review, discussion_r3918791010).
 
 import (
 	"errors"
@@ -222,6 +224,81 @@ func TestIdleBackoffResetRestartsTheFastWindow(t *testing.T) {
 	}
 }
 
+// ---- push-lane health: the ladder cannot climb on a signal it isn't getting
+//
+// Blocking finding on PR #757's review (discussion_r3918791010): the
+// attach-based reset only ever fires off the push lane. While the push lane
+// is down or stale, nothing else re-arms the ladder, so an
+// externally-driven switch-client is caught only at whatever cadence the
+// lane had already decayed to -- up to the 2s cap, not "~1 tick" the way the
+// flat 150ms baseline guaranteed. The lane cannot trust attach signals it
+// isn't receiving, so it must not climb past the fast rung while the push
+// lane is unhealthy, and must snap back the moment it goes down.
+func TestIdleBackoffPushHealthGatesTheLadder(t *testing.T) {
+	read := clientRead{session: "alpha", width: 42}
+	full := 1 + clientFastHold + len(clientLadder) // enough reads to fully decay, and then some
+
+	cases := []struct {
+		name string
+		run  func(t *testing.T, b *idleBackoff)
+	}{
+		{
+			name: "push lane disconnected: cadence stays at 150ms",
+			run: func(t *testing.T, b *idleBackoff) {
+				b.observePushHealth(false)
+				for i := 0; i < full; i++ {
+					if got := b.observe(read); got != clientEvery {
+						t.Fatalf("read %d while push is down: %v, want %v", i, got, clientEvery)
+					}
+				}
+			},
+		},
+		{
+			name: "push lane connected: cadence still climbs to the 2s cap",
+			run: func(t *testing.T, b *idleBackoff) {
+				b.observePushHealth(true)
+				var last time.Duration
+				for i := 0; i < full; i++ {
+					last = b.observe(read)
+				}
+				if want := clientLadder[len(clientLadder)-1]; last != want {
+					t.Fatalf("healthy push lane settled at %v, want the %v cap", last, want)
+				}
+			},
+		},
+		{
+			name: "push lane drops mid-ladder: cadence resets without a new read",
+			run: func(t *testing.T, b *idleBackoff) {
+				b.observePushHealth(true)
+				for i := 0; i < full; i++ {
+					b.observe(read)
+				}
+				if got := b.interval(); got != clientLadder[len(clientLadder)-1] {
+					t.Fatalf("did not reach the cap before the push lane dropped: %v", got)
+				}
+
+				b.observePushHealth(false)
+				if got := b.interval(); got != clientEvery {
+					t.Fatalf("push lane drop did not snap the lane back: %v, want %v", got, clientEvery)
+				}
+				// And it must hold there, not just for the instant of the drop.
+				for i := 0; i < clientFastHold+2; i++ {
+					if got := b.observe(read); got != clientEvery {
+						t.Fatalf("read %d after the push lane dropped: %v, want %v", i, got, clientEvery)
+					}
+				}
+			},
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var b idleBackoff
+			c.run(t, &b)
+		})
+	}
+}
+
 // ---- sameAttach: the push lane's snap-back trigger
 
 func TestSameAttach(t *testing.T) {
@@ -368,10 +445,59 @@ func TestAttachChurnResetsTheClientLane(t *testing.T) {
 		t.Errorf("a new attached session left the lane at %v, want %v", iv, clientEvery)
 	}
 
-	// A dropped socket says nothing about attachment; it must not re-arm.
+	// A dropped socket carries no attach snapshot to compare, but it is
+	// exactly the signal that the lane can no longer trust attach-based
+	// re-arming at all: it must snap back to the fast rung on its own
+	// (PR #757 review, discussion_r3918791010).
 	decayToCap(m)
+	if m.clientTick.interval() == clientEvery {
+		t.Fatal("lane never decayed; the rest of this test proves nothing")
+	}
 	m.Update(tmuxSubMsg{err: errors.New("socket dropped")})
-	if iv := m.clientTick.interval(); iv == clientEvery {
-		t.Error("a subscription error re-armed the fast lane")
+	if iv := m.clientTick.interval(); iv != clientEvery {
+		t.Fatalf("a subscription error left the lane at %v, want %v (push lane is unhealthy)", iv, clientEvery)
+	}
+	// And while the push lane stays down, the client lane's own reads must
+	// not climb it back out -- an externally-driven switch-client in this
+	// state must still be caught at ~1 tick, not bounded by however far the
+	// ladder climbs before it.
+	for i := 0; i < 1+clientFastHold+len(clientLadder); i++ {
+		m.Update(clientSessMsg{name: "alpha", width: 42, gen: m.clientGen})
+		if iv := m.clientTick.interval(); iv != clientEvery {
+			t.Fatalf("push lane down: read %d cadence %v, want %v", i, iv, clientEvery)
+		}
+	}
+}
+
+// TestStalePushLaneResetsTheClientLane covers the other half of the same
+// finding: the push lane can go quiet without ever sending an error -- no
+// tmuxSubMsg arrives at all past its subFresh keepalive window. Nothing but
+// the fast lane's own tick can notice that, so fastDataMsg is where
+// subLive() is sampled into the ladder every tick regardless of whether that
+// fast-lane read itself succeeded (PR #757 review, discussion_r3918791010).
+func TestStalePushLaneResetsTheClientLane(t *testing.T) {
+	quietTmux(t)
+	captureClientTicks(t)
+
+	m := &model{width: 42, desiredWidth: 42}
+	m.Update(tmuxSubMsg{sessions: []tmuxSession{{Name: "alpha", Attached: true}}})
+	decayToCap(m)
+	if m.clientTick.interval() == clientEvery {
+		t.Fatal("lane never decayed; the rest of this test proves nothing")
+	}
+
+	// No error ever arrives; the push lane just goes quiet past subFresh.
+	m.subAt = time.Now().Add(-subFresh - time.Second)
+	m.Update(fastDataMsg{rows: m.rows})
+	if iv := m.clientTick.interval(); iv != clientEvery {
+		t.Fatalf("stale push lane left the client lane at %v, want %v", iv, clientEvery)
+	}
+
+	// A fresh push snapshot is recovery; the ladder may climb again.
+	m.subAt = time.Now()
+	m.Update(fastDataMsg{rows: m.rows})
+	decayToCap(m)
+	if m.clientTick.interval() == clientEvery {
+		t.Fatal("lane could not climb again once the push lane recovered")
 	}
 }
