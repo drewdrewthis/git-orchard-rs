@@ -60,29 +60,42 @@ sh_dquote() {
   printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\"$`]/\\&/g')"
 }
 
-# A literal single quote cannot appear inside a tmux single-quoted string,
-# and tmux offers no escape for it there. Refuse rather than emit a binding
-# that silently truncates.
-reject_squote() {
+# A literal single quote cannot appear inside a tmux single-quoted string, and
+# tmux offers no escape for it there, so a value carrying one cannot be wired
+# into the bound command at all. That disables the LABELER, not the picker:
+# reporting it and binding the picker alone is the degradation the README
+# promises. Exiting here instead would leave the user with no binding.
+has_squote() {
   case "$2" in
     *\'*)
-      echo "orchard.tmux: $1 contains a single quote, which tmux cannot quote here: $2" >&2
-      exit 1
+      echo "orchard.tmux: $1 contains a single quote, which tmux cannot quote here; labels disabled: $2" >&2
+      return 0
       ;;
   esac
+  return 1
 }
 
 DAEMON_URL="$(tmux_option '@orchard_daemon_url' 'http://127.0.0.1:7777/graphql')"
 KEY="$(tmux_option '@orchard_key' 's')"
 HEARTBEAT_DIR="$(tmux_option '@orchard_heartbeat_dir' '')"
 
-reject_squote "labeler path" "$LABELER"
-reject_squote "@orchard_daemon_url" "$DAEMON_URL"
-reject_squote "@orchard_heartbeat_dir" "$HEARTBEAT_DIR"
+# Every reason the labeler cannot be wired up is collected before binding, so
+# the user sees all of them in one pass rather than one per reload.
+LABELS_OK=1
+if [[ ! -x "$LABELER" ]]; then
+  # Packaging error, not a runtime one.
+  echo "orchard.tmux: helper not executable: $LABELER" >&2
+  LABELS_OK=0
+fi
+# Written as `if` rather than `cmd && LABELS_OK=0` so the no-quote case (a
+# non-zero return) cannot be read as a `set -e` trap by the next reader.
+if has_squote "labeler path" "$LABELER"; then LABELS_OK=0; fi
+if has_squote "@orchard_daemon_url" "$DAEMON_URL"; then LABELS_OK=0; fi
+if has_squote "@orchard_heartbeat_dir" "$HEARTBEAT_DIR"; then LABELS_OK=0; fi
 
 PICKER="choose-tree -Zs -F '$FORMAT'"
 
-if [[ -x "$LABELER" ]]; then
+if [[ "$LABELS_OK" == "1" ]]; then
   LABEL_CMD="$(sh_dquote "$LABELER") --daemon-url $(sh_dquote "$DAEMON_URL")"
   if [[ -n "$HEARTBEAT_DIR" ]]; then
     LABEL_CMD="$LABEL_CMD --heartbeat-dir $(sh_dquote "$HEARTBEAT_DIR")"
@@ -93,9 +106,8 @@ if [[ -x "$LABELER" ]]; then
   # degrades to empty results on its own.
   tmux bind-key -T prefix "$KEY" "run-shell -b '$LABEL_CMD' ; $PICKER"
 else
-  # Packaging error, not a runtime one. Still bind the picker so the key
-  # keeps working; labels just fall back to command + path.
-  echo "orchard.tmux: helper not executable: $LABELER" >&2
+  # Still bind the picker so the key keeps working; labels just fall back to
+  # command + path, per the README's Degradation section.
   tmux bind-key -T prefix "$KEY" "$PICKER"
 fi
 

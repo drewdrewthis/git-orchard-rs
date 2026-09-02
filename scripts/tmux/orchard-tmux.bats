@@ -129,3 +129,42 @@ _set_opt() {
 
   [ "$first" = "$second" ]
 }
+
+# --- degradation, not death (review finding 5) -----------------------------
+#
+# A literal single quote cannot appear inside a tmux single-quoted string and
+# tmux offers no escape for it there, so the labeler cannot be wired up. That
+# is a reason to install the picker WITHOUT the labeler — the degradation the
+# README promises — not a reason to install nothing.
+
+@test "apostrophe in the daemon url still binds the picker" {
+  _set_opt "@orchard_daemon_url" "http://o'brien.example/graphql"
+  _run_plugin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"single quote"* ]]
+
+  binding="$(_binding_for s)"
+  [[ "$binding" == *"choose-tree"* ]]
+  [[ "$binding" != *"pane-labels.sh"* ]]
+}
+
+@test "apostrophe in the heartbeat dir still binds the picker" {
+  _set_opt "@orchard_heartbeat_dir" "/Users/O'Brien/tmp"
+  _run_plugin
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"single quote"* ]]
+  [[ "$(_binding_for s)" == *"choose-tree"* ]]
+}
+
+@test "apostrophe in the labeler path still binds the picker" {
+  # Copy the whole plugin into a path containing an apostrophe so the script
+  # resolves a labeler it cannot quote, rather than one that is merely absent.
+  mkdir -p "$TMPD/O'Brien"
+  cp "$SCRIPT" "$BATS_TEST_DIRNAME/pane-labels.sh" "$TMPD/O'Brien/"
+  chmod +x "$TMPD/O'Brien/orchard.tmux" "$TMPD/O'Brien/pane-labels.sh"
+
+  PATH="$TMPD/bin:$PATH" run bash "$TMPD/O'Brien/orchard.tmux"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"single quote"* ]]
+  [[ "$(_binding_for s)" == *"choose-tree"* ]]
+}
