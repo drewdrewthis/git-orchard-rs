@@ -113,15 +113,11 @@ impl std::error::Error for DaemonError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialises env-mutating tests in this module; cargo runs lib tests in
-    /// parallel and `set_var` / `remove_var` are process-global.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::env_lock;
 
     #[test]
     fn default_url_is_local_daemon() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prior = env::var(DAEMON_URL_ENV).ok();
         unsafe {
             env::remove_var(DAEMON_URL_ENV);
@@ -138,7 +134,7 @@ mod tests {
 
     #[test]
     fn env_var_overrides_default() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
         let prior = env::var(DAEMON_URL_ENV).ok();
         unsafe {
             env::set_var(DAEMON_URL_ENV, "http://example.invalid:9999/graphql");
