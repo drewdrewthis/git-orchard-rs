@@ -610,6 +610,17 @@ mod tests {
     }
 
     #[test]
+    fn work_view_query_selects_unresolved_thread_count() {
+        // The TUI gates "ready" on CachedPr::unresolved_threads (#607). If the
+        // query stops selecting the field the adapter silently reports zero.
+        let q = work_view_query();
+        assert!(
+            q.contains("unresolvedThreadCount"),
+            "work_view query must select `unresolvedThreadCount` on pr"
+        );
+    }
+
+    #[test]
     fn work_view_query_pr_labels_has_subselection() {
         let q = work_view_query();
         assert!(

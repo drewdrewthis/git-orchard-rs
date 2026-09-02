@@ -946,6 +946,41 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // unresolved_thread_count flows daemon -> cache (#607)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_unresolved_thread_count_flows_into_cached_pr() {
+        // classify.rs and types.rs both gate on CachedPr::unresolved_threads,
+        // so a daemon-sourced PR that drops the count is silently reported as
+        // ready when threads are still blocking it.
+        let pr = WorkViewPr {
+            number: 3298,
+            state: "OPEN".to_string(),
+            title: "PR".to_string(),
+            status_check_rollup: Some("SUCCESS".to_string()),
+            review_decision: Some("APPROVED".to_string()),
+            merge_state_status: Some("BLOCKED".to_string()),
+            mergeable: Some("MERGEABLE".to_string()),
+            draft: false,
+            labels: Vec::new(),
+            unresolved_thread_count: 2,
+        };
+        let cached = work_view_pr_to_cached(&pr, "feature/threads", None);
+        assert_eq!(
+            cached.unresolved_threads, 2,
+            "daemon unresolvedThreadCount must reach CachedPr::unresolved_threads"
+        );
+    }
+
+    #[test]
+    fn pr_unresolved_thread_count_defaults_to_zero() {
+        let pr = minimal_pr(1, "feat/x");
+        let cached = work_view_pr_to_cached(&pr, "feat/x", None);
+        assert_eq!(cached.unresolved_threads, 0);
+    }
+
+    // -----------------------------------------------------------------------
     // Concern #4: extract_session_from_pane_handles_colons_in_session_name
     // -----------------------------------------------------------------------
 
