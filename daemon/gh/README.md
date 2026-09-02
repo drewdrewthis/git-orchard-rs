@@ -4,7 +4,7 @@ GitHub API: repos (github-side view), issues, pull requests, workflow runs.
 
 ## Owns
 
-- **Types:** `PullRequest`, `PullRequestReview`, `Issue`, `Label`, `IssueComment`, `WorkflowRun`
+- **Types:** `PullRequest`, `PullRequestReview`, `ReviewThread`, `Issue`, `Label`, `IssueComment`, `WorkflowRun`
 - **Enums:** `MergeableState`, `ReviewDecisionEnum`, `CiStatus`, `PullRequestState`, `IssueState`
 - **Queries (typed core):** `pullRequests`, `openPullRequests`, `issues`, `issue`, `pullRequest`, `workflowRuns`
 - **Query (pass-through, S16):** `gh(query: String!, variables: JSON): JSON` — forwards arbitrary GitHub GraphQL with the daemon's credentials
