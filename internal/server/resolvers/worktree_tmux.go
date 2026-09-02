@@ -21,7 +21,7 @@ import (
 //  2. Has a CurrentPid that the ps provider can resolve to a cwd.
 //  3. Has a cwd that equals obj.Path exactly OR starts with obj.Path+"/".
 //
-// Callers pass the host's panes (Provider.PanesOnHost) rather than a full
+// Callers pass the host's panes (Provider.PanesByHost) rather than a full
 // graph snapshot: cwd is not in the tmux cache, so the ps lookups here are
 // the reason every pane has to be considered — and they must not run while
 // the provider's store lock is held (#612).

@@ -57,8 +57,8 @@ func (p *Provider) ClientByName(host, clientName string) (Client, bool) {
 // the entries that match. Order is unspecified; the result is never nil.
 // ----------------------------------------------------------------------
 
-// WindowsOf returns every window belonging to `session` on the given host.
-func (p *Provider) WindowsOf(host, session string) []Window {
+// WindowsBySession returns every window belonging to `session` on the given host.
+func (p *Provider) WindowsBySession(host, session string) []Window {
 	if session == "" {
 		return []Window{}
 	}
@@ -67,9 +67,9 @@ func (p *Provider) WindowsOf(host, session string) []Window {
 	}))
 }
 
-// PanesOf returns every pane in the window at `index` within `session` on
+// PanesByWindow returns every pane in the window at `index` within `session` on
 // the given host.
-func (p *Provider) PanesOf(host, session string, index int) []Pane {
+func (p *Provider) PanesByWindow(host, session string, index int) []Pane {
 	if session == "" {
 		return []Pane{}
 	}
@@ -80,13 +80,13 @@ func (p *Provider) PanesOf(host, session string, index int) []Pane {
 	}))
 }
 
-// PanesOnHost returns every cached pane on the given host.
+// PanesByHost returns every cached pane on the given host.
 //
 // This is the widest accessor here and exists for the one read that
 // genuinely needs every pane: the worktree join resolves each pane's cwd
 // through the ps provider, and cwd is not in the tmux cache to filter on.
 // It still beats Snapshot() — one slice of one store, not four maps.
-func (p *Provider) PanesOnHost(host string) []Pane {
+func (p *Provider) PanesByHost(host string) []Pane {
 	return clonePanes(p.panes.Filter(func(k PaneKey, _ Pane) bool {
 		return string(k.Host) == host
 	}))
@@ -103,9 +103,9 @@ func (p *Provider) PanesBySession(host, sessionName string) []Pane {
 	}))
 }
 
-// ClientsOfSession returns every client attached to `session` on the given
+// ClientsBySession returns every client attached to `session` on the given
 // host.
-func (p *Provider) ClientsOfSession(host, session string) []Client {
+func (p *Provider) ClientsBySession(host, session string) []Client {
 	if session == "" {
 		return []Client{}
 	}
@@ -114,9 +114,9 @@ func (p *Provider) ClientsOfSession(host, session string) []Client {
 	}))
 }
 
-// ClientsWatchingPane returns every client whose currently-active pane is
+// ClientsByCurrentPane returns every client whose currently-active pane is
 // paneID on the given host.
-func (p *Provider) ClientsWatchingPane(host, paneID string) []Client {
+func (p *Provider) ClientsByCurrentPane(host, paneID string) []Client {
 	if paneID == "" {
 		return []Client{}
 	}
@@ -147,7 +147,7 @@ func (p *Provider) PanesByCwd(host, cwd string, ps PanePsGetter) []Pane {
 		return []Pane{}
 	}
 	var out []Pane
-	for _, pn := range p.PanesOnHost(host) {
+	for _, pn := range p.PanesByHost(host) {
 		if pn.CurrentPid <= 0 {
 			continue
 		}
@@ -174,7 +174,7 @@ func (p *Provider) PanesByCommand(host, basenameContains string, ps PanePsGetter
 	}
 	needle := strings.ToLower(basenameContains)
 	var out []Pane
-	for _, pn := range p.PanesOnHost(host) {
+	for _, pn := range p.PanesByHost(host) {
 		if paneCommandMatchesClaude(pn, host, ps, needle) {
 			out = append(out, pn)
 		}

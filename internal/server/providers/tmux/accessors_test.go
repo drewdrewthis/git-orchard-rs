@@ -142,70 +142,70 @@ func TestClientByName_HitAndMiss(t *testing.T) {
 	}
 }
 
-func TestWindowsOf_ScopedToSession(t *testing.T) {
+func TestWindowsBySession_ScopedToSession(t *testing.T) {
 	p := graphFixture()
 
-	got := p.WindowsOf("local", "alpha")
+	got := p.WindowsBySession("local", "alpha")
 	if len(got) != 2 {
-		t.Fatalf("WindowsOf(alpha) = %d windows, want 2", len(got))
+		t.Fatalf("WindowsBySession(alpha) = %d windows, want 2", len(got))
 	}
 	for _, w := range got {
 		if w.Key.Session != "alpha" {
-			t.Errorf("WindowsOf(alpha) leaked window from session %q", w.Key.Session)
+			t.Errorf("WindowsBySession(alpha) leaked window from session %q", w.Key.Session)
 		}
 	}
-	if got := p.WindowsOf("local", "nope"); len(got) != 0 {
-		t.Errorf("WindowsOf(nope) = %d windows, want 0", len(got))
+	if got := p.WindowsBySession("local", "nope"); len(got) != 0 {
+		t.Errorf("WindowsBySession(nope) = %d windows, want 0", len(got))
 	}
 }
 
-func TestPanesOf_ScopedToWindow(t *testing.T) {
+func TestPanesByWindow_ScopedToWindow(t *testing.T) {
 	p := graphFixture()
 
-	got := p.PanesOf("local", "alpha", 0)
+	got := p.PanesByWindow("local", "alpha", 0)
 	if want := []string{"%1", "%2"}; !equalStrings(paneIDs(got), want) {
-		t.Errorf("PanesOf(alpha,0) = %v, want %v", paneIDs(got), want)
+		t.Errorf("PanesByWindow(alpha,0) = %v, want %v", paneIDs(got), want)
 	}
-	if got := p.PanesOf("local", "alpha", 1); !equalStrings(paneIDs(got), []string{"%3"}) {
-		t.Errorf("PanesOf(alpha,1) = %v, want [%%3]", paneIDs(got))
+	if got := p.PanesByWindow("local", "alpha", 1); !equalStrings(paneIDs(got), []string{"%3"}) {
+		t.Errorf("PanesByWindow(alpha,1) = %v, want [%%3]", paneIDs(got))
 	}
-	if got := p.PanesOf("local", "beta", 9); len(got) != 0 {
-		t.Errorf("PanesOf(beta,9) = %d panes, want 0", len(got))
-	}
-}
-
-func TestPanesOnHost_ScopedToHost(t *testing.T) {
-	p := graphFixture()
-
-	if got := p.PanesOnHost("local"); len(got) != 4 {
-		t.Errorf("PanesOnHost(local) = %d panes, want 4", len(got))
-	}
-	if got := p.PanesOnHost("elsewhere"); len(got) != 0 {
-		t.Errorf("PanesOnHost(elsewhere) = %d panes, want 0", len(got))
+	if got := p.PanesByWindow("local", "beta", 9); len(got) != 0 {
+		t.Errorf("PanesByWindow(beta,9) = %d panes, want 0", len(got))
 	}
 }
 
-func TestClientsOfSession_ScopedToSession(t *testing.T) {
+func TestPanesByHost_ScopedToHost(t *testing.T) {
 	p := graphFixture()
 
-	got := p.ClientsOfSession("local", "alpha")
+	if got := p.PanesByHost("local"); len(got) != 4 {
+		t.Errorf("PanesByHost(local) = %d panes, want 4", len(got))
+	}
+	if got := p.PanesByHost("elsewhere"); len(got) != 0 {
+		t.Errorf("PanesByHost(elsewhere) = %d panes, want 0", len(got))
+	}
+}
+
+func TestClientsBySession_ScopedToSession(t *testing.T) {
+	p := graphFixture()
+
+	got := p.ClientsBySession("local", "alpha")
 	if len(got) != 1 || got[0].Key.ClientName != "c-alpha" {
-		t.Fatalf("ClientsOfSession(alpha) = %+v, want [c-alpha]", got)
+		t.Fatalf("ClientsBySession(alpha) = %+v, want [c-alpha]", got)
 	}
-	if got := p.ClientsOfSession("local", "nope"); len(got) != 0 {
-		t.Errorf("ClientsOfSession(nope) = %d clients, want 0", len(got))
+	if got := p.ClientsBySession("local", "nope"); len(got) != 0 {
+		t.Errorf("ClientsBySession(nope) = %d clients, want 0", len(got))
 	}
 }
 
-func TestClientsWatchingPane_MatchesCurrentPane(t *testing.T) {
+func TestClientsByCurrentPane_MatchesCurrentPane(t *testing.T) {
 	p := graphFixture()
 
-	got := p.ClientsWatchingPane("local", "%4")
+	got := p.ClientsByCurrentPane("local", "%4")
 	if len(got) != 1 || got[0].Key.ClientName != "c-beta" {
-		t.Fatalf("ClientsWatchingPane(%%4) = %+v, want [c-beta]", got)
+		t.Fatalf("ClientsByCurrentPane(%%4) = %+v, want [c-beta]", got)
 	}
-	if got := p.ClientsWatchingPane("local", "%2"); len(got) != 0 {
-		t.Errorf("ClientsWatchingPane(%%2) = %d clients, want 0 — no client is on it", len(got))
+	if got := p.ClientsByCurrentPane("local", "%2"); len(got) != 0 {
+		t.Errorf("ClientsByCurrentPane(%%2) = %d clients, want 0 — no client is on it", len(got))
 	}
 }
 
@@ -229,8 +229,8 @@ func TestPaneAccessors_DoNotShareSliceWithStore(t *testing.T) {
 			}
 			return []Pane{pn}
 		},
-		"PanesOf":        func() []Pane { return p.PanesOf("local", "alpha", 0) },
-		"PanesOnHost":    func() []Pane { return p.PanesOnHost("local") },
+		"PanesByWindow":  func() []Pane { return p.PanesByWindow("local", "alpha", 0) },
+		"PanesByHost":    func() []Pane { return p.PanesByHost("local") },
 		"PanesBySession": func() []Pane { return p.PanesBySession("local", "alpha") },
 	}
 
@@ -265,12 +265,12 @@ func TestNarrowAccessors_DoNotCloneTheGraph(t *testing.T) {
 	p.SessionByName("local", "alpha")
 	p.WindowByKey("local", "alpha", 0)
 	p.ClientByName("local", "c-alpha")
-	p.WindowsOf("local", "alpha")
-	p.PanesOf("local", "alpha", 0)
-	p.PanesOnHost("local")
+	p.WindowsBySession("local", "alpha")
+	p.PanesByWindow("local", "alpha", 0)
+	p.PanesByHost("local")
 	p.PanesBySession("local", "alpha")
-	p.ClientsOfSession("local", "alpha")
-	p.ClientsWatchingPane("local", "%1")
+	p.ClientsBySession("local", "alpha")
+	p.ClientsByCurrentPane("local", "%1")
 
 	if got := p.SnapshotCalls() - before; got != 0 {
 		t.Errorf("narrow accessors made %d Snapshot() calls, want 0 (RULES.md O9)", got)

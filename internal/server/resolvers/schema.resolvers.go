@@ -1411,7 +1411,7 @@ func (r *tmuxPaneResolver) WatchingClients(ctx context.Context, obj *graphql1.Tm
 		return nil, nil
 	}
 	out := []*graphql1.TmuxClient{}
-	for _, c := range r.Tmux.ClientsWatchingPane(string(r.Tmux.Host()), p.Key.PaneID) {
+	for _, c := range r.Tmux.ClientsByCurrentPane(string(r.Tmux.Host()), p.Key.PaneID) {
 		out = append(out, projectClient(c))
 	}
 	return out, nil
@@ -1662,7 +1662,7 @@ func (r *tmuxSessionResolver) AttachedClients(ctx context.Context, obj *graphql1
 		return nil, nil
 	}
 	out := []*graphql1.TmuxClient{}
-	for _, c := range r.Tmux.ClientsOfSession(string(r.Tmux.Host()), s.Key.Name) {
+	for _, c := range r.Tmux.ClientsBySession(string(r.Tmux.Host()), s.Key.Name) {
 		out = append(out, projectClient(c))
 	}
 	return out, nil
@@ -1688,7 +1688,7 @@ func (r *tmuxSessionResolver) Windows(ctx context.Context, obj *graphql1.TmuxSes
 		return nil, nil
 	}
 	out := []*graphql1.TmuxWindow{}
-	for _, w := range r.Tmux.WindowsOf(string(r.Tmux.Host()), s.Key.Name) {
+	for _, w := range r.Tmux.WindowsBySession(string(r.Tmux.Host()), s.Key.Name) {
 		out = append(out, projectWindow(w))
 	}
 	return out, nil
@@ -1754,7 +1754,7 @@ func (r *tmuxWindowResolver) Panes(ctx context.Context, obj *graphql1.TmuxWindow
 		return nil, nil
 	}
 	out := []*graphql1.TmuxPane{}
-	for _, p := range r.Tmux.PanesOf(string(r.Tmux.Host()), w.Key.Session, w.Key.Index) {
+	for _, p := range r.Tmux.PanesByWindow(string(r.Tmux.Host()), w.Key.Session, w.Key.Index) {
 		out = append(out, projectPane(p))
 	}
 	return out, nil
@@ -1892,7 +1892,7 @@ func (r *worktreeResolver) TmuxPanes(ctx context.Context, obj *graphql1.Worktree
 		return []*graphql1.TmuxPane{}, nil
 	}
 
-	rawPanes := matchPanesForWorktree(ctx, r, r.Tmux.PanesOnHost(obj.Host), obj)
+	rawPanes := matchPanesForWorktree(ctx, r, r.Tmux.PanesByHost(obj.Host), obj)
 
 	// Map raw provider panes to GraphQL projection.
 	out := make([]*graphql1.TmuxPane, len(rawPanes))
@@ -1914,7 +1914,7 @@ func (r *worktreeResolver) TmuxSession(ctx context.Context, obj *graphql1.Worktr
 		return nil, nil
 	}
 
-	matching := matchPanesForWorktree(ctx, r, r.Tmux.PanesOnHost(obj.Host), obj)
+	matching := matchPanesForWorktree(ctx, r, r.Tmux.PanesByHost(obj.Host), obj)
 	if len(matching) == 0 {
 		return nil, nil
 	}
