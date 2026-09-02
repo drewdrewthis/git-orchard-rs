@@ -1,11 +1,8 @@
 // Adapter wraps the tmux CLI. Per ADR-011 §3 it is stateless: cache,
 // watcher, and invalidation live in the surrounding Provider.
 //
-// All field separation in -F format strings uses a TAB (U+0009) — see
-// fieldSep for why a control byte (the previous U+0001 choice) cannot be
-// used: tmux 3.x's format engine renders raw control bytes in a -F string
-// as their octal escape text (e.g. `\001`) rather than emitting the byte,
-// which collapses every output row to a single un-splittable field.
+// All field separation in -F format strings uses fieldSep (a TAB) — see
+// fieldsep.go, which owns the wire-format contract and the rationale.
 
 package tmux
 
@@ -22,26 +19,6 @@ import (
 	"syscall"
 	"time"
 )
-
-// Field separator in -F format strings.
-//
-// MUST be a printable character that tmux's format engine emits verbatim.
-// The previous choice — U+0001 (SOH) — does NOT round-trip on tmux 3.x:
-// the engine renders a raw control byte in a -F template as its 4-char
-// octal escape (`\001`), so a row like `name\001id\001…` came back as the
-// literal text `name\001id\001…` with zero real separators. listAll then
-// saw field-count==1, failed its `!= listAllFieldCount` guard, and dropped
-// every row — surfacing as empty tmuxSessions / claudeInstances even though
-// `tmux list-panes -a` clearly returned data. (The old comment claimed this
-// was "verified against tmux 3.5+ on macOS"; the regression bites tmux 3.4
-// on Linux.)
-//
-// TAB is tmux's conventional scripting delimiter and round-trips faithfully.
-// The tmux metadata we read (session/window names, indexes, integers, pids,
-// dimensions, pane_current_command, pane_title) does not contain tabs in
-// practice — same risk posture the SOH choice assumed, with a separator that
-// actually works.
-const fieldSep = "\t"
 
 // CommandRunner is the test seam — production wires execRunner.
 type CommandRunner interface {
@@ -412,7 +389,7 @@ func (a *Adapter) CapturePaneTail(ctx context.Context, pane PaneKey, lines int, 
 // ----------------------------------------------------------------------
 
 // listAllFormat carries every field needed for session, window, and pane maps
-// in a single `tmux list-panes -a` invocation. Fields are U+0001-separated.
+// in a single `tmux list-panes -a` invocation. Fields are fieldSep-separated.
 //
 // Field order (0-based):
 //

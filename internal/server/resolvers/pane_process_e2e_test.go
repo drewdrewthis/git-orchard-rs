@@ -38,7 +38,7 @@ const (
 // session + window + pane metadata.
 // info / list-clients return innocuous results.
 func stubTmuxRunnerWithPane() *stubRunner {
-	const fs = "\x01" // field separator used by the tmux adapter
+	const fs = tmuxprovider.FieldSep // the adapter's own constant, never a copy
 	onlyState := func(name string, args ...string) ([]byte, error) {
 		switch firstNonFlagArg(args) {
 		case "info":
