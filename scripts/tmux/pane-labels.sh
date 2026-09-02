@@ -117,6 +117,30 @@ all_worktrees.sort(key=lambda x: -len(x[0]))
 now = datetime.datetime.now(datetime.timezone.utc)
 
 
+# --- tmux format-string safety ---------------------------------------------
+# choose-tree renders this label through `#{E:@orchard_pane_label}`, which
+# expands the option's value as a tmux format — and `#(cmd)` in a format runs
+# `cmd`. Branch names, issue titles, PR labels, hook-state fields and pane
+# paths are all attacker-influenceable, so none may reach the option with a
+# live `#`. tmux's only escape is doubling it. Verified on tmux 3.6a: a raw
+# `#(touch F)` planted in the option creates F on the first real render, while
+# the doubled form renders as inert literal text.
+
+def fmt_escape(value):
+    """Neutralise every tmux format directive in untrusted text."""
+    return str(value).replace("#", "##")
+
+
+def cell(style, text):
+    """Build one label cell.
+
+    `style` is ours and stays live; `text` is untrusted and is escaped. Cells
+    are only ever built here, so no caller can leak an unescaped value into
+    the option by hand.
+    """
+    return f"#[{style}]{fmt_escape(text)}#[default]"
+
+
 # --- Claude hook state (ADR-007) -------------------------------------------
 # The hook writes one sidecar per tmux session, named
 # orchard-claude-<tmux_session>.json. Directory resolution mirrors
@@ -198,17 +222,17 @@ def claude_cells(st):
     state = (st.get("state") or "").strip()
     if state:
         glyph, color = CLAUDE_STATE_STYLE.get(state, ("⏺", "cyan"))
-        cells.append(f"#[fg={color}]{glyph} {state}#[default]")
+        cells.append(cell(f"fg={color}", f"{glyph} {state}"))
     # `model` and `context_window_pct` are statusline telemetry, not part of
     # the hook payload (ClaudeSessionInfo::from_state_file in
     # crates/orchard/src/session.rs leaves both None). Rendered only when a
     # writer actually supplies them; never placeholdered.
     model = st.get("model")
     if model:
-        cells.append(f"#[fg=brightblack]{model}#[default]")
+        cells.append(cell("fg=brightblack", model))
     ctx = st.get("context_window_pct")
     if isinstance(ctx, (int, float)) and not isinstance(ctx, bool):
-        cells.append(f"#[fg=brightblack]{ctx:.0f}%#[default]")
+        cells.append(cell("fg=brightblack", f"{ctx:.0f}%"))
     return cells
 
 
@@ -283,7 +307,7 @@ with open(sys.argv[2]) as f:
         if wt:
             s_g, s_c = status_glyph(wt.get("pr"))
             if s_g:
-                cells.append(f"#[fg={s_c}]{s_g}#[default]")
+                cells.append(cell(f"fg={s_c}", s_g))
 
             ids = []
             iss = wt.get("issue")
@@ -291,30 +315,30 @@ with open(sys.argv[2]) as f:
             if iss: ids.append(f"#{iss['number']}")
             if pr:  ids.append(f"PR#{pr['number']}")
             if ids:
-                cells.append(f"#[fg=cyan,bold]{' / '.join(ids)}#[default]")
+                cells.append(cell("fg=cyan,bold", " / ".join(ids)))
 
             title = (iss or {}).get("title")
             if title:
-                cells.append(f"#[fg=white]{title[:55]}#[default]")
+                cells.append(cell("fg=white", str(title)[:55]))
 
             b = wt.get("branch") or ""
             if b:
-                cells.append(f"#[fg=magenta]{b}#[default]")
+                cells.append(cell("fg=magenta", b))
 
             # labels is [{name, color, description}, ...] in v0.8 (was [String]
             # in pre-ADR-015 shape). Extract `.name` for the rendered chips.
             label_names = [l.get("name") for l in ((pr or {}).get("labels") or []) if l.get("name")]
             if label_names:
-                cells.append("#[fg=yellow]" + " ".join(f"[{l}]" for l in label_names[:3]) + "#[default]")
+                cells.append(cell("fg=yellow", " ".join(f"[{l}]" for l in label_names[:3])))
 
             if repo:
-                cells.append(f"#[fg=blue,italics]{repo}#[default]")
+                cells.append(cell("fg=blue,italics", repo))
         else:
             # No worktree match — show truncated path; cmd is rendered separately below.
             short = pane_path.replace(os.environ["HOME"], "~")
             if len(short) > 50:
                 short = "…" + short[-49:]
-            cells.append(f"#[fg=brightblack]{short}#[default]")
+            cells.append(cell("fg=brightblack", short))
 
         # Process indicator (always last) — what's actually running in the pane.
         # Note: tmux's pane_current_command often shows a version string (e.g. "2.1.132")
@@ -333,18 +357,18 @@ with open(sys.argv[2]) as f:
         if cmd_str:
             interesting = {"claude","node","python","python3","go","cargo","ssh","mosh","vim","nvim","emacs"}
             if cmd_str in interesting or is_claude_pane:
-                cells.append(f"#[fg=green,bold]⏵ {cmd_str}#[default]")
+                cells.append(cell("fg=green,bold", f"⏵ {cmd_str}"))
             elif cmd_str in {"zsh","bash","fish","sh","-zsh","-bash"}:
-                cells.append(f"#[fg=brightblack]⏵ {cmd_str}#[default]")
+                cells.append(cell("fg=brightblack", f"⏵ {cmd_str}"))
             else:
-                cells.append(f"#[fg=cyan]⏵ {cmd_str}#[default]")
+                cells.append(cell("fg=cyan", f"⏵ {cmd_str}"))
 
         # Daemon-down badge only on panes that ARE attached to an orchard worktree —
         # otherwise it pollutes the labels on shells/editors that have no orchard data
         # to be "down" about. Status-line indicator (see ~/.tmux.conf) carries the
         # global signal.
         if not DAEMON_OK and wt:
-            cells.append("#[fg=red]⚠ stale#[default]")
+            cells.append(cell("fg=red", "⚠ stale"))
 
         label = "  ".join(cells)
         if PRINT_MODE:

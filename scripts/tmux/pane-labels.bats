@@ -47,10 +47,10 @@ _hook_state() {
 EOF
 }
 
-# Starts the fake daemon and exports FAKE_URL.
-_start_fake_daemon() {
-  local portfile="$TMPD/port"
-  python3 "$TESTDATA/fake-daemon.py" "$TESTDATA/daemon-response.json" "$portfile" &
+# Starts the fake daemon on the given canned response and exports FAKE_URL.
+_start_fake_daemon_with() {
+  local body="$1" portfile="$TMPD/port"
+  python3 "$TESTDATA/fake-daemon.py" "$body" "$portfile" &
   FAKE_PID=$!
   local i=0
   while [ ! -s "$portfile" ] && [ "$i" -lt 100 ]; do
@@ -59,6 +59,11 @@ _start_fake_daemon() {
   done
   [ -s "$portfile" ] || return 1
   FAKE_URL="http://127.0.0.1:$(cat "$portfile")/graphql"
+}
+
+# Starts the fake daemon on the ordinary happy-path response.
+_start_fake_daemon() {
+  _start_fake_daemon_with "$TESTDATA/daemon-response.json"
 }
 
 _label_for() {
@@ -188,4 +193,86 @@ _label_for() {
   label="$(printf '%s\n' "$output" | _label_for "%1")"
   [[ "$label" == *"issue-900/tmux-plugin"* ]]
   [[ "$label" == *"⏺ working"* ]]
+}
+
+# --- tmux format-string injection (review finding 1) -----------------------
+#
+# choose-tree renders the label through `#{E:@orchard_pane_label}`, which
+# expands the option value as a tmux format. `#(cmd)` in a format runs `cmd`.
+# Every one of these vectors is attacker-influenceable, so none may reach the
+# option with a live `#`: tmux's only escape is doubling it to `##`.
+
+# Asserts every `#` in the label is either an escaped `##` pair or one of the
+# style cells this script emits itself. Anything left over is a live format
+# directive built from untrusted data.
+#
+# Order matters: collapse the `##` pairs FIRST, because escaped data can end
+# in a `#` that would otherwise pair with the `#` opening the next style cell.
+_assert_no_live_format() {
+  local label="$1" residue
+  residue="$(printf '%s' "$label" \
+    | sed 's/##//g' \
+    | sed 's/#\[fg=[a-z,]*\]//g; s/#\[default\]//g')"
+  [[ "$residue" != *'#'* ]]
+}
+
+@test "malicious branch name cannot inject a tmux format directive" {
+  _start_fake_daemon_with "$TESTDATA/daemon-response-evil.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+  rm -f "$TMPD/PWNED"
+
+  run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  # The payload is still shown to the user — escaped, as inert literal text.
+  [[ "$label" == *'##(touch'* ]]
+  _assert_no_live_format "$label"
+  [ ! -e "$TMPD/PWNED" ]
+}
+
+@test "malicious issue title and PR label cannot inject a tmux format directive" {
+  ORCHARD_LABEL_ENRICH=1 _start_fake_daemon_with "$TESTDATA/daemon-response-evil.json"
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-wt" "zsh" > "$TMPD/panes"
+
+  ORCHARD_LABEL_ENRICH=1 run bash "$SCRIPT" --daemon-url "$FAKE_URL" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  _assert_no_live_format "$label"
+}
+
+@test "malicious hook state value cannot inject a tmux format directive" {
+  cat > "$HOOKS/orchard-claude-alpha.json" <<JSON
+{
+  "state": "#(touch $TMPD/PWNED)",
+  "model": "#{E:@orchard_pane_label}",
+  "tmux_session": "alpha",
+  "cwd": "/tmp/orchard-bats-alpha",
+  "event": "PostToolUse"
+}
+JSON
+  _pane_row "%1" "alpha" "/tmp/orchard-bats-alpha" "claude" > "$TMPD/panes"
+  rm -f "$TMPD/PWNED"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  _assert_no_live_format "$label"
+  [ ! -e "$TMPD/PWNED" ]
+}
+
+@test "malicious pane path cannot inject a tmux format directive" {
+  _pane_row "%1" "alpha" '/tmp/#(touch /tmp/orchard-bats-pwn)x' "zsh" > "$TMPD/panes"
+
+  run bash "$SCRIPT" --daemon-url "$UNREACHABLE" \
+    --heartbeat-dir "$HOOKS" --panes-file "$TMPD/panes" --print
+  [ "$status" -eq 0 ]
+
+  label="$(printf '%s\n' "$output" | _label_for "%1")"
+  _assert_no_live_format "$label"
 }
