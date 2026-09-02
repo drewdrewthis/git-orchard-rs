@@ -108,55 +108,42 @@ func projectClientAtomic(c tmuxprovider.Client) *graphql1.TmuxClient {
 	}
 }
 
-// findTmuxWindow scans the tmux provider's window snapshot for the
-// window matching (host, session, index). Returns ok=false when no match.
+// findTmuxWindow returns the window matching (host, session, index), or
+// ok=false when no match.
 func findTmuxWindow(p *tmuxprovider.Provider, host, session string, index int) (tmuxprovider.Window, bool) {
 	if p == nil {
 		return tmuxprovider.Window{}, false
 	}
-	w, ok := p.Snapshot().Windows[tmuxprovider.WindowKey{Host: tmuxprovider.HostID(host), Session: session, Index: index}]
-	return w, ok
+	return p.WindowByKey(host, session, index)
 }
 
-// findTmuxClient scans the tmux provider's client snapshot for the
-// client matching (host, name).
+// findTmuxClient returns the client matching (host, name), or ok=false
+// when no match.
 func findTmuxClient(p *tmuxprovider.Provider, host, name string) (tmuxprovider.Client, bool) {
 	if p == nil {
 		return tmuxprovider.Client{}, false
 	}
-	c, ok := p.Snapshot().Clients[tmuxprovider.ClientKey{Host: tmuxprovider.HostID(host), ClientName: name}]
-	return c, ok
+	return p.ClientByName(host, name)
 }
 
-
-// findTmuxSession scans the tmux provider's session snapshot for the
-// session matching (host, name). Returns ok=false when no match.
+// findTmuxSession returns the session matching (host, name), or ok=false
+// when no match. (Host, name) is the session store's own key, so this is a
+// single map lookup — it used to clone the session map and scan it.
 func findTmuxSession(p *tmuxprovider.Provider, host, name string) (tmuxprovider.Session, bool) {
 	if p == nil {
 		return tmuxprovider.Session{}, false
 	}
-	snap := p.Snapshot()
-	for _, s := range snap.Sessions {
-		if string(s.Key.Host) == host && s.Key.Name == name {
-			return s, true
-		}
-	}
-	return tmuxprovider.Session{}, false
+	return p.SessionByName(host, name)
 }
 
-// findTmuxPane scans the tmux provider's pane snapshot for the pane
-// matching (host, paneID).
+// findTmuxPane returns the pane matching (host, paneID), or ok=false when
+// no match. (Host, paneID) is the pane store's own key, so this is a single
+// map lookup — it used to clone the pane map and scan it.
 func findTmuxPane(p *tmuxprovider.Provider, host, paneID string) (tmuxprovider.Pane, bool) {
 	if p == nil {
 		return tmuxprovider.Pane{}, false
 	}
-	snap := p.Snapshot()
-	for _, pn := range snap.Panes {
-		if string(pn.Key.Host) == host && pn.Key.PaneID == paneID {
-			return pn, true
-		}
-	}
-	return tmuxprovider.Pane{}, false
+	return p.PaneByID(host, paneID)
 }
 
 // _ keeps `fmt` referenced even when no error formatting is currently

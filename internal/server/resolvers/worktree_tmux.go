@@ -16,19 +16,24 @@ import (
 	tmux "github.com/drewdrewthis/orchardist/internal/server/providers/tmux"
 )
 
-// matchPanesForWorktree enumerates every pane in snap that:
+// matchPanesForWorktree narrows `candidates` to every pane that:
 //  1. Lives on the same host as obj (attribution via pane.Key.Host).
 //  2. Has a CurrentPid that the ps provider can resolve to a cwd.
 //  3. Has a cwd that equals obj.Path exactly OR starts with obj.Path+"/".
 //
+// Callers pass the host's panes (Provider.PanesOnHost) rather than a full
+// graph snapshot: cwd is not in the tmux cache, so the ps lookups here are
+// the reason every pane has to be considered — and they must not run while
+// the provider's store lock is held (#612).
+//
 // Returns raw tmux.Pane values so callers can read provider-level fields
-// (e.g. WindowKey.Session for session lookup) without re-keying into the
-// snapshot. Panes whose cwd cannot be resolved are silently skipped. The
-// returned slice is unsorted; callers sort by paneId. Never returns nil.
-func matchPanesForWorktree(ctx context.Context, r *worktreeResolver, snap tmux.RuntimeSnapshot, obj *graphql1.Worktree) []tmux.Pane {
+// (e.g. WindowKey.Session for session lookup) without a second lookup.
+// Panes whose cwd cannot be resolved are silently skipped. The returned
+// slice is unsorted; callers sort by paneId. Never returns nil.
+func matchPanesForWorktree(ctx context.Context, r *worktreeResolver, candidates []tmux.Pane, obj *graphql1.Worktree) []tmux.Pane {
 	var matching []tmux.Pane
 
-	for _, pane := range snap.Panes {
+	for _, pane := range candidates {
 		// Federation attribution: use pane.Key.Host (which tracks through
 		// pane.window.session.host). Never synthesise from the local daemon.
 		if string(pane.Key.Host) != obj.Host {

@@ -421,8 +421,7 @@ func (r *tmuxClientResolver) lookupClient(id string) (tmux.Client, bool) {
 	}
 	host := r.Tmux.Host()
 	name := stripPrefix(id, "TmuxClient:"+string(host)+":")
-	c, ok := r.Tmux.Snapshot().Clients[tmux.ClientKey{Host: host, ClientName: name}]
-	return c, ok
+	return r.Tmux.ClientByName(string(host), name)
 }
 
 func (r *tmuxPaneResolver) lookupPane(id string) (tmux.Pane, bool) {
@@ -431,8 +430,7 @@ func (r *tmuxPaneResolver) lookupPane(id string) (tmux.Pane, bool) {
 	}
 	host := r.Tmux.Host()
 	paneID := stripPrefix(id, "TmuxPane:"+string(host)+":")
-	p, ok := r.Tmux.Snapshot().Panes[tmux.PaneKey{Host: host, PaneID: paneID}]
-	return p, ok
+	return r.Tmux.PaneByID(string(host), paneID)
 }
 
 func (r *tmuxSessionResolver) lookupSession(id string) (tmux.Session, bool) {
@@ -441,8 +439,7 @@ func (r *tmuxSessionResolver) lookupSession(id string) (tmux.Session, bool) {
 	}
 	host := r.Tmux.Host()
 	name := stripPrefix(id, "TmuxSession:"+string(host)+":")
-	s, ok := r.Tmux.Snapshot().Sessions[tmux.SessionKey{Host: host, Name: name}]
-	return s, ok
+	return r.Tmux.SessionByName(string(host), name)
 }
 
 func (r *tmuxWindowResolver) lookupWindow(id string) (tmux.Window, bool) {
@@ -460,7 +457,5 @@ func (r *tmuxWindowResolver) lookupWindow(id string) (tmux.Window, bool) {
 	if err != nil {
 		return tmux.Window{}, false
 	}
-	w, ok := r.Tmux.Snapshot().Windows[tmux.WindowKey{Host: host, Session: session, Index: indexN}]
-	return w, ok
+	return r.Tmux.WindowByKey(string(host), session, indexN)
 }
-
