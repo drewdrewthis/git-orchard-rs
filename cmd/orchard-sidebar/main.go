@@ -838,28 +838,7 @@ func fetchClientSession(gen int) tea.Cmd {
 		if err != nil {
 			return clientSessMsg{gen: gen}
 		}
-		best, bestAct, width, clients := "", int64(-1), 0, 0
-		for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			clients++
-			act, rest, ok := strings.Cut(ln, " ")
-			if !ok {
-				continue
-			}
-			ws, name, ok := strings.Cut(rest, " ")
-			if !ok || name == "" {
-				continue
-			}
-			n, err := strconv.ParseInt(act, 10, 64)
-			if err != nil {
-				continue
-			}
-			if w, err := strconv.Atoi(ws); err == nil && w > 0 {
-				width = w
-			}
-			if n > bestAct {
-				best, bestAct = name, n
-			}
-		}
+		clients, best, width := parseListClients(out)
 		return clientSessMsg{name: best, clients: clients, width: width, gen: gen}
 	}
 }
