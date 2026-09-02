@@ -75,7 +75,7 @@ func TestProvider_LoadCwdResolvesSelf(t *testing.T) {
 		t.Fatalf("LoadCwd: %v", err)
 	}
 	want, _ := os.Getwd()
-	if cwd != want {
+	if !sameDir(t, cwd, want) {
 		t.Errorf("LoadCwd(self) = %q, want %q", cwd, want)
 	}
 }
