@@ -581,9 +581,9 @@ func (r *queryResolver) TmuxSessions(ctx context.Context, filter *graphql1.TmuxS
 	if r.Tmux == nil {
 		return []*graphql1.TmuxSession{}, nil
 	}
-	snap := r.Tmux.Snapshot()
-	out := make([]*graphql1.TmuxSession, 0, len(snap.Sessions))
-	for _, s := range snap.Sessions {
+	all := r.Tmux.SessionsByHost(string(r.Tmux.Host()))
+	out := make([]*graphql1.TmuxSession, 0, len(all))
+	for _, s := range all {
 		if !sessionMatchesFilter(s, filter) {
 			continue
 		}
@@ -655,10 +655,10 @@ func (r *queryResolver) TmuxPanes(ctx context.Context, filter *graphql1.TmuxPane
 		return projectPanesWithFilter(raw, filter), nil
 	}
 
-	// Default: snapshot walk for cheap filter axes.
-	snap := r.Tmux.Snapshot()
-	out := make([]*graphql1.TmuxPane, 0, len(snap.Panes))
-	for _, p := range snap.Panes {
+	// Default: walk the host's panes for the cheap filter axes.
+	all := r.Tmux.PanesByHost(string(r.Tmux.Host()))
+	out := make([]*graphql1.TmuxPane, 0, len(all))
+	for _, p := range all {
 		if !paneMatchesFilter(p, filter) {
 			continue
 		}
@@ -1042,9 +1042,9 @@ func (r *subscriptionResolver) TmuxSessionsChanged(ctx context.Context) (<-chan 
 				if !ok {
 					return
 				}
-				snap := r.Tmux.Snapshot()
-				sessions := make([]*graphql1.TmuxSession, 0, len(snap.Sessions))
-				for _, s := range snap.Sessions {
+				all := r.Tmux.SessionsByHost(string(r.Tmux.Host()))
+				sessions := make([]*graphql1.TmuxSession, 0, len(all))
+				for _, s := range all {
 					sessions = append(sessions, projectSession(s))
 				}
 				select {
@@ -1550,11 +1550,7 @@ func (r *tmuxServerResolver) Sessions(ctx context.Context, obj *graphql1.TmuxSer
 	if r.Tmux == nil {
 		return nil, nil
 	}
-	snap := r.Tmux.Snapshot()
-	sessions := make([]tmux.Session, 0, len(snap.Sessions))
-	for _, s := range snap.Sessions {
-		sessions = append(sessions, s)
-	}
+	sessions := r.Tmux.SessionsByHost(string(r.Tmux.Host()))
 
 	key := graphql1.TmuxSessionSortLastActivity
 	if sort != nil {
@@ -1609,9 +1605,9 @@ func (r *tmuxServerResolver) Clients(ctx context.Context, obj *graphql1.TmuxServ
 	if r.Tmux == nil {
 		return nil, nil
 	}
-	snap := r.Tmux.Snapshot()
-	out := make([]*graphql1.TmuxClient, 0, len(snap.Clients))
-	for _, c := range snap.Clients {
+	all := r.Tmux.ClientsByHost(string(r.Tmux.Host()))
+	out := make([]*graphql1.TmuxClient, 0, len(all))
+	for _, c := range all {
 		out = append(out, projectClient(c))
 	}
 	return out, nil

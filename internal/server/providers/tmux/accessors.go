@@ -92,6 +92,20 @@ func (p *Provider) PanesByHost(host string) []Pane {
 	}))
 }
 
+// SessionsByHost returns every cached session on the given host.
+func (p *Provider) SessionsByHost(host string) []Session {
+	return orEmpty(p.sessions.Filter(func(k SessionKey, _ Session) bool {
+		return string(k.Host) == host
+	}))
+}
+
+// ClientsByHost returns every cached client on the given host.
+func (p *Provider) ClientsByHost(host string) []Client {
+	return orEmpty(p.clients.Filter(func(k ClientKey, _ Client) bool {
+		return string(k.Host) == host
+	}))
+}
+
 // PanesBySession returns every pane whose tmux session name equals
 // sessionName on the given host.
 func (p *Provider) PanesBySession(host, sessionName string) []Pane {

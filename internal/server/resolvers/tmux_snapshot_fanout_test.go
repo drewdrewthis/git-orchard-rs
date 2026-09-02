@@ -331,6 +331,65 @@ func TestWorktreeTmuxResolvers_NoSnapshotClone_Issue612(t *testing.T) {
 	}
 }
 
+// TestTmuxCollectionResolvers_NoSnapshotClone_Issue612 covers the list
+// resolvers. Each read one map and cloned four to get it — one wasted
+// clone per request rather than per field, but on the same cold-lens
+// path, and the lens query opens with tmuxServer { sessions }.
+//
+// Snapshot() has one legitimate caller left in the read path (the web
+// dashboard in server.go, which genuinely reads several maps at once).
+// If a resolver here ever needs it back, change this test deliberately.
+func TestTmuxCollectionResolvers_NoSnapshotClone_Issue612(t *testing.T) {
+	prov := buildFanoutProvider(t)
+	r := &Resolver{Tmux: prov}
+	ctx := context.Background()
+
+	before := prov.SnapshotCalls()
+
+	qr := &queryResolver{r}
+	sessions, err := qr.TmuxSessions(ctx, nil)
+	if err != nil {
+		t.Fatalf("Query.tmuxSessions: %v", err)
+	}
+	if len(sessions) != fanoutSessions {
+		t.Fatalf("Query.tmuxSessions = %d sessions, want %d", len(sessions), fanoutSessions)
+	}
+
+	panes, err := qr.TmuxPanes(ctx, nil)
+	if err != nil {
+		t.Fatalf("Query.tmuxPanes: %v", err)
+	}
+	wantPanes := fanoutSessions * fanoutWindowsPerSess * fanoutPanesPerWindow
+	if len(panes) != wantPanes {
+		t.Fatalf("Query.tmuxPanes = %d panes, want %d", len(panes), wantPanes)
+	}
+
+	serverR := &tmuxServerResolver{r}
+	srvSessions, err := serverR.Sessions(ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("tmuxServer.sessions: %v", err)
+	}
+	if len(srvSessions) != fanoutSessions {
+		t.Fatalf("tmuxServer.sessions = %d sessions, want %d", len(srvSessions), fanoutSessions)
+	}
+
+	srvClients, err := serverR.Clients(ctx, nil)
+	if err != nil {
+		t.Fatalf("tmuxServer.clients: %v", err)
+	}
+	if len(srvClients) != fanoutSessions {
+		t.Fatalf("tmuxServer.clients = %d clients, want %d", len(srvClients), fanoutSessions)
+	}
+
+	if got := prov.SnapshotCalls() - before; got != 0 {
+		t.Errorf(
+			"issue #612 regression: the tmux collection resolvers made %d Snapshot() calls, want 0.\n"+
+				"  Each reads one store; Snapshot() clones all four (RULES.md O9).",
+			got,
+		)
+	}
+}
+
 // BenchmarkTmuxPaneWindowSessionChain measures the per-traversal allocation
 // cost of the field-resolver surface. It is the O9 audit number quoted in
 // the #612 PR: before the fix each field pays a whole-graph map clone.

@@ -185,6 +185,28 @@ func TestPanesByHost_ScopedToHost(t *testing.T) {
 	}
 }
 
+func TestSessionsByHost_ScopedToHost(t *testing.T) {
+	p := graphFixture()
+
+	if got := p.SessionsByHost("local"); len(got) != 2 {
+		t.Errorf("SessionsByHost(local) = %d sessions, want 2", len(got))
+	}
+	if got := p.SessionsByHost("elsewhere"); len(got) != 0 {
+		t.Errorf("SessionsByHost(elsewhere) = %d sessions, want 0", len(got))
+	}
+}
+
+func TestClientsByHost_ScopedToHost(t *testing.T) {
+	p := graphFixture()
+
+	if got := p.ClientsByHost("local"); len(got) != 2 {
+		t.Errorf("ClientsByHost(local) = %d clients, want 2", len(got))
+	}
+	if got := p.ClientsByHost("elsewhere"); len(got) != 0 {
+		t.Errorf("ClientsByHost(elsewhere) = %d clients, want 0", len(got))
+	}
+}
+
 func TestClientsBySession_ScopedToSession(t *testing.T) {
 	p := graphFixture()
 
@@ -271,6 +293,8 @@ func TestNarrowAccessors_DoNotCloneTheGraph(t *testing.T) {
 	p.PanesBySession("local", "alpha")
 	p.ClientsBySession("local", "alpha")
 	p.ClientsByCurrentPane("local", "%1")
+	p.SessionsByHost("local")
+	p.ClientsByHost("local")
 
 	if got := p.SnapshotCalls() - before; got != 0 {
 		t.Errorf("narrow accessors made %d Snapshot() calls, want 0 (RULES.md O9)", got)
