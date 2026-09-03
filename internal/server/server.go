@@ -449,15 +449,7 @@ func graphqlHandlerFor(res *resolvers.Resolver) http.Handler {
 	srv := handler.New(gql.NewExecutableSchema(cfg))
 	srv.AddTransport(transport.POST{})
 	srv.AddTransport(transport.GET{})
-	srv.AddTransport(transport.Websocket{
-		KeepAlivePingInterval: 10 * time.Second,
-		Upgrader: gqlws.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 1024,
-			CheckOrigin:     checkGUIOrigin,
-			Subprotocols:    []string{"graphql-transport-ws", "graphql-ws"},
-		},
-	})
+	srv.AddTransport(websocketTransport())
 	// Introspection is gated by env var. ON by default — the daemon binds
 	// to localhost (federation runs over SSH tunnels per issue #474), so
 	// schema introspection is local-only and worth the ergonomic win.
@@ -468,6 +460,29 @@ func graphqlHandlerFor(res *resolvers.Resolver) http.Handler {
 		srv.Use(extension.Introspection{})
 	}
 	return srv
+}
+
+// wsPingPongInterval is the graphql-transport-ws `ping` cadence. A var so the
+// pingpong test can shrink it and stay fast; production keeps the 10s the
+// sidebar's read deadline assumes (#788).
+var wsPingPongInterval = 10 * time.Second
+
+// websocketTransport builds the gqlgen websocket transport shared by the
+// daemon and its tests, so both exercise the same keepalive config.
+func websocketTransport() transport.Websocket {
+	return transport.Websocket{
+		// KeepAlivePingInterval drives the legacy graphql-ws `ka` frame only;
+		// graphql-transport-ws clients (the sidebar) need PingPongInterval to
+		// receive `ping` frames, else idle subscriptions time out (#788).
+		KeepAlivePingInterval: 10 * time.Second,
+		PingPongInterval:      wsPingPongInterval,
+		Upgrader: gqlws.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+			CheckOrigin:     checkGUIOrigin,
+			Subprotocols:    []string{"graphql-transport-ws", "graphql-ws"},
+		},
+	}
 }
 
 // introspectionEnabled returns true when the daemon should respond to

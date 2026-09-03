@@ -33,7 +33,7 @@ func runStream(t *testing.T, send func(tea.Msg)) (*streamResult, <-chan struct{}
 	r := &streamResult{}
 	done := make(chan struct{})
 	go func() {
-		r.acked, r.err = streamTmux(ctx, send)
+		r.acked, _, r.err = streamTmux(ctx, send)
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -138,7 +138,7 @@ func TestStreamTmuxDialFailureIsNotAcked(t *testing.T) {
 	old := wsURL
 	wsURL = "ws://127.0.0.1:1/graphql" // nothing listens on port 1
 	t.Cleanup(func() { wsURL = old })
-	acked, err := streamTmux(context.Background(), func(tea.Msg) {})
+	acked, _, err := streamTmux(context.Background(), func(tea.Msg) {})
 	if acked || err == nil {
 		t.Fatalf("dial failure: acked=%v err=%v, want false + non-nil", acked, err)
 	}
