@@ -3,6 +3,9 @@ package main
 import (
 	"strings"
 	"sync/atomic"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Click-time client resolution and env-shape validation (orchardist#787).
@@ -76,6 +79,10 @@ func resolveClientTTY(want clientTTY) (clientTTY, bool) {
 	if !ok || tty == "" || !live[tty] {
 		return "", false
 	}
+	// Memoize the working tty so the j/k browse path — which reads env.client
+	// through activeClient without resolving — tracks the fallback too, instead
+	// of re-failing `switch-client -c <stale>` on every keypress (#787).
+	env.client = tty
 	return tty, true
 }
 
@@ -151,25 +158,67 @@ func clientAttached(tty clientTTY, live map[clientTTY]bool) bool {
 	return tty != "" && live[tty]
 }
 
+// Startup drift-check polling knobs. envDriftStatus judges the client-attached
+// leg by RETRYING, not at t0: Init fires the check before pane 0.1's `TMUX=
+// tmux attach` has connected, so a single read sees zero inner clients and
+// every healthy launch would false-positive as "stale launcher" (#787). Vars
+// so a test drives the retry loop with a no-op sleep instead of real time.
+var (
+	driftPollEvery    = 250 * time.Millisecond
+	driftPollAttempts = 12 // ~3s ceiling at 250ms between reads
+	driftSleep        = time.Sleep
+)
+
+// waitClientAttached polls the inner server until env.client shows up as an
+// attached client, returning true the moment it does. It returns false only
+// after driftPollAttempts reads still find it absent — the settled "the inner
+// attach never connected" verdict, not the t0 startup race.
+func waitClientAttached() bool {
+	for i := 0; i < driftPollAttempts; i++ {
+		if live, ok := liveInnerClients(); ok && clientAttached(env.client, live) {
+			return true
+		}
+		if i < driftPollAttempts-1 {
+			driftSleep(driftPollEvery)
+		}
+	}
+	return false
+}
+
 // envDriftStatus is the startup drift check: it returns launcherOutdatedStatus
 // (and logs one line) when the wrapper's env shape is one a current launcher
-// would not produce — a non-%N outer pane, or a client tty that is not an
-// attached inner client (#787 AC3) — or ok=false when it is healthy or the
-// sidebar is unwrapped. Called once per process from main, so the hint is shown
-// once.
+// would not produce — a non-%N outer pane, or a client tty that never attaches
+// within the poll window (#787 AC3) — or ok=false when it is healthy or the
+// sidebar is unwrapped. The client-attached leg is settled via
+// waitClientAttached so a fresh healthy launch, whose inner attach connects a
+// beat after startup, no longer trips a false positive.
 func envDriftStatus() (string, bool) {
 	if !env.wrapped() {
 		return "", false
 	}
 	outerValid := validOuterPane(env.outer, env.self)
-	attached := false
-	if live, ok := liveInnerClients(); ok {
-		attached = clientAttached(env.client, live)
-	}
+	attached := waitClientAttached()
 	if outerValid && attached {
 		return "", false
 	}
 	logf("env drift: outer pane %q is-pane-id=%v, client %q attached=%v — stale outer-shell launcher (#787)",
 		string(env.outer), outerValid, string(env.client), attached)
 	return launcherOutdatedStatus, true
+}
+
+// driftMsg carries the settled drift verdict from driftCheck (run as a tea.Cmd,
+// off the UI goroutine) to Update, which applies the footer hint on the UI
+// goroutine (R13 shared-state discipline). show=false leaves the footer alone.
+type driftMsg struct {
+	status string
+	show   bool
+}
+
+// driftCheck runs the startup drift check as a tea.Cmd: waitClientAttached
+// polls off the UI goroutine so the inner attach can settle, rather than being
+// judged synchronously at boot when it always reads as not-yet-connected.
+// Fired once from Init, so the hint shows once per process.
+func driftCheck() tea.Msg {
+	status, show := envDriftStatus()
+	return driftMsg{status: status, show: show}
 }

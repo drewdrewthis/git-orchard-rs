@@ -46,11 +46,26 @@ Feature: click-time inner-client resolution and stale-launcher defence
 
   @unit
   Scenario: A stale launcher env shows a one-time outdated hint at startup
-    Given the env shape is wrong (a non-%N outer pane, or a client tty not attached)
+    Given the env shape is wrong (a non-%N outer pane, or a client tty that never attaches)
     When the sidebar starts
     Then it logs one drift line
     And it shows a one-time footer hint that the outer-shell launcher is outdated
     And a healthy env shows no hint and changes no behaviour
+
+  @unit
+  Scenario: The drift check lets the inner attach settle before warning
+    Given a healthy env whose inner attach has not yet connected at startup
+    When the drift check runs as a background command and polls the client-attached leg
+    Then it warns only if the client tty is still not attached after the poll window
+    And a client tty that appears within the window shows no hint
+
+  @unit
+  Scenario: A stale client tty is memoized after the resolver falls back
+    Given ORCHARD_TMUX_CLIENT is a tty that no longer belongs to any inner client
+    And outer pane 0.1's tty is a live inner client
+    When a click resolves and falls back to outer pane 0.1's tty
+    Then that tty is memoized as the client
+    And a subsequent j/k browse switch scopes to the memoized tty without re-resolving
 
   @unit
   Scenario: The launch and break-pane modals resolve the client at switch time

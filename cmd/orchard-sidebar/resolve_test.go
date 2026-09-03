@@ -5,7 +5,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// noDriftSleep replaces the drift-poll sleep with a no-op so waitClientAttached's
+// retry loop runs instantly — the drift tests exercise the read outcomes, not
+// wall-clock timing.
+func noDriftSleep(t *testing.T) {
+	t.Helper()
+	prev := driftSleep
+	driftSleep = func(time.Duration) {}
+	t.Cleanup(func() { driftSleep = prev })
+}
 
 // swapTmuxReaders overrides the two injectable tmux read seams the resolver
 // uses (runTmuxOutput on the inner server, runOuterOut on the outer) and
@@ -164,6 +175,7 @@ func TestHandBackFocusArgsGuard(t *testing.T) {
 // The drift check (#787 AC3): a non-%N outer pane or an unattached client tty
 // is stale; a healthy env is not.
 func TestEnvDriftStatus(t *testing.T) {
+	noDriftSleep(t)
 	live := "/dev/ttys001\n"
 	cases := []struct {
 		name   string
@@ -234,6 +246,87 @@ func TestHandBackFocusFallsBackToInnerPane(t *testing.T) {
 	if n := strings.Count(string(b), "falling back to outer pane 0.1"); n != 1 {
 		t.Errorf("fallback logged %d times, want 1 (once per process): %q", n, b)
 	}
+}
+
+// @scenario Outer shell restarted, click still switches
+//
+// After the resolver falls back from a stale ORCHARD_TMUX_CLIENT to outer pane
+// 0.1's live tty, it memoizes that tty into env.client so the j/k browse path —
+// which reads env.client through activeClient without resolving — tracks the
+// fallback instead of re-failing `switch-client -c <stale>` on every keypress.
+func TestResolveClientTTYMemoizesFallback(t *testing.T) {
+	setTmuxEnv(t, tmuxEnv{inner: "in", client: "/dev/ttysDEAD"})
+	swapTmuxReaders(t, "/dev/ttys009\n", nil, "0 %0 /dev/ttys000\n1 %1 /dev/ttys009\n", nil)
+
+	got, ok := resolveClientTTY("/dev/ttysDEAD")
+	if !ok || got != "/dev/ttys009" {
+		t.Fatalf("resolveClientTTY = %q,%v; want /dev/ttys009,true", got, ok)
+	}
+	if env.client != "/dev/ttys009" {
+		t.Errorf("env.client = %q after fallback, want memoized /dev/ttys009", env.client)
+	}
+}
+
+// @scenario A stale launcher env shows a one-time outdated hint at startup
+//
+// The drift check must not judge the client-attached leg at t0: pane 0.1's
+// inner attach connects a beat after Init, so a single read sees zero clients
+// and every healthy launch would false-positive. waitClientAttached retries;
+// the hint fires only when the tty never appears within the poll window (#787).
+func TestEnvDriftSettlesBeforeWarning(t *testing.T) {
+	noDriftSleep(t)
+	healthyEnv := tmuxEnv{inner: "in", client: "/dev/ttys001", outer: "%1", self: "%0"}
+
+	t.Run("tty appears after a few reads: no hint", func(t *testing.T) {
+		stateHome(t)
+		resetLog(t)
+		setTmuxEnv(t, healthyEnv)
+		calls := 0
+		prev := runTmuxOutput
+		runTmuxOutput = func(...string) (string, error) {
+			calls++
+			if calls < 3 {
+				return "", nil // inner attach not connected yet
+			}
+			return "/dev/ttys001\n", nil
+		}
+		t.Cleanup(func() { runTmuxOutput = prev })
+
+		if s, ok := envDriftStatus(); ok {
+			t.Errorf("drift fired on a settling healthy env: %q", s)
+		}
+	})
+
+	t.Run("tty never appears: hint", func(t *testing.T) {
+		stateHome(t)
+		resetLog(t)
+		setTmuxEnv(t, healthyEnv)
+		prev := runTmuxOutput
+		runTmuxOutput = func(...string) (string, error) { return "", nil }
+		t.Cleanup(func() { runTmuxOutput = prev })
+
+		s, ok := envDriftStatus()
+		if !ok || s != launcherOutdatedStatus {
+			t.Errorf("envDriftStatus = %q,%v; want hint", s, ok)
+		}
+	})
+
+	t.Run("driftCheck wraps the verdict in a driftMsg", func(t *testing.T) {
+		stateHome(t)
+		resetLog(t)
+		setTmuxEnv(t, healthyEnv)
+		prev := runTmuxOutput
+		runTmuxOutput = func(...string) (string, error) { return "", nil }
+		t.Cleanup(func() { runTmuxOutput = prev })
+
+		msg, ok := driftCheck().(driftMsg)
+		if !ok {
+			t.Fatalf("driftCheck() returned %T, want driftMsg", driftCheck())
+		}
+		if !msg.show || msg.status != launcherOutdatedStatus {
+			t.Errorf("driftMsg = %+v, want show hint", msg)
+		}
+	})
 }
 
 // tmuxReadErr is a stand-in error for a failed tmux read.

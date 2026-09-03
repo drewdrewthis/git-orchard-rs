@@ -38,7 +38,7 @@ var tickAfter = func(d time.Duration, msg tea.Msg) tea.Cmd {
 // older poll that finished later.
 func (m *model) Init() tea.Cmd {
 	return tea.Batch(fetchFast, fetchSlow, fetchHooksWith(nil), fetchClientSession(0, m.workTTYs()),
-		fetchUpdateCheck, tickAfter(animEvery, animTickMsg{}))
+		fetchUpdateCheck, driftCheck, tickAfter(animEvery, animTickMsg{}))
 }
 
 // Update handles the message, then composes the pane it produced. Composing
@@ -84,6 +84,13 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			m.retargetWork(msg.tty)
 		}
 		return next
+	case driftMsg:
+		// The drift check ran as a tea.Cmd so the inner attach could settle; its
+		// verdict lands here to set the footer on the UI goroutine only (#787).
+		if msg.show {
+			m.setStatus(msg.status)
+		}
+		return nil
 	case splitDoneMsg:
 		// The doSplit exec ran off the UI goroutine; its result lands here so the
 		// split's model state is set on the UI goroutine only (R13 shared state).
@@ -235,12 +242,11 @@ func main() {
 	// Bind the switch to THIS model so the exec reads its focus-follow snapshot
 	// (m.workOverride) rather than a package global (#777 data-race fix).
 	switchClient = m.switchClientBound
-	// One-time drift check: a stale outer-shell launcher hands an env shape a
-	// current build never would, and clicks fail quietly on it (#787 AC3). Warn
-	// once on screen; a healthy env shows nothing and behaves exactly as before.
-	if s, ok := envDriftStatus(); ok {
-		m.setStatus(s)
-	}
+	// The one-time drift check runs as a tea.Cmd (driftCheck, batched into Init):
+	// a stale launcher hands an env shape clicks fail quietly on (#787 AC3), but
+	// the inner attach connects a beat after boot, so the check must poll it
+	// settled off the UI goroutine rather than judging it synchronously here and
+	// false-warning on every healthy launch.
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
