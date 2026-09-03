@@ -251,6 +251,6 @@ func (m *model) openLaunch() {
 	if r, ok := m.railRow(); ok {
 		dir = r.cwd
 	}
-	handBackFocus()
+	handBackFocus(m.activeOuter())
 	openLaunchPopup(dir)
 }

@@ -37,7 +37,7 @@ var tickAfter = func(d time.Duration, msg tea.Msg) tea.Cmd {
 // its data message lands, so a slow response can never be overwritten by an
 // older poll that finished later.
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(fetchFast, fetchSlow, fetchHooksWith(nil), fetchClientSession(0),
+	return tea.Batch(fetchFast, fetchSlow, fetchHooksWith(nil), fetchClientSession(0, m.workTTYs()),
 		fetchUpdateCheck, tickAfter(animEvery, animTickMsg{}))
 }
 
@@ -78,9 +78,25 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		if msg.name != "" && msg.name != m.cursorSess {
 			m.followSession(msg.name)
 		}
+		// In split mode the winning client's tty says which work pane is focused
+		// now — retarget the switch and hand-back at it (#777).
+		if msg.tty != "" {
+			m.retargetWork(msg.tty)
+		}
 		return next
+	case splitDoneMsg:
+		// The doSplit exec ran off the UI goroutine; its result lands here so the
+		// split's model state is set on the UI goroutine only (R13 shared state).
+		m.splitPending = false // the in-flight doSplit has landed
+		if !msg.ok {
+			m.setStatus("split failed — see log")
+			return nil
+		}
+		m.splitOpen = true
+		m.alt = msg.pane
+		return nil
 	case clientTickMsg:
-		return fetchClientSession(m.clientGen)
+		return fetchClientSession(m.clientGen, m.workTTYs())
 	case animTickMsg:
 		m.frame++
 		return tickAfter(animEvery, animTickMsg{})
@@ -216,6 +232,9 @@ func main() {
 		// the environment and rebuilding the same synthetic list every time
 		fakes: fakeRows(fakeCount()),
 	}
+	// Bind the switch to THIS model so the exec reads its focus-follow snapshot
+	// (m.workOverride) rather than a package global (#777 data-race fix).
+	switchClient = m.switchClientBound
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

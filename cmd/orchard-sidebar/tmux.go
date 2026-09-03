@@ -180,7 +180,7 @@ func applyCollapsed(p outerPane, collapsed bool, width int) {
 
 // runOuter runs one tmux command against the sidebar's own (outer) server and
 // logs a non-zero exit rather than dropping it.
-func runOuter(args ...string) {
+var runOuter = func(args ...string) {
 	cmd := env.outerCmd(args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

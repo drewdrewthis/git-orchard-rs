@@ -671,6 +671,9 @@ chosen so nothing a shell or the inner tmux config reaches for collides:
 | `M-Right` | Focus pane 0.1 (inner client) |
 | `M-Up` / `M-Down` | Move the sidebar's selection from either pane — `send-keys -t 0.0 Up\|Down` (see "Driving the list from the keyboard") |
 | `M-1` … `M-9` | Jump the sidebar's selection to the nth *visible* card from either pane — `send-keys -t 0.0 M-N`, forwarded for the same reason `M-Up`/`M-Down` are. Hands focus back like a click; past the end of the list it does nothing |
+| `M-S-Up` / `M-S-Down` | Reorder the selected *pinned* session up/down within the pinned block — the keyboard half of pin drag-reorder (see "Pinned sessions", #775). A no-op on an unpinned card |
+| `M-Enter` | Open the selected session in a split — a second inner client in a new work pane beside the current one, so two sessions are visible at once (see "Open in split", #777). Refused on an already-attached or synthetic row |
+| `M-w` | Close the split — detach the split pane's inner client and re-pin `main-vertical`. Refused on the sole work pane (#777) |
 | `↑`/`↓`, `j`/`k` (sidebar focused) | Previous/next *visible* session. Selection *is* the switch, so these attach as they move |
 | `/` (sidebar focused) | Open the filter in the header row. Typing narrows the cards by any fact a card shows — name, mission, directory, branch, issue or PR ref — case-insensitively. `Enter` keeps the query and gives the keys back to the list; `Esc` clears it |
 | `b` (sidebar focused) | Toggle the attention bell, and remember it in `sidebar-state.json` |

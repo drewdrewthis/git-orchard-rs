@@ -180,6 +180,11 @@ func (m *model) footer(w int, compact bool) []viewLine {
 		out = append(out, viewLine{
 			text: styDim.Render(trunc("no state dir — install claude-session-state", w)), row: -1})
 	}
+	// a keyboard-chord refusal/notice (M-Enter, M-w) takes the hint line's place
+	// while it is fresh, so the height stays fixed and the list never jumps
+	if s := m.statusText(); s != "" {
+		return append(out, viewLine{text: " " + styErr.Render(trunc(s, iw)), row: -1})
+	}
 	return append(out, viewLine{
 		text: " " + styDim.Render(trunc(hintLine(m.bell), iw)), row: -1})
 }

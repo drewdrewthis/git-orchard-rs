@@ -42,7 +42,7 @@ func TestSwitchClientArgs(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			setTmuxEnv(t, c.env)
-			args, ok := switchClientArgs("work")
+			args, ok := switchClientArgs("work", env.client)
 			if ok != c.ok {
 				t.Fatalf("ok = %v, want %v (args %v)", ok, c.ok, args)
 			}

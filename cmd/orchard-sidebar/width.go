@@ -70,7 +70,7 @@ func (m *model) toggleCollapse() {
 	m.width = w
 	setCollapsed(m.collapsed, w)
 	m.persistState()
-	handBackFocus()
+	handBackFocus(m.activeOuter())
 }
 
 // expandWidth is the width a collapsed sidebar reopens to: the width the user

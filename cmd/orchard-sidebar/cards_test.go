@@ -125,7 +125,7 @@ func TestClickingPlusOpensTheLaunchModal(t *testing.T) {
 	prevPopup, prevBack := openLaunchPopup, handBackFocus
 	gotDir, handedBack := "", false
 	openLaunchPopup = func(dir string) { gotDir = dir }
-	handBackFocus = func() { handedBack = true }
+	handBackFocus = func(outerPane) { handedBack = true }
 	t.Cleanup(func() { openLaunchPopup, handBackFocus = prevPopup, prevBack })
 
 	m := &model{rows: []row{{session: "s", state: "idle", cwd: "/w/s"}}, width: 42, height: 20}
