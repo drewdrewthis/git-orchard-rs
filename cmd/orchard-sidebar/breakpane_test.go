@@ -110,12 +110,13 @@ func TestBreakPaneEscCancelsWithoutTmux(t *testing.T) {
 }
 
 // A confirmed break-out runs exactly new-session → break-pane → kill-window
-// against the active pane, pins the new session to the top of the list, and
-// switches the inner client onto it. AC: command sequence, row 0, scoped
-// switch-client.
+// against the active pane and switches the inner client onto it — the switch
+// is what promotes the card to row 0 (sortRows sorts by attach time), not a
+// pin. AC: command sequence, scoped switch-client, no pin side effect.
 func TestBreakPaneConfirmRunsSequenceAndPromotes(t *testing.T) {
 	spy := newBreakSpy(t, "")
 	m := realModel()
+	pinnedBefore := append([]string(nil), m.pinned...)
 	openBreak(m, 0) // input prefills with "alpha"
 	m.key(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -127,11 +128,11 @@ func TestBreakPaneConfirmRunsSequenceAndPromotes(t *testing.T) {
 	if strings.Join(spy.tmux, " | ") != strings.Join(want, " | ") {
 		t.Fatalf("tmux calls were %v, want %v", spy.tmux, want)
 	}
-	if len(m.pinned) == 0 || m.pinned[0] != "alpha" {
-		t.Errorf("new session not promoted to row 0: pinned=%v", m.pinned)
-	}
 	if len(spy.switched) != 1 || spy.switched[0] != "alpha" {
 		t.Errorf("switch-client not aimed at the new session: %v", spy.switched)
+	}
+	if strings.Join(m.pinned, ",") != strings.Join(pinnedBefore, ",") {
+		t.Errorf("break-out mutated pinned, want it unchanged: before=%v after=%v", pinnedBefore, m.pinned)
 	}
 	if m.menuOpen() {
 		t.Error("a successful break-out left the menu open")
@@ -148,8 +149,8 @@ func TestBreakPaneCollidingNameIsMadeUnique(t *testing.T) {
 	openBreak(m, 0)
 	m.key(tea.KeyMsg{Type: tea.KeyEnter})
 
-	if len(m.pinned) == 0 || m.pinned[0] != "alpha-2" {
-		t.Fatalf("collision not resolved: pinned=%v", m.pinned)
+	if len(spy.switched) == 0 || spy.switched[0] != "alpha-2" {
+		t.Fatalf("collision not resolved: switched=%v", spy.switched)
 	}
 	if spy.tmux[0] != "new-session -d -s alpha-2" ||
 		spy.tmux[1] != "break-pane -d -s %9 -t alpha-2:" {

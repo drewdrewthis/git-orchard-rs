@@ -41,13 +41,13 @@ Feature: break a pane out into its own session from the row menu
     And no tmux command is run
 
   @integration
-  Scenario: Confirm breaks the active pane out, promotes it, and switches to it
+  Scenario: Confirm breaks the active pane out and switches to it, landing it at row 0
     Given the active pane of the attached session
     When I choose "Pane → own session…", enter a name, and confirm
     Then a new detached session is created
     And the active pane is broken into "<name>:" and the placeholder window "<name>:0" is killed
-    And the new session's card is row 0 of the sidebar list
     And the inner client is switched to it via a scoped switch-client
+    And the new session's card lands at row 0, because the switch makes it the most-recently-attached session
 
   @integration
   Scenario: A colliding name is made unique the same way a launch is

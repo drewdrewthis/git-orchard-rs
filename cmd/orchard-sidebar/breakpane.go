@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -22,7 +23,9 @@ const breakPaneLabel = "Pane → own session…"
 // tmux; the real one asks the inner server. A failure returns a zero count,
 // which drops the menu item — the same fail-quiet stance as takenSessions.
 var paneInfo = func(sess string) (active string, count int) {
-	out, err := env.innerCmd("list-panes", "-t", sess+":", "-F", "#{pane_id} #{pane_active}").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxOpTimeout)
+	defer cancel()
+	out, err := env.innerCmdContext(ctx, "list-panes", "-t", sess+":", "-F", "#{pane_id} #{pane_active}").Output()
 	if err != nil {
 		return "", 0
 	}
@@ -78,20 +81,17 @@ func (m *model) breakPaneKey(msg tea.KeyMsg) tea.Cmd {
 
 // commitBreakPane runs the break-out on Enter. The name is made collision-free
 // the same way a launch is; a tmux failure stays on the menu with the failing
-// step named, so no half-state is silent. On success the new session is pinned
-// to the TOP of the list (row 0) and the inner client is switched onto it — a
-// switch failure surfaces the same way, keeping the menu open with the notice,
-// since the break itself already succeeded.
+// step named, so no half-state is silent. On success the inner client is
+// switched onto the new session — sortRows (model.go) already puts the
+// most-recently-attached session at row 0, so the switch alone is what lands
+// the new card at the top; a switch failure surfaces the same way, keeping
+// the menu open with the notice, since the break itself already succeeded.
 func (m *model) commitBreakPane() {
 	name := uniqueName(m.menu.input.value(), takenSessions())
 	if err := breakPaneToSession(m.menu.activePane, name); err != nil {
 		m.menu.notice = err.Error()
 		return
 	}
-	// prepend → pinRank 1 → sortRows places the new card at row 0
-	m.pinned = append([]string{name}, m.pinned...)
-	m.persistState()
-	m.rebuild()
 	if err := switchClientTo(name); err != nil {
 		m.menu.notice = err.Error()
 		return
