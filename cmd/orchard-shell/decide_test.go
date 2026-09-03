@@ -169,11 +169,17 @@ func TestEnsureReady_BothPanesDeadIsRespawned(t *testing.T) {
 // The sidebar's ORCHARD_TMUX_CLIENT names pane 0.1's tty, and respawn-pane
 // gives the pane a new one — so the sidebar must be relaunched with the tty
 // read AFTER the respawn, or every switch-client is scoped to a dead client.
+//
+// Pins sidebar-found explicitly via lookPath, rather than depending on
+// whatever $PATH the test happens to run under (#747 CI/local host drift:
+// this failed on CI, which has no orchard-sidebar on PATH, while passing
+// locally on a machine that does).
 func TestRespawn_RelaunchesTheSidebarWithTheNewTTY(t *testing.T) {
 	f := newFakeTmux().
 		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys100").
 		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_id}"), "%7")
 	w := testWrapper(f)
+	w.lookPath = lookPathFound("/opt/bin/orchard-sidebar")
 
 	if err := w.respawn("work"); err != nil {
 		t.Fatalf("respawn: %v", err)
@@ -193,6 +199,37 @@ func TestRespawn_RelaunchesTheSidebarWithTheNewTTY(t *testing.T) {
 	}
 	if !strings.Contains(sidebarCall, "ORCHARD_OUTER_PANE=%7") {
 		t.Errorf("pane 0.0 relaunched with %q; want ORCHARD_OUTER_PANE=%%7", sidebarCall)
+	}
+}
+
+// Sibling to the above: when no orchard-sidebar can be resolved, respawn
+// falls back to the watch(1) placeholder — and still relaunches pane 0.0
+// (not skips it).
+func TestRespawn_FallsBackToPlaceholderWhenSidebarIsMissing(t *testing.T) {
+	f := newFakeTmux().
+		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys100").
+		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_id}"), "%7")
+	w := testWrapper(f)
+	w.lookPath = lookPathMissing
+
+	if err := w.respawn("work"); err != nil {
+		t.Fatalf("respawn: %v", err)
+	}
+
+	var sidebarCall string
+	for _, c := range f.calls {
+		if strings.Contains(c, paneSidebar) {
+			sidebarCall = c
+		}
+	}
+	if sidebarCall == "" {
+		t.Fatalf("pane 0.0 was not relaunched; calls: %v", f.mutations())
+	}
+	if !strings.Contains(sidebarCall, "watch -n1") {
+		t.Errorf("pane 0.0 relaunched with %q; want the watch(1) placeholder", sidebarCall)
+	}
+	if strings.Contains(sidebarCall, "ORCHARD_TMUX_CLIENT") {
+		t.Errorf("pane 0.0 relaunched with %q; placeholder must not carry ORCHARD_TMUX_CLIENT", sidebarCall)
 	}
 }
 

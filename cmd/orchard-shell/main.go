@@ -58,7 +58,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "orchard shell: %v\n", err)
 		return 1
 	}
-	w := &wrapper{opts: opts, conf: conf, tmux: runTmux, log: stderr}
+	w := &wrapper{opts: opts, conf: conf, tmux: runTmux, log: stderr, lookPath: exec.LookPath}
 	if err := w.ensureReady(); err != nil {
 		fmt.Fprintf(stderr, "orchard shell: %v\n", err)
 		return exitCodeFor(err)

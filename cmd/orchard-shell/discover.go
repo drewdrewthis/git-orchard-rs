@@ -31,26 +31,33 @@ func selfPath() string {
 	return p
 }
 
-// resolveSidebar finds the sidebar binary, preferring the one installed
-// beside this one.
+// resolveSidebarWith finds the sidebar binary, preferring the one installed
+// beside this one, falling back to lookPath (exec.LookPath in production; a
+// wrapper's injected pathLookup in tests) rather than the real $PATH.
 //
 // Sibling-first is ADR-013's own resolution rule, and it is the point: a bare
 // `orchard-sidebar` re-resolves against the pane shell's PATH at exec time and
 // can silently pick up a stale build instead of the one this launch meant.
 // Returns "" when neither lookup finds anything, which is the caller's cue to
 // fall back to the watch(1) placeholder.
-func resolveSidebar() string {
-	return resolveBinary(selfPath(), sidebarBinary)
+func resolveSidebarWith(lookPath pathLookup) string {
+	return resolveBinaryWith(selfPath(), sidebarBinary, lookPath)
 }
 
 // resolveBinary finds a suite binary by name, preferring the one installed
-// beside self (ADR-013's sibling-first rule — see resolveSidebar). Returns ""
-// when neither lookup finds anything.
+// beside self (ADR-013's sibling-first rule — see resolveSidebarWith).
+// Resolves against the real $PATH; doctor's suite-versions check uses this
+// directly. Returns "" when neither lookup finds anything.
 func resolveBinary(self, name string) string {
+	return resolveBinaryWith(self, name, exec.LookPath)
+}
+
+// resolveBinaryWith is resolveBinary with an injectable $PATH lookup.
+func resolveBinaryWith(self, name string, lookPath pathLookup) string {
 	if sibling := binaryNextTo(self, name); sibling != "" {
 		return sibling
 	}
-	if path, err := exec.LookPath(name); err == nil {
+	if path, err := lookPath(name); err == nil {
 		return path
 	}
 	return ""

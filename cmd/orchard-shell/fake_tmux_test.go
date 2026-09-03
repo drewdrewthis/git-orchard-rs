@@ -2,8 +2,23 @@ package main
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 )
+
+// lookPathMissing is the default pathLookup for testWrapper: it always
+// reports "not found", so a test gets the placeholder command unless it
+// pins sidebar-found explicitly via lookPathFound. Hermetic — never touches
+// the real $PATH, unlike exec.LookPath.
+func lookPathMissing(name string) (string, error) {
+	return "", exec.ErrNotFound
+}
+
+// lookPathFound returns a pathLookup that always resolves name to path,
+// for pinning the "sidebar found" branch explicitly in a test.
+func lookPathFound(path string) func(string) (string, error) {
+	return func(string) (string, error) { return path, nil }
+}
 
 // fakeTmux answers tmux invocations from canned replies and records every
 // call, so the wrapper's decision logic is testable without a tmux server.
@@ -89,7 +104,7 @@ func testWrapper(f *fakeTmux, mutate ...func(*Options)) *wrapper {
 	for _, m := range mutate {
 		m(&opts)
 	}
-	return &wrapper{opts: opts, conf: "/conf/outer.conf", tmux: f.exec, log: &strings.Builder{}}
+	return &wrapper{opts: opts, conf: "/conf/outer.conf", tmux: f.exec, log: &strings.Builder{}, lookPath: lookPathMissing}
 }
 
 // outerCall renders the argv the wrapper would use for an outer-server

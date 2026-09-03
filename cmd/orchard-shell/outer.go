@@ -18,10 +18,11 @@ const (
 
 // wrapper drives one outer tmux server.
 type wrapper struct {
-	opts Options
-	conf string
-	tmux tmuxExec
-	log  io.Writer
+	opts     Options
+	conf     string
+	tmux     tmuxExec
+	log      io.Writer
+	lookPath pathLookup // exec.LookPath; injected so sidebar-found/missing is pinnable in tests
 }
 
 func (w *wrapper) outer(args ...string) (string, error) {
@@ -250,7 +251,7 @@ func (w *wrapper) startSidebar() error {
 	}
 
 	cmd := placeholderCommand(w.opts.InnerSocket)
-	if bin := resolveSidebar(); bin != "" {
+	if bin := resolveSidebarWith(w.lookPath); bin != "" {
 		cmd = sidebarCommand(bin, w.opts.InnerSocket, tty, paneID)
 	} else {
 		fmt.Fprintf(w.log, "orchard shell: no orchard-sidebar found beside %s or on $PATH; using the watch(1) placeholder\n", selfPath())
@@ -279,7 +280,7 @@ func (w *wrapper) respawn(session string) error {
 		return err
 	}
 	cmd := placeholderCommand(w.opts.InnerSocket)
-	if bin := resolveSidebar(); bin != "" {
+	if bin := resolveSidebarWith(w.lookPath); bin != "" {
 		cmd = sidebarCommand(bin, w.opts.InnerSocket, tty, paneID)
 	}
 	_, err = w.outer("respawn-pane", "-k", "-t", paneSidebar, cmd)
