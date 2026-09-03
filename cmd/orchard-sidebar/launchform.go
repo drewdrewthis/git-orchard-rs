@@ -241,7 +241,7 @@ func (m *launchModel) View() string {
 		fmt.Fprintln(&b, " "+mark+sty.Render(trunc(label, w-5)))
 	}
 	fmt.Fprintln(&b, "")
-	fmt.Fprintln(&b, " "+styModLabel.Render("filter  ")+m.pick.filterView(w-12))
+	fmt.Fprintln(&b, " "+styModLabel.Render("search  ")+m.pick.filterView(w-12))
 	fmt.Fprintln(&b, " "+m.field("command", &m.cmd, focusCmd, w))
 	fmt.Fprintln(&b, " "+m.field("name   ", &m.name, focusName, w)+m.renamedHint())
 	fmt.Fprintln(&b, "")

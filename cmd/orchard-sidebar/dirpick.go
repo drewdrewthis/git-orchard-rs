@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/sahilm/fuzzy"
 )
 
 // The launch modal's directory picker. Everything here is a pure function of a
@@ -15,26 +16,32 @@ import (
 
 const parentEntry = ".."
 
-// filterDirs applies the two visibility rules to a directory listing: hidden
-// entries are out unless asked for, and a non-empty filter keeps only names
-// containing it (case-insensitively — you type "doc", not "Doc"). The parent
-// entry is prepended by the caller so it is never filtered away: you can always
-// go back up, whatever you have typed.
-func filterDirs(names []string, showHidden bool, filter string) []string {
-	f := strings.ToLower(filter)
-	out := make([]string, 0, len(names))
+// searchDirs applies the two visibility rules to a directory listing: hidden
+// entries are out unless asked for, and a non-empty query keeps only names the
+// query is a fuzzy (subsequence) match of — fzf-style, so "ocs" finds
+// "orchard-codex-scripts". A blank query keeps everything in case-insensitive
+// alphabetical order; a real query orders by match score, best first, because
+// the closest match is the one you almost certainly meant. The parent entry is
+// prepended by the caller so it is never searched away: you can always go back
+// up, whatever you have typed.
+func searchDirs(names []string, showHidden bool, query string) []string {
+	visible := make([]string, 0, len(names))
 	for _, n := range names {
 		if !showHidden && strings.HasPrefix(n, ".") {
 			continue
 		}
-		if f != "" && !strings.Contains(strings.ToLower(n), f) {
-			continue
-		}
-		out = append(out, n)
+		visible = append(visible, n)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return strings.ToLower(out[i]) < strings.ToLower(out[j])
-	})
+	if query == "" {
+		sort.Slice(visible, func(i, j int) bool {
+			return strings.ToLower(visible[i]) < strings.ToLower(visible[j])
+		})
+		return visible
+	}
+	out := make([]string, 0, len(visible))
+	for _, m := range fuzzy.Find(query, visible) { // already sorted by score desc
+		out = append(out, m.Str)
+	}
 	return out
 }
 
@@ -78,7 +85,7 @@ const filterWidth = 40
 func newPicker(dir string) *picker {
 	p := &picker{dir: cleanDir(dir)}
 	p.filter = newTextField("", filterWidth)
-	p.filter.placeholder("(type to filter)")
+	p.filter.placeholder("(type to search)")
 	p.load()
 	return p
 }
@@ -113,7 +120,7 @@ func (p *picker) load() {
 // called on every keystroke that changes the filter, so it must be cheap: no
 // filesystem access, just the cached listing.
 func (p *picker) refilter() {
-	p.entries = append([]string{parentEntry}, filterDirs(p.all, p.hidden, p.filter.value())...)
+	p.entries = append([]string{parentEntry}, searchDirs(p.all, p.hidden, p.filter.value())...)
 	if p.cursor >= len(p.entries) {
 		p.cursor = len(p.entries) - 1
 	}

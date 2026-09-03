@@ -13,19 +13,50 @@ import (
 // The launch modal as the user drives it: browsing to a directory, typing a
 // command, and seeing the name it will really launch under before it does.
 
-func TestFilterDirsHidesAndMatches(t *testing.T) {
+func TestSearchDirsHidesAndMatches(t *testing.T) {
 	names := []string{"src", ".git", "Docs", "docker", "target"}
-	got := strings.Join(filterDirs(names, false, ""), ",")
-	if got != "docker,Docs,src,target" { // case-insensitive sort, hidden dropped
-		t.Errorf("unfiltered = %q", got)
+	got := strings.Join(searchDirs(names, false, ""), ",")
+	if got != "docker,Docs,src,target" { // AC3: empty query, case-insensitive sort, hidden dropped
+		t.Errorf("unsearched = %q", got)
 	}
-	if got := strings.Join(filterDirs(names, true, ""), ","); !strings.Contains(got, ".git") {
+	if got := strings.Join(searchDirs(names, true, ""), ","); !strings.Contains(got, ".git") {
 		t.Errorf("hidden toggle did not reveal .git: %q", got)
 	}
-	// typing is case-insensitive: you type "doc", not "Doc"
-	if got := strings.Join(filterDirs(names, false, "doc"), ","); got != "docker,Docs" {
-		t.Errorf("filtered = %q, want docker,Docs", got)
+	// AC5: fuzzy match is case-insensitive-ish — "doc" finds docker and Docs both (order is fuzzy's call, so assert the set).
+	if want := map[string]bool{"docker": true, "Docs": true}; !sameSet(searchDirs(names, false, "doc"), want) {
+		t.Errorf("searched %q, want the set {docker, Docs}", searchDirs(names, false, "doc"))
 	}
+}
+
+// AC1: an entry shows iff the query is a case-insensitive subsequence of its
+// name — "ocs" finds orchard-codex-scripts, "xyz" finds nothing.
+func TestSearchDirsSubsequence(t *testing.T) {
+	names := []string{"orchard-codex-scripts", "internal", "target"}
+	if got := searchDirs(names, false, "ocs"); len(got) != 1 || got[0] != "orchard-codex-scripts" {
+		t.Errorf("ocs matched %v, want [orchard-codex-scripts]", got)
+	}
+	if got := searchDirs(names, false, "xyz"); len(got) != 0 {
+		t.Errorf("xyz matched %v, want nothing", got)
+	}
+}
+
+// AC2: results are ordered by match score, best first — a contiguous "cmd"
+// outranks the scattered subsequence in "crates-orchard-md".
+func TestSearchDirsRanksByScore(t *testing.T) {
+	if got := searchDirs([]string{"crates-orchard-md", "cmd"}, false, "cmd"); len(got) < 1 || got[0] != "cmd" {
+		t.Errorf("ranked %v, want cmd first", got)
+	}
+}
+func sameSet(got []string, want map[string]bool) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for _, g := range got {
+		if !want[g] {
+			return false
+		}
+	}
+	return true
 }
 
 // Typing a filter has to leave the cursor on the first match. Parking it on
@@ -59,6 +90,22 @@ func TestPickerFilterLandsOnTheFirstMatch(t *testing.T) {
 	p.toggleHidden()
 	if !contains(p.entries, ".hidden") {
 		t.Errorf("hidden toggle left entries %v", p.entries)
+	}
+}
+
+// AC4: ".." is prepended by the caller and never searched away — a query that
+// matches no directory still leaves the parent entry, cursor parked on it.
+func TestPickerKeepsParentWhenNothingMatches(t *testing.T) {
+	root := t.TempDir()
+	for _, d := range []string{"cmd", "docs"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := newPicker(root)
+	p.filterKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzzz")})
+	if len(p.entries) != 1 || p.entries[0] != parentEntry || p.cursor != 0 {
+		t.Fatalf("no-match picker = %v cursor %d, want [..] cursor 0", p.entries, p.cursor)
 	}
 }
 
