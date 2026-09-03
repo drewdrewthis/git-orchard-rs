@@ -63,7 +63,7 @@ func (m *model) applyUpdateCheck(msg updateCheckMsg) {
 // show a phantom upgrade (#789). The header still labels dev builds, via
 // updateHint's build-ident branch, just without this click-to-upgrade path.
 func (m *model) updateAvailable() bool {
-	if version == release.DevVersion {
+	if isDevBuild() {
 		return false
 	}
 	return release.IsNewer(m.updateCheck.Latest, version)

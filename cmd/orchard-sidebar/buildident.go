@@ -1,9 +1,10 @@
 package main
 
-import "runtime/debug"
+import (
+	"runtime/debug"
 
-// A dev build has no semver, so the header labels it with its VCS revision
-// instead — enough to tell two dev binaries apart at a glance (#789).
+	"github.com/drewdrewthis/orchardist/internal/release"
+)
 
 // readBuildInfo is a seam: the real binary reaches its build stamp only
 // through debug.ReadBuildInfo, which tests cannot populate, so they swap this.
@@ -12,7 +13,9 @@ var readBuildInfo = debug.ReadBuildInfo
 // buildIdent is the dev-build label: "dev@<7-char vcs.revision>", with a
 // trailing "*" when the tree was dirty at build (vcs.modified == "true"). It
 // falls back to plain "dev" when there is no VCS stamp to read — a `go build`
-// outside a repo, or one built with -buildvcs=false.
+// outside a repo, or one built with -buildvcs=false. A dev build has no
+// semver, so the header labels it with its VCS revision instead — enough to
+// tell two dev binaries apart at a glance (#789).
 func buildIdent() string {
 	info, ok := readBuildInfo()
 	if !ok {
@@ -38,4 +41,9 @@ func buildIdent() string {
 		ident += "*"
 	}
 	return ident
+}
+
+// isDevBuild is the one home for the rule of what counts as an unreleased binary.
+func isDevBuild() bool {
+	return version == release.DevVersion
 }

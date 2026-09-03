@@ -1,10 +1,6 @@
 package main
 
-import (
-	"fmt"
-
-	"github.com/drewdrewthis/orchardist/internal/release"
-)
+import "fmt"
 
 // Drawing the update indicator: the header glyph, the collapsed-strip glyph
 // (view.go draws both, reading updateGlyph directly), and the one-line
@@ -28,7 +24,7 @@ const updateMinWidth = 24
 // badge and the buttons it sits beside — the header is not the place an
 // update becomes urgent, only visible.
 func (m *model) updateHint() string {
-	if version == release.DevVersion {
+	if isDevBuild() {
 		return styDim.Render(buildIdent())
 	}
 	if !m.updateAvailable() {
