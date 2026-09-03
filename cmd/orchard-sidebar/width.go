@@ -89,7 +89,8 @@ func (m *model) expandWidth() int {
 // gesture — a drag, a collapse, a bell toggle — so this is a few dozen bytes
 // at human frequency, not a write loop.
 func (m *model) persistState() {
-	st := sidebarState{Width: m.desiredWidth, Collapsed: m.collapsed, Bell: m.bell}
+	st := sidebarState{Width: m.desiredWidth, Collapsed: m.collapsed, Bell: m.bell,
+		Pinned: m.pinned}
 	if err := saveSidebarState(st); err != nil {
 		logf("saving sidebar state: %v", err)
 	}

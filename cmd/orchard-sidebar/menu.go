@@ -28,14 +28,25 @@ const (
 	menuConfirm          // Close <name>? y/N
 )
 
-// menuItems are the actions in draw order; the index is what rowMenu.item
-// holds and what a click on the nth body row selects.
-var menuItems = []string{"Rename", "Close"}
-
+// The actions in draw order; the index is what rowMenu.item holds and what a
+// click on the nth body row selects. The pin item's LABEL flips with the row's
+// pinned state, so the list is built per-open (menuActionLabels) rather than
+// held as a static slice.
 const (
 	itemRename = iota
 	itemClose
+	itemPin
 )
+
+// menuActionLabels is the current menu's items. Pin/Unpin depends on whether
+// the session the menu is acting on is pinned right now.
+func (m *model) menuActionLabels() []string {
+	pin := "Pin"
+	if m.isPinned(m.menu.sess) {
+		pin = "Unpin"
+	}
+	return []string{"Rename", "Close", pin}
+}
 
 type rowMenu struct {
 	mode   menuMode
@@ -131,7 +142,8 @@ func (m *model) menuKey(msg tea.KeyMsg) tea.Cmd {
 
 func (m *model) menuMove(d int) {
 	m.menu.notice = ""
-	m.menu.item = (m.menu.item + d + len(menuItems)) % len(menuItems)
+	n := len(m.menuActionLabels())
+	m.menu.item = (m.menu.item + d + n) % n
 }
 
 // activate runs the highlighted item. Rename opens its input prefilled with
@@ -145,6 +157,16 @@ func (m *model) activate() {
 		m.menu.input = newTextField(m.menu.sess, boxInner(m.paneWidth()-3)-1)
 	case itemClose:
 		m.menu.mode = menuConfirm
+	case itemPin:
+		// pin/unpin the row the menu is on, then close. It does not attach or
+		// move the selection — the menu acts ON a session, it does not switch
+		// to it. A synthetic row names no tmux session, so it is not pinnable.
+		if m.menu.fake {
+			m.menu.notice = "synthetic row — nothing to pin"
+			return
+		}
+		m.togglePin(m.menu.sess)
+		m.closeMenu()
 	}
 }
 

@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // The scrolling middle band: one card per session, in one flat list ordered by
 // attach recency (sortRows). Split from view.go because this is the only band
@@ -46,8 +49,20 @@ func (m *model) cards(w int, compact bool) []viewLine {
 	// the gutter bar marks the cursor row — it moves the instant you press j/k
 	// rather than waiting for the next daemon poll to report the new attach.
 	sel := m.railIndex(vis)
+	pinnedSeen, sepDone := false, false
 	for n, i := range vis {
 		r := m.rows[i]
+		// the pinned block ends where the first unpinned card begins: draw the
+		// separator once, and only between a surviving pinned run and a flat
+		// list below it. No pinned cards (or a filter that hid them all) means
+		// pinnedSeen never trips, so no dangling rule is drawn (AC12).
+		if r.pinRank == 0 && pinnedSeen && !sepDone {
+			out = append(out, viewLine{text: pinSeparator(w), row: -1, sep: true})
+			sepDone = true
+		}
+		if r.pinRank > 0 {
+			pinnedSeen = true
+		}
 		// only the attached session gets a border — a half-width neon bar down
 		// every line of the card. Other cards render a plain space in that
 		// column so the layout doesn't shift on selection.
@@ -60,6 +75,13 @@ func (m *model) cards(w int, compact bool) []viewLine {
 		}
 	}
 	return out
+}
+
+// pinSeparator is the dashed rule under the pinned block: dimmer and lighter
+// than the footer's solid rule so the two never read as the same divider, and
+// indented one cell to sit under the card gutter rather than the pane edge.
+func pinSeparator(w int) string {
+	return " " + styDim.Render(strings.Repeat("┈", max(1, w-2)))
 }
 
 // railCell is what the one-cell gutter holds on a given line of a card: the

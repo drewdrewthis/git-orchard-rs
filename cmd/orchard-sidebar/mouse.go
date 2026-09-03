@@ -37,6 +37,12 @@ func (m *model) mouse(msg tea.MouseMsg) {
 		m.scrollBy(wheelStep)
 		return
 	}
+	// a left-button motion or release is only ever the middle or end of a
+	// drag the press below started (drag.go); the press itself falls through.
+	if msg.Button == tea.MouseButtonLeft && msg.Action != tea.MouseActionPress {
+		m.dragMove(msg)
+		return
+	}
 	if msg.Action != tea.MouseActionPress {
 		return
 	}
@@ -74,7 +80,16 @@ func (m *model) mouse(msg tea.MouseMsg) {
 		return // mouseCmd is copying it; a copy never also selects
 	}
 	if ri, ok := m.pane.rowAtLine(msg.Y); ok {
+		// a press attaches the card (the click that always worked) and arms a
+		// drag: capture the session BEFORE selectRow re-sorts the list, then a
+		// release with motion pins/unpins it. See drag.go.
+		r, _ := m.rowAt(ri)
 		m.selectRow(ri, true)
+		if !r.fake {
+			// synthetic fake-* rows are never attachable, so they must never be
+			// pinnable either
+			m.dragStart(r.session, msg.Y)
+		}
 	}
 }
 

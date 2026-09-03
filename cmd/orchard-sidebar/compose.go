@@ -21,6 +21,7 @@ type paneFrame struct {
 	updateZone   clickZone // the header's update glyph: a click opens the overlay
 	menuBox      clickZone // the whole menu box: a click outside dismisses
 	menuRows     []clickZone
+	pinSep       int // screen line of the pinned separator, -1 when none is drawn
 }
 
 // rowAtLine is the click-to-row lookup, bounds-checked: a mouse event can
@@ -32,6 +33,18 @@ func (f paneFrame) rowAtLine(y int) (int, bool) {
 	}
 	i := f.lineToRow[y]
 	return i, i >= 0
+}
+
+// firstCardLine is the screen line of the topmost card, or -1 when none is
+// drawn. It is the drop target for pinning the very first card, before any
+// separator exists to divide the list.
+func (f paneFrame) firstCardLine() int {
+	for y, i := range f.lineToRow {
+		if i >= 0 {
+			return y
+		}
+	}
+	return -1
 }
 
 // copyAtLine is the same for the git box's click-to-copy payloads.
@@ -122,8 +135,12 @@ func (m *model) render(head, list, foot []viewLine, width, height int, zones hea
 		m.anchorDelta = off - firstLineOfRow(list, list[i].row)
 		break
 	}
+	pinSep := -1
 	for i := 0; i < lay.listH; i++ {
 		if off+i < len(list) {
+			if list[off+i].sep {
+				pinSep = len(out) // the separator's final on-screen line
+			}
 			out = append(out, list[off+i])
 			continue
 		}
@@ -156,5 +173,6 @@ func (m *model) render(head, list, foot []viewLine, width, height int, zones hea
 		updateZone:   zones.update,
 		menuBox:      box,
 		menuRows:     rows,
+		pinSep:       pinSep,
 	}
 }

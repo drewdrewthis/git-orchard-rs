@@ -86,6 +86,10 @@ func (m *model) applySessions(sessions []tmuxSession) {
 		m.rows = append(m.rows, row{session: s.Name, state: "shell",
 			attached: attached[s.Name]})
 	}
+	// A real sessions snapshot is the one authoritative "these and only these
+	// sessions exist" — the only place a pin may be dropped, so a transient
+	// fast-lane miss (applyFast) can never persist away a still-alive pin.
+	m.pruneStalePins(live)
 	m.rebuild()
 }
 
@@ -133,6 +137,7 @@ func (m *model) rebuild() {
 	m.applyHooks()
 	m.appendFakes()
 	m.applyOrder()
+	m.applyPins()
 	sortRows(m.rows)
 	m.join()
 	m.reanchorCursor()

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -239,7 +240,7 @@ func TestBellPersistsAlongsideTheLayout(t *testing.T) {
 	if err := saveSidebarState(sidebarState{Width: 52, Collapsed: true, Bell: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadSidebarState(); got != (sidebarState{Width: 52, Collapsed: true, Bell: true}) {
+	if got := loadSidebarState(); !reflect.DeepEqual(got, sidebarState{Width: 52, Collapsed: true, Bell: true}) {
 		t.Errorf("loaded %+v, want width 52, collapsed, bell on", got)
 	}
 
@@ -259,7 +260,7 @@ func TestBellPersistsAlongsideTheLayout(t *testing.T) {
 func TestBellDefaultsOffForAPreBellStateFile(t *testing.T) {
 	stateHome(t)
 	writeStateFile(t, "sidebar-state.json", `{"width":52,"collapsed":false}`)
-	if got := loadSidebarState(); got != (sidebarState{Width: 52}) {
+	if got := loadSidebarState(); !reflect.DeepEqual(got, sidebarState{Width: 52}) {
 		t.Errorf("loaded %+v, want width 52 with the bell off", got)
 	}
 }

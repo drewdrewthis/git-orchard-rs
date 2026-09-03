@@ -30,6 +30,11 @@ type row struct {
 	model      string
 	issueNum   int
 	issueTitle string
+	// pinRank is the row's 1-based place in the pinned block, 0 when unpinned.
+	// Stamped from model.pinned in rebuild (applyPins) and read by sortRows so
+	// the pinned block, M-1..9-first counting and "pins never reorder on
+	// activity" all fall out of the one existing sort.
+	pinRank int
 }
 
 // The state a session is in, collapsed to three classes. This drives the state
@@ -67,8 +72,13 @@ func rowBucket(r row) bucket {
 }
 
 type model struct {
-	rows        []row
-	fakes       []row // synthetic rows, resolved once at startup (fake.go)
+	rows []row
+	// pinned is the ordered set of session names the user pinned, mirrored to
+	// sidebar-state.json. It is the single source of truth for the pinned
+	// block; rows carry only a derived pinRank (applyPins).
+	pinned      []string
+	drag        dragState // the in-flight press→motion→release drag (drag.go)
+	fakes       []row     // synthetic rows, resolved once at startup (fake.go)
 	wtBySession map[string]wtInfo
 	repoBySess  map[string]string
 	wtByPath    map[string]wtInfo // cwd fallback: worktree path -> info
@@ -186,6 +196,16 @@ type clientTickMsg struct{}
 // and stable — a session with no activity of any kind still has a fixed slot.
 func sortRows(rows []row) {
 	sort.SliceStable(rows, func(i, j int) bool {
+		// Pinned rows form a fixed block at the top, ordered by pin rank and
+		// nothing else — this is what makes the block immune to the activity
+		// churn the rest of the keys encode.
+		pi, pj := rows[i].pinRank, rows[j].pinRank
+		if (pi > 0) != (pj > 0) {
+			return pi > 0 // any pinned row sorts before any unpinned one
+		}
+		if pi > 0 {
+			return pi < pj // within the block, ascending pin rank
+		}
 		ai, aj := rows[i].lastAttached, rows[j].lastAttached
 		if ai.IsZero() != aj.IsZero() {
 			return aj.IsZero() // attached-at-some-point sorts before never-attached
