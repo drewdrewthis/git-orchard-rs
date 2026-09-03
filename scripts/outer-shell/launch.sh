@@ -111,6 +111,36 @@ if ! outer has-session -t "$OUTER_SESSION" 2>/dev/null; then
     outer send-keys -t "$OUTER_SESSION:0.0" \
       "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\"" Enter
   fi
+else
+  # Reattach path. outer.go's respawn()/rebuild() repair a dead pane or a
+  # malformed window on every rerun; this prototype mirrors only the
+  # narrower case respawn() covers -- a 2-pane window with one or both
+  # panes dead -- since that's the only shape this script ever produces.
+  # A 1-pane or 3+-pane window (the fuller rebuild() case) is left as-is:
+  # that self-heal only exists in the Go wrapper.
+  PANES="$(outer list-panes -t "$OUTER_SESSION:0" -F '#{pane_index} #{pane_dead}')"
+  PANE_COUNT="$(printf '%s\n' "$PANES" | grep -c .)"
+  if [[ "$PANE_COUNT" -eq 2 ]] && printf '%s\n' "$PANES" | grep -q ' 1$'; then
+    outer respawn-pane -k -t "$OUTER_SESSION:0.1" \
+      "TMUX= tmux -L $INNER_SOCKET attach -t $SESSION"
+
+    INNER_TTY="$(outer display -p -t "$OUTER_SESSION:0.1" '#{pane_tty}')"
+    OUTER_PANE_ID="$(outer display -p -t "$OUTER_SESSION:0.1" '#{pane_id}')"
+
+    if [[ -x "$REPO_ROOT/bin/orchard-sidebar" ]]; then
+      SIDEBAR_BIN="$REPO_ROOT/bin/orchard-sidebar"
+    else
+      SIDEBAR_BIN="$(command -v orchard-sidebar || true)"
+    fi
+
+    if [[ -n "$SIDEBAR_BIN" ]]; then
+      outer respawn-pane -k -t "$OUTER_SESSION:0.0" \
+        "ORCHARD_TMUX_SOCKET=$INNER_SOCKET ORCHARD_TMUX_CLIENT=$INNER_TTY ORCHARD_OUTER_PANE=$OUTER_PANE_ID $SIDEBAR_BIN"
+    else
+      outer respawn-pane -k -t "$OUTER_SESSION:0.0" \
+        "watch -n1 \"tmux -L $INNER_SOCKET list-windows -a\""
+    fi
+  fi
 fi
 
 # Focus 0.1 (the inner client), not 0.0 (the newly-split pane tmux leaves

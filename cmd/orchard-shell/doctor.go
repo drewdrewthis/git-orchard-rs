@@ -73,10 +73,12 @@ type doctorEnv struct {
 	pathEnv     string // $PATH
 	conf        string // outer.conf path, for the outer-socket check
 	confErr     error  // set when conf could not be resolved
+	innerSocket string // -inner-socket / $ORCHARD_TMUX_SOCKET, for inner/outer-socket checks
+	outerSocket string // -outer-socket, for the outer-socket check
 }
 
 // newDoctorEnv is the production doctorEnv.
-func newDoctorEnv(selfVersion string) doctorEnv {
+func newDoctorEnv(selfVersion, innerSocket, outerSocket string) doctorEnv {
 	conf, confErr := resolveConf("")
 	return doctorEnv{
 		tmux:        runTmux,
@@ -88,6 +90,8 @@ func newDoctorEnv(selfVersion string) doctorEnv {
 		pathEnv:     os.Getenv("PATH"),
 		conf:        conf,
 		confErr:     confErr,
+		innerSocket: innerSocket,
+		outerSocket: outerSocket,
 	}
 }
 
@@ -96,7 +100,7 @@ func runDoctor(opts Options, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), doctorTimeout)
 	defer cancel()
 
-	checks := runChecks(ctx, newDoctorEnv(version))
+	checks := runChecks(ctx, newDoctorEnv(version, opts.InnerSocket, opts.OuterSocket))
 	failed := false
 	for _, c := range checks {
 		if c.Status == statusFail {

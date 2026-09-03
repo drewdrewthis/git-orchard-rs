@@ -10,6 +10,7 @@ import (
 )
 
 func TestParseArgs_Defaults(t *testing.T) {
+	t.Setenv("ORCHARD_TMUX_SOCKET", "") // isolate from the ambient environment
 	opts, err := parseArgs(nil, io.Discard)
 	if err != nil {
 		t.Fatalf("parseArgs(nil): %v", err)
@@ -59,12 +60,19 @@ func TestParseArgs_VersionFlag(t *testing.T) {
 }
 
 func TestParseArgs_DoctorSubcommand(t *testing.T) {
+	t.Setenv("ORCHARD_TMUX_SOCKET", "") // isolate from the ambient environment
 	opts, err := parseArgs([]string{"doctor"}, io.Discard)
 	if err != nil {
 		t.Fatalf("parseArgs(doctor): %v", err)
 	}
 	if !opts.Doctor || opts.DoctorJSON {
 		t.Errorf("parseArgs(doctor) = %+v; want Doctor only", opts)
+	}
+	if opts.InnerSocket != defaultInnerSocket {
+		t.Errorf("doctor InnerSocket = %q; want %q (same default as orchard shell)", opts.InnerSocket, defaultInnerSocket)
+	}
+	if opts.OuterSocket != defaultOuterSocket {
+		t.Errorf("doctor OuterSocket = %q; want %q (same default as orchard shell)", opts.OuterSocket, defaultOuterSocket)
 	}
 
 	opts, err = parseArgs([]string{"doctor", "--json"}, io.Discard)
@@ -74,6 +82,51 @@ func TestParseArgs_DoctorSubcommand(t *testing.T) {
 	if !opts.Doctor || !opts.DoctorJSON {
 		t.Errorf("parseArgs(doctor --json) = %+v; want Doctor and DoctorJSON", opts)
 	}
+}
+
+// @scenario doctor's socket flags and $ORCHARD_TMUX_SOCKET default match orchard shell
+//
+// AC (#747 Bug 2): doctor's inner/outer-socket checks were hardcoded to the
+// default socket names, so `orchard shell doctor` reported on the wrong
+// server for anyone using non-default sockets. doctor now takes the same
+// --inner-socket/--outer-socket flags as orchard shell itself, and honours
+// $ORCHARD_TMUX_SOCKET as the inner default the same way.
+func TestParseArgs_DoctorSocketFlags(t *testing.T) {
+	t.Run("explicit flags are honoured", func(t *testing.T) {
+		t.Setenv("ORCHARD_TMUX_SOCKET", "")
+		opts, err := parseArgs([]string{"doctor", "--inner-socket", "work", "--outer-socket", "wrap"}, io.Discard)
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if opts.InnerSocket != "work" {
+			t.Errorf("InnerSocket = %q; want work", opts.InnerSocket)
+		}
+		if opts.OuterSocket != "wrap" {
+			t.Errorf("OuterSocket = %q; want wrap", opts.OuterSocket)
+		}
+	})
+
+	t.Run("ORCHARD_TMUX_SOCKET sets the inner default", func(t *testing.T) {
+		t.Setenv("ORCHARD_TMUX_SOCKET", "from-env")
+		opts, err := parseArgs([]string{"doctor"}, io.Discard)
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if opts.InnerSocket != "from-env" {
+			t.Errorf("InnerSocket = %q; want from-env", opts.InnerSocket)
+		}
+	})
+
+	t.Run("an explicit flag overrides ORCHARD_TMUX_SOCKET", func(t *testing.T) {
+		t.Setenv("ORCHARD_TMUX_SOCKET", "from-env")
+		opts, err := parseArgs([]string{"doctor", "--inner-socket", "explicit"}, io.Discard)
+		if err != nil {
+			t.Fatalf("parseArgs: %v", err)
+		}
+		if opts.InnerSocket != "explicit" {
+			t.Errorf("InnerSocket = %q; want explicit", opts.InnerSocket)
+		}
+	})
 }
 
 // A mistyped flag that lands as a positional would otherwise boot the wrapper

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -71,18 +72,19 @@ func checkTmuxNesting() checkResult {
 // --- inner socket --------------------------------------------------------
 
 func checkInnerSocket(env doctorEnv) checkResult {
-	out, err := env.tmux(innerArgs(defaultInnerSocket, "list-sessions")...)
+	socket := cmp.Or(env.innerSocket, defaultInnerSocket)
+	out, err := env.tmux(innerArgs(socket, "list-sessions")...)
 	if err != nil {
 		return checkResult{ID: "inner-socket", Status: statusFail,
-			Detail: fmt.Sprintf("no tmux server with sessions on socket %q", defaultInnerSocket),
-			Remedy: "orchard new   (or: tmux -L " + defaultInnerSocket + " new -s work)"}
+			Detail: fmt.Sprintf("no tmux server with sessions on socket %q", socket),
+			Remedy: "orchard new   (or: tmux -L " + socket + " new -s work)"}
 	}
 	n := 0
 	if out != "" {
 		n = len(strings.Split(out, "\n"))
 	}
 	return checkResult{ID: "inner-socket", Status: statusPass,
-		Detail: fmt.Sprintf("socket %q has %d session(s)", defaultInnerSocket, n)}
+		Detail: fmt.Sprintf("socket %q has %d session(s)", socket, n)}
 }
 
 // --- outer socket --------------------------------------------------------
@@ -95,7 +97,10 @@ func checkOuterSocket(env doctorEnv) checkResult {
 			Detail: fmt.Sprintf("could not resolve outer tmux config: %v", env.confErr)}
 	}
 	w := &wrapper{
-		opts: Options{OuterSocket: defaultOuterSocket, InnerSocket: defaultInnerSocket},
+		opts: Options{
+			OuterSocket: cmp.Or(env.outerSocket, defaultOuterSocket),
+			InnerSocket: cmp.Or(env.innerSocket, defaultInnerSocket),
+		},
 		conf: env.conf, tmux: env.tmux, log: io.Discard,
 	}
 	switch decide(w.probe()) {
@@ -106,10 +111,10 @@ func checkOuterSocket(env doctorEnv) checkResult {
 		return checkResult{ID: "outer-socket", Status: statusWarn,
 			Detail: "outer wrapper session exists but its inner client is dead",
 			Remedy: "orchard shell   (respawns it automatically)"}
-	case actionBroken:
-		return checkResult{ID: "outer-socket", Status: statusFail,
-			Detail: fmt.Sprintf("outer session %q has no pane 0.1 — not a wrapper session", outerSessionName),
-			Remedy: fmt.Sprintf("tmux -L %s kill-session -t %s", defaultOuterSocket, outerSessionName)}
+	case actionRebuild:
+		return checkResult{ID: "outer-socket", Status: statusWarn,
+			Detail: fmt.Sprintf("outer session %q does not have the expected two-pane shape", outerSessionName),
+			Remedy: "orchard shell   (rebuilds it automatically)"}
 	default: // actionAttach
 		return checkResult{ID: "outer-socket", Status: statusPass, Detail: "outer wrapper session is healthy"}
 	}

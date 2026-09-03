@@ -95,8 +95,14 @@ func (w *wrapper) ensureReady() error {
 		if err := w.respawn(session); err != nil {
 			return err
 		}
-	case actionBroken:
-		return &brokenWrapperError{socket: w.opts.OuterSocket}
+	case actionRebuild:
+		session, err := w.resolveSession()
+		if err != nil {
+			return err
+		}
+		if err := w.rebuild(session); err != nil {
+			return err
+		}
 	}
 	return w.focusInner()
 }

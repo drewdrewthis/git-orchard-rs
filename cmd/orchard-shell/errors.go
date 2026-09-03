@@ -6,8 +6,8 @@ import (
 )
 
 // exitSessionMissing is the exit code for "you asked for a session that is not
-// there" — distinct from 1 so a caller can tell a wrong name from a broken
-// wrapper without parsing stderr.
+// there" — distinct from 1 so a caller can tell a wrong session name from any
+// other failure without parsing stderr.
 const exitSessionMissing = 2
 
 // noInnerServerError means there is no tmux server on the inner socket at
@@ -40,16 +40,4 @@ type sessionMissingError struct {
 func (e *sessionMissingError) Error() string {
 	return fmt.Sprintf("inner session %q not found on socket %q\nSessions on %s:\n  %s",
 		e.want, e.socket, e.socket, strings.Join(e.have, "\n  "))
-}
-
-// brokenWrapperError means the outer session exists but does not have the
-// two-pane shape the wrapper needs, so neither attaching nor respawning is
-// safe. The remedy is destructive, so it is printed rather than taken.
-type brokenWrapperError struct {
-	socket string
-}
-
-func (e *brokenWrapperError) Error() string {
-	return fmt.Sprintf("outer session %q on socket %q has no pane 0.1 — it is not a wrapper session\nRemedy:  tmux -L %s kill-session -t %s",
-		outerSessionName, e.socket, e.socket, outerSessionName)
 }

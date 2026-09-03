@@ -1,9 +1,11 @@
 package main
 
 import (
+	"cmp"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 )
 
 // Defaults for every flag. The width matches outer.conf's resize hooks, which
@@ -39,16 +41,19 @@ const usage = `orchard shell — a tmux wrapper that puts the orchard sidebar be
 
 Usage:
   orchard shell [flags]
-  orchard shell doctor [--json]
+  orchard shell doctor [--inner-socket NAME] [--outer-socket NAME] [--json]
 
 Flags:
-  --inner-socket NAME   tmux -L socket holding your sessions (default %q)
+  --inner-socket NAME   tmux -L socket holding your sessions (default %q, or $ORCHARD_TMUX_SOCKET)
   --session NAME        inner session to attach (default: most recently attached)
   --outer-socket NAME   tmux -L socket for the wrapper itself (default %q)
   --width N             sidebar width in columns (default %d)
   --conf PATH           outer tmux config to load instead of the embedded one
   --detach              boot the wrapper and exit without attaching
   --version             print the version and exit
+
+doctor's --inner-socket/--outer-socket share the same names, defaults and
+$ORCHARD_TMUX_SOCKET default as above, scoped to the checks it runs.
 `
 
 // parseArgs turns argv (without the program name) into Options.
@@ -58,7 +63,11 @@ Flags:
 // global that most invocations ignore.
 func parseArgs(argv []string, out io.Writer) (Options, error) {
 	opts := Options{
-		InnerSocket: defaultInnerSocket,
+		// $ORCHARD_TMUX_SOCKET overrides the inner-socket default for both
+		// `orchard shell` and `orchard shell doctor` — an explicit
+		// --inner-socket still wins on either, since it is bound against
+		// this already-resolved value below.
+		InnerSocket: cmp.Or(os.Getenv("ORCHARD_TMUX_SOCKET"), defaultInnerSocket),
 		OuterSocket: defaultOuterSocket,
 		Width:       defaultWidth,
 	}
@@ -66,6 +75,8 @@ func parseArgs(argv []string, out io.Writer) (Options, error) {
 	if len(argv) > 0 && argv[0] == "doctor" {
 		opts.Doctor = true
 		fs := newFlagSet("orchard shell doctor", out)
+		fs.StringVar(&opts.InnerSocket, "inner-socket", opts.InnerSocket, "inner tmux -L socket")
+		fs.StringVar(&opts.OuterSocket, "outer-socket", opts.OuterSocket, "outer tmux -L socket")
 		fs.BoolVar(&opts.DoctorJSON, "json", false, "machine-readable output")
 		if err := fs.Parse(argv[1:]); err != nil {
 			return opts, err

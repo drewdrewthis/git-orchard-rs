@@ -231,7 +231,7 @@ func TestRunChecks_ReturnsAllEightInDocumentedOrder(t *testing.T) {
 }
 
 func TestNewDoctorEnv_PopulatesProductionSeams(t *testing.T) {
-	env := newDoctorEnv("1.2.3")
+	env := newDoctorEnv("1.2.3", "default", "orchard-shell")
 	if env.tmux == nil {
 		t.Error("tmux seam is nil")
 	}
@@ -243,5 +243,11 @@ func TestNewDoctorEnv_PopulatesProductionSeams(t *testing.T) {
 	}
 	if env.selfVersion != "1.2.3" {
 		t.Errorf("selfVersion = %q; want 1.2.3", env.selfVersion)
+	}
+	if env.innerSocket != "default" {
+		t.Errorf("innerSocket = %q; want default", env.innerSocket)
+	}
+	if env.outerSocket != "orchard-shell" {
+		t.Errorf("outerSocket = %q; want orchard-shell", env.outerSocket)
 	}
 }

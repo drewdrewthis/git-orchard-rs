@@ -69,6 +69,7 @@ func (f *fakeTmux) mutations() []string {
 		case strings.Contains(c, " has-session"),
 			strings.Contains(c, " list-sessions"),
 			strings.Contains(c, " list-clients"),
+			strings.Contains(c, " list-panes"),
 			strings.Contains(c, " display "):
 			continue
 		}

@@ -38,6 +38,8 @@ FK_INNER=""
 FK_POPUP_PATTERN=""
 ST_OUTER=""
 ST_INNER=""
+SH_OUTER=""
+SH_INNER=""
 HB_REPO_BIN=""
 HB_REPO_BIN_BACKUP=""
 
@@ -68,6 +70,8 @@ cleanup() {
   [[ -n "$FK_INNER" ]] && tmux -L "$FK_INNER" kill-server 2>/dev/null
   [[ -n "$ST_OUTER" ]] && tmux -L "$ST_OUTER" kill-server 2>/dev/null
   [[ -n "$ST_INNER" ]] && tmux -L "$ST_INNER" kill-server 2>/dev/null
+  [[ -n "$SH_OUTER" ]] && tmux -L "$SH_OUTER" kill-server 2>/dev/null
+  [[ -n "$SH_INNER" ]] && tmux -L "$SH_INNER" kill-server 2>/dev/null
   # Guaranteed restore point for the hand-back check's binary swap (see
   # that block): overwriting bin/orchard-sidebar IN PLACE while the just
   # -launched sidebar process is still executing from it gets the process
@@ -1403,7 +1407,7 @@ $(tmux -L "$FK_OUTER" capture-pane -p -t "$FK_PANE" 2>/dev/null)"
     #    the header and footer exactly where they were -- the whole point of
     #    the three-band layout is that only the middle band moves.
     FK_HEAD0="$(printf '%s\n' "$FK_CAP0" | sed -n '1p')"
-    FK_FOOT0="$(printf '%s\n' "$FK_CAP0" | grep -c 'j/k')"
+    FK_FOOT0="$(printf '%s\n' "$FK_CAP0" | grep -c 'M-1-9')"
     FK_BODY0="$(printf '%s\n' "$FK_CAP0" | sed -n '2,12p')"
     for _ in 1 2 3; do
       tmux -L "$FK_OUTER" send-keys -t "$FK_PANE" -l "$(printf '\033[<65;10;10M')" 2>/dev/null
@@ -1413,7 +1417,7 @@ $(tmux -L "$FK_OUTER" capture-pane -p -t "$FK_PANE" 2>/dev/null)"
     FK_CAP1="$(tmux -L "$FK_OUTER" capture-pane -p -t "$FK_PANE" 2>/dev/null)"
     FK_HEAD1="$(printf '%s\n' "$FK_CAP1" | sed -n '1p')"
     FK_BODY1="$(printf '%s\n' "$FK_CAP1" | sed -n '2,12p')"
-    FK_FOOT1="$(printf '%s\n' "$FK_CAP1" | grep -c 'j/k')"
+    FK_FOOT1="$(printf '%s\n' "$FK_CAP1" | grep -c 'M-1-9')"
     if [[ "$FK_BODY0" == "$FK_BODY1" ]]; then
       record FAIL "$FK_CHECK2" "the list did not move after 3 wheel-down notches"
     elif [[ "$FK_HEAD0" != "$FK_HEAD1" ]]; then
@@ -1894,6 +1898,110 @@ else
   tmux -L "$ST_OUTER" kill-server 2>/dev/null
   tmux -L "$ST_INNER" kill-server 2>/dev/null
 fi
+
+# --- reattach self-heal: a dead sidebar pane is respawned, not left broken -
+# Issue #747 follow-up (Bug 1). Pane 0.0's own process (the interactive
+# shell send-keys types the sidebar/placeholder command into) can die out
+# from under a live wrapper -- a crash, an OOM kill, the user Ctrl-D'ing
+# past a dead sidebar back to a bare prompt then exiting that too. Before
+# remain-on-exit (outer.conf) that closed the pane outright and renumbered
+# 0.1 down to 0.0, so a rerun's hardcoded "0.1" target missed the survivor
+# and launch.sh left a broken single-pane window (`select-pane -t
+# shell:0.1: can't find pane: 1`, the exact live-drive failure this check
+# guards against).
+#
+# Kills pane 0.0's own #{pane_pid} directly, not a grep'd child pid:
+# send-keys types the sidebar command into an already-running interactive
+# shell, so killing only that child would just return the pane to a fresh
+# prompt with the shell (and so the pane) still alive. #{pane_pid} is the
+# pane's own tracked process -- the one remain-on-exit/#{pane_dead}
+# actually watches, and the one that has to die to reproduce the bug.
+#
+# Runs on its own throwaway sockets (never $OUTER/$INNER): this check
+# kills a real process out from under a live wrapper session, which the
+# checks above and below this block do not expect to happen to theirs.
+SH_OUTER="orchard-shell-test6"
+SH_INNER="orchard-inner-test6"
+SH_SESSION="sh747"
+SH_CHECK1="pane 0.0 goes dead, not closed, when its process is killed"
+SH_CHECK2="rerun after a dead sidebar restores exactly 2 panes"
+SH_CHECK3="0.0 is respawned as the sidebar after a dead-pane rerun"
+SH_CHECK4="0.1 is still the inner attach after a dead-pane rerun"
+SH_CHECK5="sidebar width is restored after a dead-pane rerun"
+
+tmux -L "$SH_OUTER" kill-server 2>/dev/null
+tmux -L "$SH_INNER" kill-server 2>/dev/null
+
+tmux -L "$SH_INNER" -f /dev/null new-session -d -s "$SH_SESSION" -x 200 -y 50
+
+SH_BOOT1_LOG="$SCRATCH/sh_boot1.log"
+OUTER_SOCKET="$SH_OUTER" "$LAUNCH" "$SH_INNER" "$SH_SESSION" </dev/null >"$SH_BOOT1_LOG" 2>&1
+
+if ! tmux -L "$SH_OUTER" has-session -t "$OUTER_SESSION" 2>/dev/null; then
+  for c in "$SH_CHECK1" "$SH_CHECK2" "$SH_CHECK3" "$SH_CHECK4" "$SH_CHECK5"; do
+    record FAIL "$c" "initial boot on socket '$SH_OUTER' never came up; see $SH_BOOT1_LOG"
+  done
+else
+  SH_PID="$(tmux -L "$SH_OUTER" display -p -t "$OUTER_SESSION:0.0" '#{pane_pid}' 2>/dev/null)"
+  if [[ -z "$SH_PID" ]]; then
+    for c in "$SH_CHECK1" "$SH_CHECK2" "$SH_CHECK3" "$SH_CHECK4" "$SH_CHECK5"; do
+      record FAIL "$c" "could not resolve #{pane_pid} for 0.0"
+    done
+  else
+    kill -9 "$SH_PID" 2>/dev/null
+
+    SH_DEAD=""
+    for _ in $(seq 1 30); do
+      SH_DEAD="$(tmux -L "$SH_OUTER" display -p -t "$OUTER_SESSION:0.0" '#{pane_dead}' 2>/dev/null)"
+      [[ "$SH_DEAD" == "1" ]] && break
+      sleep 0.1
+    done
+    if [[ "$SH_DEAD" == "1" ]]; then
+      record PASS "$SH_CHECK1" "remain-on-exit kept 0.0 addressable as a dead pane after kill -9 $SH_PID"
+    else
+      record FAIL "$SH_CHECK1" "pane_dead=${SH_DEAD:-<no pane>} after kill -9 $SH_PID -- remain-on-exit did not keep the pane"
+    fi
+
+    SH_BOOT2_LOG="$SCRATCH/sh_boot2.log"
+    OUTER_SOCKET="$SH_OUTER" "$LAUNCH" "$SH_INNER" "$SH_SESSION" </dev/null >"$SH_BOOT2_LOG" 2>&1
+
+    SH_PANECOUNT="$(tmux -L "$SH_OUTER" list-panes -t "$OUTER_SESSION:0" 2>/dev/null | wc -l | tr -d ' ')"
+    if [[ "$SH_PANECOUNT" == "2" ]]; then
+      record PASS "$SH_CHECK2" "rerun restored exactly 2 panes"
+    else
+      record FAIL "$SH_CHECK2" "found ${SH_PANECOUNT:-<none>} panes after rerun, want 2; see $SH_BOOT2_LOG"
+    fi
+
+    SH_CMD00=""
+    for _ in $(seq 1 50); do
+      SH_CMD00="$(tmux -L "$SH_OUTER" display -p -t "$OUTER_SESSION:0.0" '#{pane_current_command}' 2>/dev/null)"
+      [[ "$SH_CMD00" == "watch" || "$SH_CMD00" == "orchard-sidebar" ]] && break
+      sleep 0.1
+    done
+    if [[ "$SH_CMD00" == "watch" || "$SH_CMD00" == "orchard-sidebar" ]]; then
+      record PASS "$SH_CHECK3" "0.0=$SH_CMD00"
+    else
+      record FAIL "$SH_CHECK3" "0.0=${SH_CMD00:-<none>}, want watch or orchard-sidebar"
+    fi
+
+    SH_CMD01="$(tmux -L "$SH_OUTER" display -p -t "$OUTER_SESSION:0.1" '#{pane_current_command}' 2>/dev/null)"
+    if [[ "$SH_CMD01" == "tmux" ]]; then
+      record PASS "$SH_CHECK4" "0.1=$SH_CMD01"
+    else
+      record FAIL "$SH_CHECK4" "0.1=${SH_CMD01:-<none>}, want tmux"
+    fi
+
+    SH_WIDTH="$(tmux -L "$SH_OUTER" display -p -t "$OUTER_SESSION:0.0" '#{pane_width}' 2>/dev/null)"
+    if [[ "$SH_WIDTH" == "40" ]]; then
+      record PASS "$SH_CHECK5" "expected=40 actual=$SH_WIDTH"
+    else
+      record FAIL "$SH_CHECK5" "expected=40 actual=${SH_WIDTH:-<no pane>}"
+    fi
+  fi
+fi
+
+tmux -L "$SH_OUTER" kill-server 2>/dev/null
+tmux -L "$SH_INNER" kill-server 2>/dev/null
 
 # --- summary -----------------------------------------------------------------
 echo

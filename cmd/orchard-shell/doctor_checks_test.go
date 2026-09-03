@@ -125,33 +125,42 @@ func TestCheckOuterSocket(t *testing.T) {
 		}
 	})
 
-	t.Run("session with no pane 0.1 fails as broken", func(t *testing.T) {
+	t.Run("collapsed one-pane session warns as rebuild-needed", func(t *testing.T) {
 		f := newFakeTmux().
 			reply(outerCallStr(conf, "has-session", "-t", outerSessionName), "").
-			fail(outerCallStr(conf, "display", "-p", "-t", paneInner, "#{pane_tty}"), "can't find pane")
+			reply(outerCallStr(conf, "list-panes", "-t", outerSessionName+":0", "-F", "#{pane_index} #{pane_dead} #{pane_tty}"),
+				"0 0 /dev/ttys013")
 		env := doctorEnv{tmux: f.exec, conf: conf}
 		got := checkOuterSocket(env)
-		if got.Status != statusFail {
-			t.Errorf("Status = %v; want fail", got.Status)
+		if got.Status != statusWarn {
+			t.Errorf("Status = %v; want warn", got.Status)
+		}
+		if !strings.Contains(got.Remedy, "orchard shell") {
+			t.Errorf("Remedy = %q; want it to mention orchard shell", got.Remedy)
 		}
 	})
 
 	t.Run("dead inner client warns as respawn-needed", func(t *testing.T) {
 		f := newFakeTmux().
 			reply(outerCallStr(conf, "has-session", "-t", outerSessionName), "").
-			reply(outerCallStr(conf, "display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys005").
+			reply(outerCallStr(conf, "list-panes", "-t", outerSessionName+":0", "-F", "#{pane_index} #{pane_dead} #{pane_tty}"),
+				"0 0 /dev/ttys004\n1 0 /dev/ttys005").
 			fail(innerCallStr("list-clients", "-F", "#{client_tty}"), "no server running")
 		env := doctorEnv{tmux: f.exec, conf: conf}
 		got := checkOuterSocket(env)
 		if got.Status != statusWarn {
 			t.Errorf("Status = %v; want warn", got.Status)
 		}
+		if !strings.Contains(got.Remedy, "orchard shell") {
+			t.Errorf("Remedy = %q; want it to mention orchard shell", got.Remedy)
+		}
 	})
 
 	t.Run("healthy wrapper passes", func(t *testing.T) {
 		f := newFakeTmux().
 			reply(outerCallStr(conf, "has-session", "-t", outerSessionName), "").
-			reply(outerCallStr(conf, "display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys005").
+			reply(outerCallStr(conf, "list-panes", "-t", outerSessionName+":0", "-F", "#{pane_index} #{pane_dead} #{pane_tty}"),
+				"0 0 /dev/ttys004\n1 0 /dev/ttys005").
 			reply(innerCallStr("list-clients", "-F", "#{client_tty}"), "/dev/ttys005")
 		env := doctorEnv{tmux: f.exec, conf: conf}
 		got := checkOuterSocket(env)
