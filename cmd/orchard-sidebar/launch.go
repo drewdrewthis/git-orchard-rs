@@ -112,27 +112,61 @@ var takenSessions = func() map[string]bool {
 	return taken
 }
 
-// newSessionArgs builds the create half of a launch. The command is one
-// argument, not split on spaces: tmux hands a single shell-command string to
-// the shell, which is what makes "claude --resume x" work.
-func newSessionArgs(dir, cmd, name string) []string {
-	args := []string{"new-session", "-d", "-s", name, "-c", dir}
-	if c := strings.TrimSpace(cmd); c != "" {
-		args = append(args, c)
-	}
-	return args
+// newSessionArgs builds the CREATE half of a launch: a detached session on the
+// user's shell, carrying NO command. The command is delivered separately by
+// sendCommandArgs, so the pane's process is the shell — the command's exit
+// returns to a prompt in DIR instead of tearing the session down (#783). Before
+// this, the command WAS the pane process, so `/exit` from claude killed pane →
+// window → session and the sidebar row vanished.
+func newSessionArgs(dir, name string) []string {
+	return []string{"new-session", "-d", "-s", name, "-c", dir}
 }
 
-// launchSession creates the detached session and moves the inner client onto
-// it — the same two-step the sidebar's own row switch performs, so a launched
-// session lands you in it exactly like clicking one would. The switch goes
-// through switchClientTo, which REFUSES an unscoped switch on a shared inner
-// socket; that refusal comes back as an error and stays on screen, rather than
-// the launch reporting success while leaving you where you were.
+// sendCommandArgs builds the DELIVER half, split into a literal `-l` send and
+// a separate Enter (mirroring the daemon's own launchSession,
+// internal/server/resolvers/launch.go:72): `-l` stops tmux parsing the
+// command as key names, so "claude --resume x" isn't mistaken for a
+// keybinding.
+//
+// Pane survival is timing-independent — the pane's process is the shell, so a
+// keystroke that races the shell's startup degrades to "an empty prompt in
+// DIR", never a dead pane. Delivery itself is best-effort: a shell that
+// flushes typeahead on startup can still drop the send-keys (outer.go
+// documents the same flake for outer boot), landing the user at a bare
+// prompt with no command run. A live probe on this machine: 10/10 launches
+// delivered. An empty command delivers nothing and the session simply opens
+// on its shell.
+func sendCommandArgs(name, cmd string) ([][]string, bool) {
+	c := strings.TrimSpace(cmd)
+	if c == "" {
+		return nil, false
+	}
+	return [][]string{
+		{"send-keys", "-t", name, "-l", c},
+		{"send-keys", "-t", name, "Enter"},
+	}, true
+}
+
+// launchSession creates the detached session on the shell, delivers the command
+// into it, then moves the inner client onto it — the same switch the sidebar's
+// own row click performs, so a launched session lands you in it exactly like
+// clicking one would. The command is delivered before the switch. The
+// switch goes through switchClientTo,
+// which REFUSES an unscoped switch on a shared inner socket; that refusal comes
+// back as an error and stays on screen, rather than the launch reporting success
+// while leaving you where you were.
 var launchSession = func(dir, cmd, name string) error {
-	args := newSessionArgs(dir, cmd, name)
-	if out, err := env.innerCmd(args...).CombinedOutput(); err != nil {
+	if out, err := env.innerCmd(newSessionArgs(dir, name)...).CombinedOutput(); err != nil {
 		return fmt.Errorf("new-session: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	if argLists, ok := sendCommandArgs(name, cmd); ok {
+		for _, args := range argLists {
+			if out, err := env.innerCmd(args...).CombinedOutput(); err != nil {
+				// A failed send-keys leaves the empty-shell session in place — survivable
+				// and visible in the sidebar, so no cleanup needed here.
+				return fmt.Errorf("send-keys: %v: %s", err, strings.TrimSpace(string(out)))
+			}
+		}
 	}
 	if err := switchClientTo(name); err != nil {
 		return fmt.Errorf("switch-client: %w", err)
