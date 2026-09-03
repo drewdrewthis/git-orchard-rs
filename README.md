@@ -77,6 +77,49 @@ cargo install --path crates/orchard --bin orchard-tui
 
 The binaries are named distinctly from the repo slug (`orchardist`) on purpose so they can coexist on the same `$PATH`.
 
+### Prebuilt (curl installer)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/drewdrewthis/orchardist/main/scripts/install.sh | bash -s -- --prefix ~/.local/bin
+```
+
+Other flags: `--system` (install to `/usr/local/bin`, elevating via `sudo -n` if needed), `--no-service` (skip installing/restarting the `orchard.service` systemd user unit), `--version vX.Y.Z` (pin a release), `--from-source`, `--json` (emit an `{ok,data,error}` envelope instead of text). The installer downloads one version-matched suite tarball and installs all six binaries: `orchard`, `orchard-tui`, `orchard-daemon`, `orchard-sidebar`, `orchard-shell`, `orchard-upgrade`.
+
+## `orchard shell`
+
+A tmux wrapper that puts a live worktree/session sidebar beside your terminal — an outer tmux server hosting the sidebar pane plus a nested attach into your normal (inner) tmux session.
+
+```bash
+orchard shell                # boot (or reattach to) the wrapper
+orchard shell doctor         # health check; --json for machine-readable output
+```
+
+| Key | Action |
+|-----|--------|
+| `M-s` | Collapse/expand the sidebar |
+| `M-p` | Open the command palette popup |
+| `M-d` | Detach the outer client |
+| `M-Left` / `M-Right` | Focus sidebar / inner pane |
+| `M-Up` / `M-Down` | Move sidebar selection from either pane |
+| `M-1`…`M-9` | Jump selection to the nth visible card from either pane |
+| `/` | Filter the sidebar list (sidebar focused) |
+| `b` | Toggle the attention bell (sidebar focused) |
+| `+` | Open the new-session modal |
+| Click a card | Switch to that session |
+| Right-click a card | Rename or close that session |
+
+Details, layout, and full rationale: [docs/outer-shell.md](docs/outer-shell.md).
+
+## Upgrading
+
+```bash
+orchard upgrade           # download, verify, and replace the installed suite
+orchard upgrade --check   # report current/latest versions, change nothing
+orchard upgrade --dry-run # download and verify, report what would change
+```
+
+The sidebar header shows `⇡` when a newer release is available (from a 24h-cached background check — no network call on render); the hint is to run `orchard upgrade`.
+
 ## Setup
 
 ```bash
@@ -274,9 +317,10 @@ Contributor references:
 ## Requirements
 
 - Git
-- tmux
+- tmux (≥ 3.4 for `orchard shell`)
 - [GitHub CLI](https://cli.github.com/) (`gh`) — for PR/issue data
 - [terminal-notifier](https://github.com/julienXX/terminal-notifier) — for click-to-switch notifications (optional, falls back to osascript)
+- Prebuilt install covers `linux/arm64`, `linux/amd64`, `darwin/arm64`, `darwin/amd64`
 
 ## License
 

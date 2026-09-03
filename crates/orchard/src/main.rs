@@ -1,8 +1,9 @@
 //! Binary entry point for the `orchard-tui` CLI.
 //!
-//! Parses CLI flags (`--json`, `--version`, `--help`), handles the `init` and
-//! `upgrade` sub-commands, and dispatches to either the JSON output path or the
-//! Ratatui TUI (re-launching itself inside a tmux popup when appropriate).
+//! Parses CLI flags (`--json`, `--version`, `--help`), handles the `init`
+//! sub-command (and rejects the removed `upgrade` sub-command with a pointer
+//! to `orchard upgrade`), and dispatches to either the JSON output path or
+//! the Ratatui TUI (re-launching itself inside a tmux popup when appropriate).
 //!
 //! The binary is named `orchard-tui` so it can coexist with the Go daemon's
 //! `orchard` CLI on the same `$PATH`.
@@ -157,7 +158,12 @@ fn main() {
 
     match command.as_str() {
         "init" => handle_init(),
-        "upgrade" => handle_upgrade(),
+        "upgrade" => {
+            eprintln!(
+                "orchard-tui: 'upgrade' is no longer handled here. Run 'orchard upgrade' instead."
+            );
+            std::process::exit(1);
+        }
         "setup-remote" => handle_setup_remote(&args),
         "heal" => handle_heal(fix_flag, json_flag),
         "chat" => handle_chat(chat_target.as_deref(), chat_message.as_deref()),
@@ -204,13 +210,6 @@ fn handle_setup_remote(args: &[String]) {
             std::process::exit(1);
         }
     }
-}
-
-fn handle_upgrade() {
-    eprintln!("Upgrade not yet implemented for the Rust binary.");
-    eprintln!(
-        "Download the latest from: https://github.com/drewdrewthis/orchardist/releases/latest"
-    );
 }
 
 /// Outputs the list of configured remotes in JSON format.
@@ -735,7 +734,6 @@ fn print_usage() {
   orchard-tui chat [--target <s>] [--message <msg>]
                                        Default target: global_config.chat_target or first tmux_session
   orchard-tui setup-remote <host>    Provision a remote host for orchard
-  orchard-tui upgrade                Upgrade to the latest version
   orchard-tui heal                   Audit and repair drifted state (dry run)
   orchard-tui heal --fix             Apply all safe automatic repairs
   orchard-tui heal --json            Output health check results as JSON

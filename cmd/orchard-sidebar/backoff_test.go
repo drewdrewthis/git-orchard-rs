@@ -59,7 +59,7 @@ func quietTmux(t *testing.T) (wrote *[]int, resized *[]int) {
 	origSet, origRes, origSw := setWidthOption, resizePane, switchClient
 	setWidthOption = func(x int) { w = append(w, x) }
 	resizePane = func(x int) { r = append(r, x) }
-	switchClient = func(string) {}
+	switchClient = func(string, bool) {}
 	t.Cleanup(func() { setWidthOption, resizePane, switchClient = origSet, origRes, origSw })
 	return &w, &r
 }
@@ -82,8 +82,8 @@ func captureClientTicks(t *testing.T) *[]time.Duration {
 
 // decayToCap feeds enough identical reads to walk the whole ladder down.
 func decayToCap(m *model) {
-	for _, r := range repRead(clientRead{session: "alpha", width: 42}, 1+clientFastHold+len(clientLadder)) {
-		m.Update(clientSessMsg{name: r.session, width: r.width, gen: m.clientGen})
+	for _, r := range repRead(clientRead{session: "alpha"}, 1+clientFastHold+len(clientLadder)) {
+		m.Update(clientSessMsg{name: r.session, gen: m.clientGen})
 	}
 }
 
@@ -115,9 +115,8 @@ func TestClientLadderShape(t *testing.T) {
 }
 
 func TestIdleBackoffLadder(t *testing.T) {
-	alpha := clientRead{session: "alpha", width: 42}
-	beta := clientRead{session: "beta", width: 42}
-	wider := clientRead{session: "alpha", width: 60}
+	alpha := clientRead{session: "alpha"}
+	beta := clientRead{session: "beta"}
 
 	// The first read differs from the zero value, so it counts as a change:
 	// one fast tick for it, then the hold window, then one rung per read.
@@ -146,11 +145,6 @@ func TestIdleBackoffLadder(t *testing.T) {
 			name:  "a changed session snaps back from the cap and holds fast again",
 			reads: concatRead(settled, repRead(alpha, 4), repRead(beta, 3)),
 			want:  concatDur(fastRun, decay, repDur(clientEvery, 3)),
-		},
-		{
-			name:  "a width change under an unchanged session is still a change",
-			reads: concatRead(settled, repRead(alpha, 4), []clientRead{wider}),
-			want:  concatDur(fastRun, decay, []time.Duration{clientEvery}),
 		},
 		{
 			name:  "a read that fails (empty answer) is itself a change, then settles",
@@ -187,7 +181,7 @@ func TestIdleBackoffZeroValueIsFast(t *testing.T) {
 
 func TestIdleBackoffIntervalDoesNotAdvance(t *testing.T) {
 	var b idleBackoff
-	r := clientRead{session: "alpha", width: 42}
+	r := clientRead{session: "alpha"}
 	for i := 0; i < 1+clientFastHold+len(clientLadder); i++ {
 		b.observe(r)
 	}
@@ -201,7 +195,7 @@ func TestIdleBackoffIntervalDoesNotAdvance(t *testing.T) {
 
 func TestIdleBackoffResetRestartsTheFastWindow(t *testing.T) {
 	var b idleBackoff
-	r := clientRead{session: "alpha", width: 42}
+	r := clientRead{session: "alpha"}
 	for i := 0; i < 1+clientFastHold+len(clientLadder); i++ {
 		b.observe(r)
 	}
@@ -235,7 +229,7 @@ func TestIdleBackoffResetRestartsTheFastWindow(t *testing.T) {
 // isn't receiving, so it must not climb past the fast rung while the push
 // lane is unhealthy, and must snap back the moment it goes down.
 func TestIdleBackoffPushHealthGatesTheLadder(t *testing.T) {
-	read := clientRead{session: "alpha", width: 42}
+	read := clientRead{session: "alpha"}
 	full := 1 + clientFastHold + len(clientLadder) // enough reads to fully decay, and then some
 
 	cases := []struct {
@@ -342,11 +336,12 @@ func TestClientLaneSchedulesTheBackedOffTick(t *testing.T) {
 		t.Fatalf("first tick after a change was %v, want %v", (*got)[0], clientEvery)
 	}
 
-	m.Update(clientSessMsg{name: "beta", width: 42, gen: m.clientGen})
+	m.Update(clientSessMsg{name: "beta", gen: m.clientGen})
 	if last := (*got)[len(*got)-1]; last != clientEvery {
 		t.Fatalf("a changed session scheduled %v, want %v", last, clientEvery)
 	}
-	// The lane reads the shared width; backing off must not publish one.
+	// The client lane never touches the shared width (the outer server owns it);
+	// the backoff must not accidentally publish one either.
 	if len(*wrote) != 0 {
 		t.Fatalf("client lane published widths: %v", *wrote)
 	}
@@ -360,7 +355,7 @@ func TestStaleClientReadIsNoEvidenceOfIdleness(t *testing.T) {
 	// world, so none of them may be counted as "nothing is happening".
 	m := &model{width: 42, desiredWidth: 42, clientGen: 1}
 	for i := 0; i < 1+clientFastHold+len(clientLadder)+3; i++ {
-		m.Update(clientSessMsg{name: "alpha", width: 42, gen: 0})
+		m.Update(clientSessMsg{name: "alpha", gen: 0})
 	}
 	if iv := m.clientTick.interval(); iv != clientEvery {
 		t.Fatalf("stale reads decayed the lane to %v", iv)
@@ -405,7 +400,7 @@ func TestSelectRowResetsTheClientLane(t *testing.T) {
 		t.Fatal("lane never decayed; the rest of this test proves nothing")
 	}
 
-	m.selectRow(1)
+	m.selectRow(1, true)
 	if iv := m.clientTick.interval(); iv != clientEvery {
 		t.Errorf("switch left the lane at %v, want %v", iv, clientEvery)
 	}
@@ -462,7 +457,7 @@ func TestAttachChurnResetsTheClientLane(t *testing.T) {
 	// state must still be caught at ~1 tick, not bounded by however far the
 	// ladder climbs before it.
 	for i := 0; i < 1+clientFastHold+len(clientLadder); i++ {
-		m.Update(clientSessMsg{name: "alpha", width: 42, gen: m.clientGen})
+		m.Update(clientSessMsg{name: "alpha", gen: m.clientGen})
 		if iv := m.clientTick.interval(); iv != clientEvery {
 			t.Fatalf("push lane down: read %d cadence %v, want %v", i, iv, clientEvery)
 		}

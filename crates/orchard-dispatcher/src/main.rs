@@ -3,7 +3,8 @@
 //! Implements the `git`/`cargo`/`kubectl` dispatcher pattern: this binary owns
 //! the user-facing `orchard` name, parses the first positional argument, and
 //! execs the matching helper binary (`orchard-tui`, `orchard-daemon`,
-//! `orchard-worktree`, `orchard-chat`) with the remaining arguments.
+//! `orchard-worktree`, `orchard-chat`, `orchard-shell`, `orchard-upgrade`)
+//! with the remaining arguments.
 //!
 //! Bare-verb shortcuts (`orchard new <N>` ≡ `orchard worktree new <N>`) are
 //! reserved for the worktree primary unit per ADR-013. Adding a second primary
@@ -46,7 +47,7 @@ const WORKTREE_BARE_VERBS: &[&str] = &["new", "rm", "prune", "mv", "ls", "path"]
 const CHAT_BARE_VERBS: &[&str] = &["send"];
 
 /// Verbs that map directly to a helper binary `orchard-<verb>`.
-const NAMESPACE_VERBS: &[&str] = &["tui", "daemon", "worktree", "chat"];
+const NAMESPACE_VERBS: &[&str] = &["tui", "daemon", "worktree", "chat", "shell", "upgrade"];
 
 /// Verbs that orchard-tui handles internally.
 ///
@@ -61,7 +62,6 @@ const NAMESPACE_VERBS: &[&str] = &["tui", "daemon", "worktree", "chat"];
 /// for at least one minor version per ADR-013.
 const TUI_VERBS: &[&str] = &[
     "init",
-    "upgrade",
     "heal",
     "refresh",
     "watch",
@@ -87,9 +87,10 @@ Commands:
   daemon <subcmd>               Manage the daemon (start, stop, status, ...).
   worktree <subcmd>             Manage worktrees (new, rm, prune, mv, ls, path).
   chat <subcmd>                 Agent-to-agent chat (send, broadcast, tail).
+  shell [args...]               Boot the outer tmux wrapper with the live sidebar.
+  upgrade [--check]             Upgrade the installed suite to the latest release.
 
   init                          Run the first-time setup wizard.
-  upgrade                       Print upgrade instructions.
   heal [--fix] [--json]         Diagnose and repair local state.
   refresh                       Refresh cached worktree/PR data.
   watch                         Tail the local event stream.
@@ -308,7 +309,27 @@ mod tests {
     #[test]
     fn namespace_verbs_match_adr() {
         // ADR-013 §2 lists the helper binaries — the dispatcher routes to each.
-        assert_eq!(NAMESPACE_VERBS, &["tui", "daemon", "worktree", "chat"]);
+        // #747 amendment: shell + upgrade joined the helper-binary set.
+        assert_eq!(
+            NAMESPACE_VERBS,
+            &["tui", "daemon", "worktree", "chat", "shell", "upgrade"]
+        );
+    }
+
+    #[test]
+    fn shell_and_upgrade_are_namespace_verbs_not_tui_verbs() {
+        // #747 AC4: shell and upgrade became real helper binaries
+        // (orchard-shell, orchard-upgrade), not orchard-tui subcommands.
+        for v in ["shell", "upgrade"] {
+            assert!(
+                NAMESPACE_VERBS.contains(&v),
+                "'{v}' must be a namespace verb (routes to orchard-{v})"
+            );
+            assert!(
+                !TUI_VERBS.contains(&v),
+                "'{v}' must not be a TUI verb (orchard-tui no longer handles it)"
+            );
+        }
     }
 
     #[test]
@@ -360,7 +381,6 @@ mod tests {
             TUI_VERBS,
             &[
                 "init",
-                "upgrade",
                 "heal",
                 "refresh",
                 "watch",

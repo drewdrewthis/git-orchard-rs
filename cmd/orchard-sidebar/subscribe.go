@@ -36,7 +36,7 @@ var wsURL = "ws://127.0.0.1:7777/graphql"
 // tests can shrink it.
 var readWait = 30 * time.Second
 
-const tmuxSubQuery = `subscription { tmuxSessionsChanged { name attached createdAt windows { panes { paneId } } } }`
+const tmuxSubQuery = `subscription { tmuxSessionsChanged { name attached windows { panes { paneId } } } }`
 
 // tmuxSubMsg is one pushed snapshot. err set means the socket dropped; the
 // lane reconnects on its own, so the model only records it (subErr) to know

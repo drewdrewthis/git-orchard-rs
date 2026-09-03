@@ -259,3 +259,45 @@ fn sibling_dir_takes_precedence_over_path() {
         "PATH helper must not be invoked; stdout: {stdout}"
     );
 }
+
+/// Extracts the `[package]` `version` field from raw Cargo.toml text.
+///
+/// Deliberately minimal (not a full TOML parse): returns the first line's
+/// quoted value for a line of the exact shape `version = "..."`, which for
+/// a manifest laid out like `orchard`'s and this crate's own Cargo.toml is
+/// always `[package].version` (dependency version pins use inline-table
+/// syntax and never start a line with `version = `). Mirrors the Makefile's
+/// own extraction (`awk -F'"' '/^version = /'`) so both sides read the same
+/// shape contract.
+fn extract_package_version(cargo_toml: &str) -> String {
+    cargo_toml
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("version = \"")
+                .and_then(|rest| rest.strip_suffix('"'))
+        })
+        .unwrap_or_else(|| panic!("no `version = \"...\"` line found in:\n{cargo_toml}"))
+        .to_string()
+}
+
+#[test]
+fn dispatcher_version_matches_orchard_tui_crate_version() {
+    // The suite ships one version (docs/plans/747-product-plan.md D2):
+    // orchard-tui's crate (crates/orchard/Cargo.toml) is release-please's
+    // sole tracked package, and release-please-config.json links this
+    // crate's Cargo.toml to it via an `extra-files` entry so both bump
+    // together. If they drift, `orchard --version` disagrees with
+    // `orchard-tui --version` and the release tag — this test fails CI
+    // before that ships.
+    let orchard_cargo_toml = Path::new(env!("CARGO_MANIFEST_DIR")).join("../orchard/Cargo.toml");
+    let content = fs::read_to_string(&orchard_cargo_toml)
+        .unwrap_or_else(|e| panic!("read {}: {e}", orchard_cargo_toml.display()));
+    let orchard_version = extract_package_version(&content);
+
+    assert_eq!(
+        env!("CARGO_PKG_VERSION"),
+        orchard_version,
+        "crates/orchard-dispatcher/Cargo.toml version must match crates/orchard/Cargo.toml \
+         (release-please-config.json's extra-files entry keeps them linked)"
+    );
+}

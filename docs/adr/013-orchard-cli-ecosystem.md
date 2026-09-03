@@ -94,6 +94,15 @@ On disk:   `orchard`, `orchard-tui`, `orchard-daemon`, `orchard-worktree`, ...
 | `orchard-chat` | Rust | Agent-to-agent messaging. Today this lives in the Rust binary as `chat` subcommand; extracts. | NO (dispatched) |
 | `orchard-tmux` | Rust | Raw tmux primitives (send-keys, capture, rename, kill). Could be inline in dispatcher initially; extracts when surface grows. | NO (dispatched) |
 
+**Amendment (2026-09-02, #747):** two more helper binaries joined the roster, both dispatched exactly like the six above (`orchard shell` → exec `orchard-shell`, `orchard upgrade` → exec `orchard-upgrade`):
+
+| Binary | Language | Purpose | User-facing name |
+|---|---|---|---|
+| `orchard-shell` | Go | Outer tmux wrapper (session + sidebar pane) for `orchard shell`. | NO (dispatched) |
+| `orchard-upgrade` | Go | Downloads, verifies, and installs the latest release suite. | NO (dispatched) |
+
+`upgrade` moved out of `orchard-tui`'s flat verb set (it was a URL-printing stub there) to a real helper binary. `orchard-tui upgrade` now exits non-zero, pointing at `orchard upgrade`.
+
 **Discovery rule:** dispatcher looks for `orchard-<verb>` in (1) the directory containing itself (bundled install), (2) `$PATH`. Found-first wins. This matches `git`'s exec-path policy.
 
 **Bundled vs split:** for first-party plugins, `brew install orchard` installs all of them in the same `bin/` directory. The user sees one Homebrew formula and gets the full command surface. Third-party plugins land via `$PATH` (matching `kubectl` + `krew`).

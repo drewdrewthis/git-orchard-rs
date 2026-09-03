@@ -12,11 +12,12 @@ import "time"
 // is bounded; slow down when nothing changes).
 
 // clientRead is the answer one client-lane exec produces: which session this
-// client is on, plus the shared pane width that rides the same exec. Compared
-// by value — any field that moves counts as a change.
+// client is on. Compared by value — a changed session snaps the cadence back
+// to fast. (The outer server owns width here, so the client lane no longer
+// reads it — see width.go; a switch is the only thing this lane's answer
+// tracks.)
 type clientRead struct {
 	session string
-	width   int
 }
 
 // clientLadder is the cadence ladder, fast rung first; the last rung is a cap,
@@ -29,9 +30,15 @@ var clientLadder = []time.Duration{
 }
 
 // clientFastHold is how many identical reads the lane tolerates before it
-// starts decaying, i.e. ~1.2s of 150ms responsiveness AFTER the last change —
-// which is exactly when the next one is most likely (a switch lands, then the
-// shared-width enforcement echoes back through the same read).
+// starts decaying, i.e. ~1.2s of 150ms responsiveness AFTER the last change.
+// That window is still earning its keep post-#745 (which dropped this lane's
+// own width enforcement): a switch-client on the shared inner server doesn't
+// land instantly — the attach it causes echoes back through this same
+// `list-clients` read a beat later, and a second switch fired in quick
+// succession (j/k held down, or another pane switching us again) needs the
+// same fast rung to catch its own echo too. Decaying immediately after the
+// first read would risk missing that follow-on echo at 150ms and picking it
+// up a full rung slower instead.
 const clientFastHold = 8
 
 // idleBackoff is the client lane's tick policy. Pure state: no clock, no I/O,
