@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // Two tmux servers, and a value from one means nothing on the other.
@@ -50,6 +51,32 @@ type tmuxEnv struct {
 // env is the process's resolved wrapper environment. Written once at startup
 // and read-only after; tests swap it through setTmuxEnv.
 var env tmuxEnv
+
+// activeTTY overrides env.client with the client tty the sidebar targets RIGHT
+// NOW. A nil pointer means "no override — use the launch-time env.client". The
+// resolver stores the memoized fallback here (setActiveClientTTY) rather than
+// mutating env.client, for two reasons: env.client must stay the immutable
+// launch-time shape the startup drift check judges, and the resolver writes on
+// the UI goroutine while the drift-check, launch-popup and client-lane
+// goroutines read the target concurrently — an atomic makes that safe (#787
+// data race). Kept OUTSIDE tmuxEnv so tmuxEnv stays copyable by value (go vet:
+// no copying atomics) the way setTmuxEnv and the value receivers rely on.
+var activeTTY atomic.Pointer[clientTTY]
+
+// activeClientTTY is the client tty every switch / popup / hand-back path
+// targets now: the resolver's memoized fallback once set, else the launch-time
+// env.client. The drift check deliberately reads env.client directly instead —
+// it must judge the ORIGINAL env shape, not the memoized one.
+func activeClientTTY() clientTTY {
+	if p := activeTTY.Load(); p != nil {
+		return *p
+	}
+	return env.client
+}
+
+// setActiveClientTTY records the tty to target now — the resolver's memoization
+// when the launcher's client tty turned out stale.
+func setActiveClientTTY(tty clientTTY) { activeTTY.Store(&tty) }
 
 func readTmuxEnv() tmuxEnv {
 	return tmuxEnv{

@@ -38,10 +38,6 @@ const clientEvery = 150 * time.Millisecond
 // #{client_tty} matches: on a shared inner server "most recent activity" can
 // pick a bystander client the user never touched from this sidebar.
 func fetchClientSession(gen int, work []clientTTY) tea.Cmd {
-	// Snapshot on the UI goroutine (where env.client is written) so the
-	// closure below, which runs on tea's Cmd goroutine, never races the
-	// resolveClientTTY memoization in resolve.go (#787 data race).
-	client := env.client
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -59,7 +55,10 @@ func fetchClientSession(gen int, work []clientTTY) tea.Cmd {
 			name, tty := pickWork(string(out), work)
 			return clientSessMsg{name: name, tty: tty, gen: gen}
 		}
-		return clientSessMsg{name: pickClient(string(out), client), gen: gen}
+		// activeClientTTY() is atomic, so this closure (on tea's Cmd goroutine) can
+		// read the current target directly — no UI-goroutine snapshot — and it
+		// tracks resolveClientTTY's memoized fallback (#787).
+		return clientSessMsg{name: pickClient(string(out), activeClientTTY()), gen: gen}
 	}
 }
 

@@ -28,8 +28,15 @@ func viewOf(m *model) string {
 func setTmuxEnv(t *testing.T, e tmuxEnv) {
 	t.Helper()
 	prev := env
+	prevActive := activeTTY.Load()
 	env = e
-	t.Cleanup(func() { env = prev })
+	// Clear the memoized target so each case starts from its own e.client, not a
+	// tty a prior case's resolver fallback left behind (#787).
+	activeTTY.Store(nil)
+	t.Cleanup(func() {
+		env = prev
+		activeTTY.Store(prevActive)
+	})
 }
 
 // stateHome points the sidebar's own files (layout, last launch, log) at a

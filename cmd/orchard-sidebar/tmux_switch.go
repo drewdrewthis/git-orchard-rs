@@ -43,12 +43,12 @@ var errUnscopedSwitch = errors.New(
 // tmux, the same reason switchClient is a var.
 var switchClientTo = func(session string) error {
 	// The modal runs in the sidebar's own (primary) work pane, so a split's
-	// focus-follow never applies — but env.client can still be the stale tty a
-	// prototype launcher handed (#787), so resolve it against the live inner
+	// focus-follow never applies — but the current target can still be the stale
+	// tty a prototype launcher handed (#787), so resolve it against the live inner
 	// clients exactly as the click path does rather than trusting it verbatim.
 	// Unresolvable surfaces the same signal as the footer, here as an error the
 	// modal shows.
-	client, ok := resolveClientTTY(env.client)
+	client, ok := resolveClientTTY(activeClientTTY())
 	if !ok {
 		return errors.New(clientNotFoundStatus)
 	}
@@ -69,7 +69,7 @@ var switchClientTo = func(session string) error {
 // mutation exists yet — sendTextToPane is the only tmux mutation in the
 // schema. Replace this exec with the mutation when #726 lands.
 var switchClient = func(session string, handBack bool) {
-	switchClientExec(session, handBack, env.client, env.outer)
+	switchClientExec(session, handBack, activeClientTTY(), env.outer)
 }
 
 // switchClientBound is the runtime switch: it snapshots the client and outer

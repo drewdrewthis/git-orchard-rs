@@ -79,10 +79,13 @@ func resolveClientTTY(want clientTTY) (clientTTY, bool) {
 	if !ok || tty == "" || !live[tty] {
 		return "", false
 	}
-	// Memoize the working tty so the j/k browse path — which reads env.client
-	// through activeClient without resolving — tracks the fallback too, instead
-	// of re-failing `switch-client -c <stale>` on every keypress (#787).
-	env.client = tty
+	// Memoize the working tty so the browse / switch / popup paths — which read
+	// the current target through activeClientTTY() without resolving — track the
+	// fallback too, instead of re-failing `switch-client -c <stale>` on every
+	// keypress. Written to the synchronized accessor, not env.client: env.client
+	// stays the immutable launch-time shape the drift check judges, and the
+	// accessor is race-safe across the UI, drift and popup goroutines (#787).
+	setActiveClientTTY(tty)
 	return tty, true
 }
 

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -256,9 +257,11 @@ func TestHandBackFocusFallsBackToInnerPane(t *testing.T) {
 // @scenario Outer shell restarted, click still switches
 //
 // After the resolver falls back from a stale ORCHARD_TMUX_CLIENT to outer pane
-// 0.1's live tty, it memoizes that tty into env.client so the j/k browse path —
-// which reads env.client through activeClient without resolving — tracks the
-// fallback instead of re-failing `switch-client -c <stale>` on every keypress.
+// 0.1's live tty, it memoizes that tty through setActiveClientTTY so the browse /
+// switch / popup paths — which read the target through activeClientTTY() without
+// resolving — track the fallback instead of re-failing `switch-client -c <stale>`
+// on every keypress. env.client itself stays the immutable launch-time value the
+// drift check still judges (#787).
 func TestResolveClientTTYMemoizesFallback(t *testing.T) {
 	setTmuxEnv(t, tmuxEnv{inner: "in", client: "/dev/ttysDEAD"})
 	swapTmuxReaders(t, "/dev/ttys009\n", nil, "0 %0 /dev/ttys000\n1 %1 /dev/ttys009\n", nil)
@@ -267,8 +270,31 @@ func TestResolveClientTTYMemoizesFallback(t *testing.T) {
 	if !ok || got != "/dev/ttys009" {
 		t.Fatalf("resolveClientTTY = %q,%v; want /dev/ttys009,true", got, ok)
 	}
-	if env.client != "/dev/ttys009" {
-		t.Errorf("env.client = %q after fallback, want memoized /dev/ttys009", env.client)
+	if activeClientTTY() != "/dev/ttys009" {
+		t.Errorf("activeClientTTY() = %q after fallback, want memoized /dev/ttys009", activeClientTTY())
+	}
+	if env.client != "/dev/ttysDEAD" {
+		t.Errorf("env.client = %q after fallback, want the original launch-time /dev/ttysDEAD unchanged", env.client)
+	}
+}
+
+// The memoize write and the target-tty reads must be synchronized: under -race,
+// the old env.client mutation flagged here. resolveClientTTY falls back and
+// stores through setActiveClientTTY while readers call activeClientTTY()
+// concurrently (#787 data race).
+func TestResolveClientTTYAccessorRace(t *testing.T) {
+	setTmuxEnv(t, tmuxEnv{inner: "in", client: "/dev/ttysDEAD"})
+	swapTmuxReaders(t, "/dev/ttys009\n", nil, "0 %0 /dev/ttys000\n1 %1 /dev/ttys009\n", nil)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() { defer wg.Done(); resolveClientTTY("/dev/ttysDEAD") }()
+		go func() { defer wg.Done(); _ = activeClientTTY() }()
+	}
+	wg.Wait()
+	if activeClientTTY() != "/dev/ttys009" {
+		t.Errorf("activeClientTTY() = %q after concurrent fallback, want /dev/ttys009", activeClientTTY())
 	}
 }
 

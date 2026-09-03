@@ -31,7 +31,7 @@ type workPaneRef struct {
 // currently drives. m.workOverride is the focused work pane in split mode: the
 // client lane discovers it from the inner server's most-recently-active work
 // client (pickWork), so it moves as focus moves. Its zero value is the
-// single-pane default — env.client / env.outer, unchanged from before #777 —
+// single-pane default — activeClientTTY() / env.outer, unchanged from before #777 —
 // which is why every pre-split path reads exactly as it did. Kept on the model
 // (not a package global) so the exec goroutine reads a snapshot taken on the UI
 // goroutine, never a value another goroutine is concurrently writing.
@@ -39,7 +39,7 @@ func (m *model) activeClient() clientTTY {
 	if m.workOverride.client != "" {
 		return m.workOverride.client
 	}
-	return env.client
+	return activeClientTTY()
 }
 
 func (m *model) activeOuter() outerPane {
@@ -230,7 +230,7 @@ func (m *model) workTTYs() []clientTTY {
 	if !m.splitOpen {
 		return nil
 	}
-	return []clientTTY{env.client, m.alt.client}
+	return []clientTTY{activeClientTTY(), m.alt.client}
 }
 
 // retargetWork points the sidebar at the work pane the client lane found
