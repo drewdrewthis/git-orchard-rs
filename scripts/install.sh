@@ -9,10 +9,17 @@
 # tarball (orchard-suite-<triple>.tar.gz) + SHA256SUMS, verifies the
 # checksum, and installs each binary atomically to --prefix (backing up any
 # existing file first as NAME.bak-<UTC timestamp>, keeping the 3 newest
-# backups per binary). Idempotent -- safe to re-run. If orchard-daemon.service
-# or orchard.service is already an active systemd --user unit, it's restarted
-# after install; otherwise orchard.service is (re)installed from the
-# template.
+# backups per binary). SHA256SUMS is fetched from the same origin as the
+# tarball, so it guards against corruption/truncation in transit, not a
+# compromised release. Idempotent -- safe to re-run: a binary whose content
+# already matches what's staged is left completely untouched (no backup, no
+# mtime change); --json reports each binary's action
+# (installed|updated|unchanged) and a top-level changed count. Progress
+# lines go to stderr in every mode; --json's stdout stays a single JSON
+# object. If orchard-daemon.service or orchard.service is already an active
+# systemd --user unit, it's restarted after install (only when the
+# orchard-daemon binary actually changed); otherwise orchard.service is
+# (re)installed from the template.
 #
 # Flags:
 #   --version TAG|X.Y.Z   Install this release instead of latest. Accepts a
@@ -42,6 +49,12 @@
 #                             entirely and fetch assets directly from
 #                             <this>/<asset-name> (the flat layout `make
 #                             dist` produces under dist/).
+#   ORCHARD_RELEASE_ALLOW_HTTP  Allow a plain http:// ORCHARD_RELEASE_REPO or
+#                             ORCHARD_RELEASE_BASE_URL for a non-loopback
+#                             host. Default: rejected. https:// and loopback
+#                             (127.0.0.1, localhost, [::1]) are always fine;
+#                             file:// (the test fixture mechanism) is never
+#                             checked.
 #   ORCHARD_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN
 #                             Optional bearer token for the GitHub API call
 #                             (raises the unauthenticated rate limit).
@@ -80,9 +93,14 @@ FROM_SOURCE_DIR=""
 CLEANUP_PATHS=()
 INSTALL_SUDO=()
 SERVICE_ACTION=""
+BINARY_ACTION=""
+INSTALLED_NAMES=()
+INSTALLED_ACTIONS=()
+CHANGED_COUNT=0
+DAEMON_CHANGED=0
 
 usage() {
-  sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^set -euo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'
 }
 
 json_escape() {
@@ -93,6 +111,12 @@ json_escape() {
   s=${s//$'\t'/\\t}
   s=${s//$'\r'/\\r}
   printf '%s' "$s"
+}
+
+# progress MSG -- terse one-line status to stderr, every mode. --json's
+# stdout stays exactly one JSON object; progress never writes there.
+progress() {
+  printf '%s\n' "$*" >&2
 }
 
 fail() {
@@ -132,6 +156,16 @@ trap cleanup EXIT
 
 have_jq() { command -v jq >/dev/null 2>&1; }
 have_sha256sum() { command -v sha256sum >/dev/null 2>&1; }
+
+# sha256_file FILE -- prints FILE's sha256 hex digest: sha256sum (Linux),
+# falling back to shasum -a 256 (macOS).
+sha256_file() {
+  if have_sha256sum; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
 
 # extract_json_string KEY -- reads a JSON object from stdin, prints its
 # top-level string value for KEY.
@@ -254,6 +288,33 @@ resolve_install_sudo() {
   fail "--system needs root; re-run with sudo: sudo $0 --system (or drop --system to install under \$HOME)"
 }
 
+# check_download_scheme URL -- rejects a plain http:// URL for a
+# non-loopback host (an ORCHARD_RELEASE_REPO/ORCHARD_RELEASE_BASE_URL
+# downgraded to plaintext is a MITM risk); https:// is always fine, and so
+# is file:// (the bats fixture harness's hermetic mechanism -- a local read,
+# not a network fetch, so there's nothing to downgrade).
+# ORCHARD_RELEASE_ALLOW_HTTP=1 opts a non-loopback http host back in (a
+# local mirror/dev server with no TLS).
+check_download_scheme() {
+  local url=$1
+  case "$url" in
+    https://* | file://*) return 0 ;;
+    http://*) ;;
+    *) return 0 ;;
+  esac
+  local host="${url#http://}"
+  host="${host%%/*}"
+  case "$host" in
+    \[*\]*) host="${host%%]*}]" ;;
+    *) host="${host%%:*}" ;;
+  esac
+  case "$host" in
+    127.0.0.1 | localhost | \[::1\]) return 0 ;;
+  esac
+  [ "${ORCHARD_RELEASE_ALLOW_HTTP:-}" = "1" ] && return 0
+  fail "refusing plain http:// for $url -- set ORCHARD_RELEASE_ALLOW_HTTP=1 to allow a non-loopback http mirror, or use https://"
+}
+
 # resolve_repo_target -- mirrors internal/release.resolveTarget exactly:
 # ORCHARD_RELEASE_REPO is either an owner/repo slug (resolved against
 # GitHub's API) or an absolute URL (a fixture/enterprise API root, repo slug
@@ -267,6 +328,7 @@ resolve_repo_target() {
   fi
   case "$v" in
     http://* | https://*)
+      check_download_scheme "$v"
       API_ROOT="${v%/}"
       REPO_SLUG="$DEFAULT_REPO"
       ;;
@@ -328,7 +390,9 @@ resolve_release_assets() {
 # lets the release path be tested without a real GitHub release.
 resolve_release_assets_or_base_url() {
   local triple=$1
+  progress "resolving release..."
   if [ -n "${ORCHARD_RELEASE_BASE_URL:-}" ]; then
+    check_download_scheme "$ORCHARD_RELEASE_BASE_URL"
     local base="${ORCHARD_RELEASE_BASE_URL%/}"
     RESOLVED_TAG="${VERSION:-local}"
     SUITE_DOWNLOAD_URL="$base/${SUITE_PACKAGE}-${triple}.tar.gz"
@@ -345,17 +409,16 @@ verify_and_stage() {
   local suite_name="${SUITE_PACKAGE}-${triple}.tar.gz"
   local expected actual
 
+  progress "downloading $suite_name..."
   curl -fsSL -o "$work/$suite_name" "$SUITE_DOWNLOAD_URL" || fail "download failed: $SUITE_DOWNLOAD_URL"
+  progress "downloading $SUMS_ASSET..."
   curl -fsSL -o "$work/$SUMS_ASSET" "$SUMS_DOWNLOAD_URL" || fail "download failed: $SUMS_DOWNLOAD_URL"
 
   expected=$(awk -v f="$suite_name" '{ name=$2; sub(/^\*/, "", name); if (name == f) { print $1; exit } }' "$work/$SUMS_ASSET")
   [ -n "$expected" ] || fail "$SUMS_ASSET has no entry for $suite_name"
 
-  if have_sha256sum; then
-    actual=$(sha256sum "$work/$suite_name" | awk '{print $1}')
-  else
-    actual=$(shasum -a 256 "$work/$suite_name" | awk '{print $1}')
-  fi
+  progress "verifying checksums..."
+  actual=$(sha256_file "$work/$suite_name")
   [ "$expected" = "$actual" ] || fail "checksum mismatch for $suite_name (expected $expected, got $actual)"
 
   mkdir -p "$work/extracted"
@@ -383,15 +446,17 @@ rotate_backups() {
 
 # atomic_install SRC DESTDIR NAME -- copies SRC into DESTDIR/NAME via a
 # same-directory temp file + rename, so DESTDIR/NAME is never observed
-# truncated or half-written. An existing DESTDIR/NAME is backed up first as
-# NAME.bak-<UTC timestamp> rather than silently overwritten (rotate_backups
-# then prunes to the newest BACKUP_KEEP). Filesystem operations run through
-# INSTALL_SUDO (empty unless --system needed elevation).
+# truncated or half-written. The temp file is created by mktemp (a random
+# suffix, not the old guessable $$-based name) so it can't be pre-planted.
+# An existing DESTDIR/NAME is backed up first as NAME.bak-<UTC timestamp>
+# rather than silently overwritten (rotate_backups then prunes to the
+# newest BACKUP_KEEP). Filesystem operations run through INSTALL_SUDO
+# (empty unless --system needed elevation).
 atomic_install() {
   local src=$1 dest_dir=$2 name=$3
   local tmp
   "${INSTALL_SUDO[@]}" mkdir -p "$dest_dir"
-  tmp="$dest_dir/.orchard-install-tmp-$name-$$"
+  tmp=$("${INSTALL_SUDO[@]}" mktemp "$dest_dir/.orchard-install-tmp-$name-XXXXXX") || fail "could not create a temp file in $dest_dir"
   "${INSTALL_SUDO[@]}" cp "$src" "$tmp"
   "${INSTALL_SUDO[@]}" chmod 755 "$tmp"
   if [ -e "$dest_dir/$name" ]; then
@@ -399,6 +464,24 @@ atomic_install() {
     rotate_backups "$dest_dir" "$name"
   fi
   "${INSTALL_SUDO[@]}" mv -f "$tmp" "$dest_dir/$name"
+}
+
+# install_binary SRC DESTDIR NAME -- hashes SRC against an existing
+# DESTDIR/NAME; identical content is left completely untouched (no
+# atomic_install call at all -- no backup, no mtime change). A changed or
+# missing DESTDIR/NAME goes through atomic_install. Sets BINARY_ACTION to
+# installed|updated|unchanged.
+install_binary() {
+  local src=$1 dest_dir=$2 name=$3
+  local dest="$dest_dir/$name"
+  if [ -e "$dest" ] && [ "$(sha256_file "$src")" = "$(sha256_file "$dest")" ]; then
+    BINARY_ACTION="unchanged"
+    return 0
+  fi
+  local action="installed"
+  [ -e "$dest" ] && action="updated"
+  atomic_install "$src" "$dest_dir" "$name"
+  BINARY_ACTION="$action"
 }
 
 # find_local_checkout -- prints a repo root if the cwd or this script's own
@@ -499,15 +582,24 @@ detect_active_service() {
   return 1
 }
 
-# handle_service PREFIX -- restarts whichever SERVICE_UNITS member is
-# already active; if none are, falls back to install_service's template
-# install. Sets SERVICE_ACTION to "restarted:<unit>" or "installed" on
-# success. Returns 1 (SERVICE_ACTION left "") if neither applies.
+# handle_service PREFIX DAEMON_CHANGED -- restarts whichever SERVICE_UNITS
+# member is already active, but only when DAEMON_CHANGED=1 (an unchanged
+# orchard-daemon binary has nothing new to load, so bouncing the service
+# would just be disruptive for no reason); if none are active, falls back
+# to install_service's template install regardless of DAEMON_CHANGED
+# (first-run setup, not a restart). Sets SERVICE_ACTION to
+# "restarted:<unit>", "unchanged:<unit>", or "installed". Returns 1
+# (SERVICE_ACTION left "") if neither applies.
 handle_service() {
-  local prefix=$1 active
+  local prefix=$1 daemon_changed=$2 active
   if active=$(detect_active_service); then
-    systemctl --user restart "$active"
-    SERVICE_ACTION="restarted:$active"
+    if [ "$daemon_changed" -eq 1 ]; then
+      progress "restarting $active..."
+      systemctl --user restart "$active"
+      SERVICE_ACTION="restarted:$active"
+    else
+      SERVICE_ACTION="unchanged:$active"
+    fi
     return 0
   fi
   if install_service "$prefix"; then
@@ -530,34 +622,43 @@ compute_path_warning() {
 
 emit_success() {
   local triple=$1 prefix=$2 tag=$3
-  shift 3
-  local names=("$@")
   local path_warning
   path_warning=$(compute_path_warning "$prefix")
   local service_installed=0
   [ -n "$SERVICE_ACTION" ] && service_installed=1
 
   if [ "$JSON_MODE" -eq 1 ]; then
-    local bins_json="" n
-    for n in "${names[@]:-}"; do
-      [ -z "$n" ] && continue
+    local bins_json="" i n a
+    for i in "${!INSTALLED_NAMES[@]}"; do
+      n="${INSTALLED_NAMES[$i]}"
+      a="${INSTALLED_ACTIONS[$i]}"
       [ -n "$bins_json" ] && bins_json="$bins_json,"
-      bins_json="$bins_json\"$(json_escape "$n")\""
+      bins_json="$bins_json{\"name\":\"$(json_escape "$n")\",\"action\":\"$(json_escape "$a")\"}"
     done
     local path_warning_json="null"
     [ -n "$path_warning" ] && path_warning_json="\"$(json_escape "$path_warning")\""
-    printf '{"ok":true,"data":{"version":"%s","prefix":"%s","triple":"%s","binaries":[%s],"from_source":%s,"service_installed":%s,"path_warning":%s},"error":null}\n' \
+    printf '{"ok":true,"data":{"version":"%s","prefix":"%s","triple":"%s","binaries":[%s],"changed":%s,"from_source":%s,"service_installed":%s,"path_warning":%s},"error":null}\n' \
       "$(json_escape "$tag")" "$(json_escape "$prefix")" "$(json_escape "$triple")" "$bins_json" \
+      "$CHANGED_COUNT" \
       "$([ "$FROM_SOURCE" -eq 1 ] && echo true || echo false)" \
       "$([ "$service_installed" -eq 1 ] && echo true || echo false)" \
       "$path_warning_json"
     JSON_EMITTED=1
   else
     echo "installed orchard $tag to $prefix ($triple)"
-    echo "binaries: ${names[*]}"
+    local i n a summary=""
+    for i in "${!INSTALLED_NAMES[@]}"; do
+      n="${INSTALLED_NAMES[$i]}"
+      a="${INSTALLED_ACTIONS[$i]}"
+      [ -n "$summary" ] && summary="$summary, "
+      summary="$summary$n ($a)"
+    done
+    echo "binaries: $summary"
+    echo "changed: $CHANGED_COUNT"
     case "$SERVICE_ACTION" in
       restarted:*) echo "systemd user unit restarted: ${SERVICE_ACTION#restarted:}" ;;
       installed) echo "systemd user unit installed: ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/orchard.service" ;;
+      unchanged:*) echo "systemd user unit unchanged: ${SERVICE_ACTION#unchanged:} (orchard-daemon unchanged)" ;;
     esac
     [ -n "$path_warning" ] && echo "note: $path_warning"
   fi
@@ -640,20 +741,32 @@ main() {
     staged_dir="$STAGED_DIR"
   fi
 
-  local installed_names=() name
+  local staged_names=() name
   for name in "${SUITE_BINARIES[@]}"; do
-    if [ -f "$staged_dir/$name" ]; then
-      atomic_install "$staged_dir/$name" "$prefix" "$name"
-      installed_names+=("$name")
+    [ -f "$staged_dir/$name" ] && staged_names+=("$name")
+  done
+  [ "${#staged_names[@]}" -gt 0 ] || fail "no suite binaries found to install"
+
+  progress "installing ${#staged_names[@]} binaries..."
+  INSTALLED_NAMES=()
+  INSTALLED_ACTIONS=()
+  CHANGED_COUNT=0
+  DAEMON_CHANGED=0
+  for name in "${staged_names[@]}"; do
+    install_binary "$staged_dir/$name" "$prefix" "$name"
+    INSTALLED_NAMES+=("$name")
+    INSTALLED_ACTIONS+=("$BINARY_ACTION")
+    if [ "$BINARY_ACTION" != "unchanged" ]; then
+      CHANGED_COUNT=$((CHANGED_COUNT + 1))
+      [ "$name" = "orchard-daemon" ] && DAEMON_CHANGED=1
     fi
   done
-  [ "${#installed_names[@]}" -gt 0 ] || fail "no suite binaries found to install"
 
   if [ "$NO_SERVICE" -eq 0 ]; then
-    handle_service "$prefix" || true
+    handle_service "$prefix" "$DAEMON_CHANGED" || true
   fi
 
-  emit_success "$triple" "$prefix" "$RESOLVED_TAG" "${installed_names[@]}"
+  emit_success "$triple" "$prefix" "$RESOLVED_TAG"
 }
 
 main "$@"

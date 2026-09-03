@@ -1,4 +1,6 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
+
 # install.sh behavior, hermetic: ORCHARD_RELEASE_BASE_URL points at a
 # file://-served fixture suite tarball (curl supports file:// URLs, so no
 # HTTP server or GitHub access is needed) and a stub systemctl on PATH
@@ -7,7 +9,10 @@
 # rotation behaviors are pinned without a live systemd or real releases.
 #
 # Covers: systemd unit detection + priority + --no-service, --json
-# path_warning, and atomic_install's backup-before-replace + rotation.
+# path_warning, atomic_install's backup-before-replace + rotation,
+# idempotent re-run (unchanged/updated/installed actions + changed count),
+# --json's stderr-only progress lines, and the http-downgrade rejection for
+# ORCHARD_RELEASE_REPO/ORCHARD_RELEASE_BASE_URL.
 # NOT covered here: the --system + sudo -n elevation path (needs real root
 # to exercise meaningfully; the root-owned-prefix guard and sudo -n
 # fallback are implemented in install.sh but left to manual/box testing).
@@ -34,6 +39,22 @@ host_triple_for_fixture() {
     darwin/amd64) echo x86_64-apple-darwin ;;
     darwin/arm64) echo aarch64-apple-darwin ;;
   esac
+}
+
+# sha256_of FILE -- portable sha256 hex digest, mirroring install.sh's own
+# sha256_file dual-tool support (sha256sum Linux, shasum -a 256 macOS).
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+# mtime_of FILE -- portable mtime as an epoch integer (GNU stat -c, BSD
+# stat -f), mirroring install.sh's own file_owner_uid dual-tool pattern.
+mtime_of() {
+  stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null
 }
 
 setup() {
@@ -179,4 +200,117 @@ teardown() {
   local today
   today="$(date -u +%Y%m%d)"
   find "$PREFIX_DIR" -maxdepth 1 -name "orchard-daemon.bak-${today}T*" | grep -q .
+}
+
+# --- idempotent re-run ----------------------------------------------------
+
+@test "idempotent re-run: second identical run reports unchanged, no new backups, mtime stable" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+  grep -qF '"name":"orchard-daemon","action":"installed"' <<<"$output"
+
+  local hash1 mtime1
+  hash1=$(sha256_of "$PREFIX_DIR/orchard-daemon")
+  mtime1=$(mtime_of "$PREFIX_DIR/orchard-daemon")
+  : > "$SYSTEMCTL_LOG"
+
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+  grep -qF '"name":"orchard-daemon","action":"unchanged"' <<<"$output"
+  grep -qF '"changed":0' <<<"$output"
+
+  local hash2 mtime2
+  hash2=$(sha256_of "$PREFIX_DIR/orchard-daemon")
+  mtime2=$(mtime_of "$PREFIX_DIR/orchard-daemon")
+  [ "$hash1" = "$hash2" ]
+  [ "$mtime1" = "$mtime2" ]
+
+  local count
+  count=$(find "$PREFIX_DIR" -maxdepth 1 -name 'orchard-daemon.bak-*' | wc -l | tr -d ' ')
+  [ "$count" -eq 0 ]
+  ! grep -qF "restart" "$SYSTEMCTL_LOG"
+}
+
+@test "tamper one binary locally: only that one reports updated, gets exactly one backup" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+
+  # Rebuild the fixture with a second binary so we can prove only the
+  # tampered one moves.
+  printf '#!/usr/bin/env bash\necho fake-orchard-sidebar\n' > "$BUILD_DIR/orchard-sidebar"
+  chmod +x "$BUILD_DIR/orchard-sidebar"
+  ( cd "$BUILD_DIR" && tar czf "$RELEASE_DIR/orchard-suite-$TRIPLE.tar.gz" orchard-daemon orchard-sidebar )
+  if command -v shasum >/dev/null 2>&1; then
+    ( cd "$RELEASE_DIR" && shasum -a 256 "orchard-suite-$TRIPLE.tar.gz" > SHA256SUMS )
+  else
+    ( cd "$RELEASE_DIR" && sha256sum "orchard-suite-$TRIPLE.tar.gz" > SHA256SUMS )
+  fi
+
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+
+  # Tamper with just orchard-daemon locally.
+  printf 'tampered-content' > "$PREFIX_DIR/orchard-daemon"
+  : > "$SYSTEMCTL_LOG"
+
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+  grep -qF '"name":"orchard-daemon","action":"updated"' <<<"$output"
+  grep -qF '"name":"orchard-sidebar","action":"unchanged"' <<<"$output"
+  grep -qF '"changed":1' <<<"$output"
+
+  local count
+  count=$(find "$PREFIX_DIR" -maxdepth 1 -name 'orchard-daemon.bak-*' | wc -l | tr -d ' ')
+  [ "$count" -eq 1 ]
+  count=$(find "$PREFIX_DIR" -maxdepth 1 -name 'orchard-sidebar.bak-*' | wc -l | tr -d ' ')
+  [ "$count" -eq 0 ]
+}
+
+# --- progress output --------------------------------------------------
+
+@test "--json: progress lines go to stderr, stdout is exactly one JSON object" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  run --separate-stderr bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+
+  echo "$output" | jq -e . >/dev/null
+  [ "$(echo "$output" | wc -l | tr -d ' ')" -eq 1 ]
+
+  grep -qF "resolving release" <<<"$stderr"
+  grep -qF "downloading" <<<"$stderr"
+  grep -qF "verifying checksums" <<<"$stderr"
+  grep -qF "installing" <<<"$stderr"
+  grep -qF "restarting" <<<"$stderr"
+}
+
+# --- http downgrade protection ------------------------------------------
+
+@test "ORCHARD_RELEASE_BASE_URL: plain http from a non-loopback host is rejected" {
+  export ORCHARD_RELEASE_BASE_URL="http://example.invalid/releases"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -ne 0 ]
+  grep -qF "refusing plain http" <<<"$output"
+}
+
+@test "ORCHARD_RELEASE_BASE_URL: plain http on loopback passes the scheme gate" {
+  export ORCHARD_RELEASE_BASE_URL="http://127.0.0.1:1/releases"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -ne 0 ]
+  ! grep -qF "refusing plain http" <<<"$output"
+}
+
+@test "ORCHARD_RELEASE_ALLOW_HTTP=1: opts a non-loopback plain http host back in" {
+  export ORCHARD_RELEASE_BASE_URL="http://example.invalid/releases"
+  export ORCHARD_RELEASE_ALLOW_HTTP=1
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -ne 0 ]
+  ! grep -qF "refusing plain http" <<<"$output"
+}
+
+@test "ORCHARD_RELEASE_REPO: plain http absolute URL from a non-loopback host is rejected" {
+  unset ORCHARD_RELEASE_BASE_URL
+  export ORCHARD_RELEASE_REPO="http://example.invalid"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -ne 0 ]
+  grep -qF "refusing plain http" <<<"$output"
 }
