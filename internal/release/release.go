@@ -9,6 +9,13 @@
 // Every entry point resolves its API root from ORCHARD_RELEASE_REPO, which
 // accepts a fixture server URL as well as an owner/repo slug — that is what
 // keeps the unit tests off the network (RULES T1).
+//
+// SHA256SUMS is fetched from the same origin as the tarball it checksums
+// (GitHub, or whatever ORCHARD_RELEASE_REPO points at instead). Sums.Verify
+// therefore only proves the downloaded bytes match what that origin served:
+// it guards against corruption and truncation in transit, not against a
+// compromised origin or a substituted release. Nothing here is signed —
+// that is a follow-up, not something this package claims today.
 package release
 
 import (
@@ -17,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,6 +46,11 @@ const (
 	// two because a second knob would be a second source of truth for the
 	// same question.
 	RepoEnv = "ORCHARD_RELEASE_REPO"
+
+	// AllowHTTPEnv opts a RepoEnv URL back in when it is neither https nor
+	// loopback — a self-hosted mirror on a network already trusted, say.
+	// Any value other than "1" leaves the rejection in place.
+	AllowHTTPEnv = "ORCHARD_RELEASE_ALLOW_HTTP"
 )
 
 // Sentinel errors. Callers distinguish these with errors.Is; everything else
@@ -49,6 +62,12 @@ var (
 	ErrRateLimited = errors.New("github api rate limit exceeded")
 	// ErrNoAsset means the release exists but carries no asset for this platform.
 	ErrNoAsset = errors.New("release has no matching asset")
+	// ErrInsecureURL means RepoEnv named a URL that is neither https nor
+	// loopback, with no AllowHTTPEnv opt-in (see ResolveTarget).
+	ErrInsecureURL = errors.New("insecure release repo URL")
+	// ErrArchiveTooLarge means a suite tarball made ExtractBinaries read past
+	// its decompressed byte budget (see MaxArchiveBytes).
+	ErrArchiveTooLarge = errors.New("release archive exceeds the decompressed size limit")
 )
 
 // Asset is one file attached to a GitHub release.
@@ -87,30 +106,60 @@ type Client struct {
 	HTTP *http.Client
 	API  string // API root, no trailing slash
 	Repo string // owner/repo
+
+	// resolveErr is set by NewClient when RepoEnv fails ResolveTarget's
+	// scheme check. Every request-issuing method returns it before building
+	// a request, so a rejected URL fails closed instead of silently falling
+	// back to a different endpoint than the one configured.
+	resolveErr error
 }
 
-// NewClient returns a client configured from ORCHARD_RELEASE_REPO.
+// NewClient returns a client configured from ORCHARD_RELEASE_REPO. Errors
+// resolving that value are not returned here — Client's construction stays
+// infallible — but surface from the first call to Latest, ByTag, Fetch, or
+// Download instead, wrapping ErrInsecureURL.
 func NewClient() *Client {
-	api, repo := resolveTarget(os.Getenv(RepoEnv))
+	api, repo, err := ResolveTarget(os.Getenv(RepoEnv))
 	return &Client{
-		HTTP: &http.Client{Timeout: 30 * time.Second},
-		API:  api,
-		Repo: repo,
+		HTTP:       &http.Client{Timeout: 30 * time.Second},
+		API:        api,
+		Repo:       repo,
+		resolveErr: err,
 	}
 }
 
-// resolveTarget splits ORCHARD_RELEASE_REPO into an API root and a repo slug.
-// A value that parses as an absolute URL is a fixture (or enterprise) API
-// root; anything else is an owner/repo slug against GitHub.
-func resolveTarget(v string) (api, repo string) {
+// ResolveTarget splits ORCHARD_RELEASE_REPO into an API root and a repo
+// slug. A value that parses as an absolute URL is a fixture (or enterprise)
+// API root; anything else is an owner/repo slug against GitHub.
+//
+// A URL root is rejected — api and repo come back empty, and err wraps
+// ErrInsecureURL — unless it is https, its host is loopback (127.0.0.1,
+// localhost, ::1), or AllowHTTPEnv opts back in. RepoEnv reaches the network
+// unauthenticated, so a plain http:// root on a routable host would carry
+// that traffic in the clear.
+func ResolveTarget(v string) (api, repo string, err error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return DefaultAPI, DefaultRepo
+		return DefaultAPI, DefaultRepo, nil
 	}
-	if u, err := url.Parse(v); err == nil && u.IsAbs() && u.Host != "" {
-		return strings.TrimSuffix(v, "/"), DefaultRepo
+	if u, perr := url.Parse(v); perr == nil && u.IsAbs() && u.Host != "" {
+		if !strings.EqualFold(u.Scheme, "https") && !isLoopbackHost(u.Hostname()) && os.Getenv(AllowHTTPEnv) != "1" {
+			return "", "", fmt.Errorf("%s=%s uses scheme %q on non-loopback host %q; set %s=1 to allow it: %w",
+				RepoEnv, v, u.Scheme, u.Hostname(), AllowHTTPEnv, ErrInsecureURL)
+		}
+		return strings.TrimSuffix(v, "/"), DefaultRepo, nil
 	}
-	return DefaultAPI, strings.Trim(v, "/")
+	return DefaultAPI, strings.Trim(v, "/"), nil
+}
+
+// isLoopbackHost reports whether host — a URL's already-unbracketed
+// Hostname() — names the local machine only.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Latest returns the repository's latest published (non-draft) release.
@@ -189,6 +238,9 @@ func (c *Client) get(ctx context.Context, endpoint string) ([]byte, error) {
 }
 
 func (c *Client) request(ctx context.Context, endpoint, accept string) (*http.Request, error) {
+	if c.resolveErr != nil {
+		return nil, c.resolveErr
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request for %s: %w", endpoint, err)

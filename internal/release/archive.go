@@ -12,6 +12,13 @@ import (
 // tens of megabytes; anything past this is a decompression bomb, not a build.
 const maxMemberBytes = 512 << 20
 
+// MaxArchiveBytes caps the total decompressed bytes ExtractBinaries will read
+// from a suite tarball across every member it walks — including ones it
+// skips, whose bodies are still read off the stream to reach the next
+// header. A var, not a const, so a test can lower it instead of building a
+// multi-gigabyte fixture to prove the cap trips.
+var MaxArchiveBytes int64 = 2 << 30 // 2 GiB
+
 // ExtractBinaries reads a gzipped tar and returns the regular-file members
 // whose base name is one of want, keyed by that base name.
 //
@@ -32,8 +39,15 @@ func ExtractBinaries(r io.Reader, want []string) (map[string][]byte, error) {
 	}
 	defer gz.Close()
 
+	// Every byte tar.Reader pulls from the decompressed stream — a wanted
+	// member's body, or the padding it discards to reach the next header for
+	// one nobody asked for — passes through this counter first. Without it, a
+	// forged header on a *skipped* member is an unbounded decompression sink:
+	// the per-member cap below never even sees that member's bytes.
+	counted := &countingReader{r: gz, max: MaxArchiveBytes}
+
 	out := map[string][]byte{}
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(counted)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -62,4 +76,26 @@ func ExtractBinaries(r io.Reader, want []string) (map[string][]byte, error) {
 		return nil, fmt.Errorf("suite archive contains none of %v: %w", want, ErrNoAsset)
 	}
 	return out, nil
+}
+
+// countingReader wraps r and fails once more than max bytes have been read
+// from it in total, regardless of how the caller above (tar.Reader) is using
+// those bytes — returned to the caller, or discarded while skipping to the
+// next header.
+type countingReader struct {
+	r   io.Reader
+	n   int64
+	max int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	if c.n >= c.max {
+		return 0, fmt.Errorf("read past %d decompressed bytes from the suite archive: %w", c.max, ErrArchiveTooLarge)
+	}
+	if remaining := c.max - c.n; int64(len(p)) > remaining {
+		p = p[:remaining]
+	}
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }

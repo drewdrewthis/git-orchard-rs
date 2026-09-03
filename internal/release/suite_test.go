@@ -1,6 +1,9 @@
 package release_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"os"
@@ -162,5 +165,52 @@ func TestExtractBinaries_EmptyArchiveIsErrNoAsset(t *testing.T) {
 	_, err := release.ExtractBinaries(strings.NewReader(string(tarball)), release.SuiteBinaries)
 	if !errors.Is(err, release.ErrNoAsset) {
 		t.Fatalf("ExtractBinaries on a binary-free archive = %v; want ErrNoAsset", err)
+	}
+}
+
+// forgedOversizedMember builds a gzip stream carrying one tar header that
+// declares a member far larger than the bytes actually written after it —
+// what a corrupt or hostile suite tarball looks like, without this test
+// having to write gigabytes of real data to prove it. tw is deliberately
+// never Close()d: the short-write check Close would raise is exactly the
+// gap ExtractBinaries has to defend against on its own.
+func forgedOversizedMember(t *testing.T, name string, declaredSize int64, actualBody int) []byte {
+	t.Helper()
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	hdr := &tar.Header{Name: name, Mode: 0o644, Size: declaredSize, Typeflag: tar.TypeReg}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("write forged header: %v", err)
+	}
+	if _, err := tw.Write(bytes.Repeat([]byte{0}, actualBody)); err != nil {
+		t.Fatalf("write forged body: %v", err)
+	}
+
+	var gz bytes.Buffer
+	zw := gzip.NewWriter(&gz)
+	if _, err := zw.Write(raw.Bytes()); err != nil {
+		t.Fatalf("gzip forged tarball: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+	return gz.Bytes()
+}
+
+// AC: ExtractBinaries bounds decompressed reads even for a member it skips
+// (its name is not in `want`) — a forged header alone must not be able to
+// run decompression unbounded just because nobody asked for that member.
+func TestExtractBinaries_OversizedSkippedMemberTripsTheArchiveCap(t *testing.T) {
+	old := release.MaxArchiveBytes
+	release.MaxArchiveBytes = 2048
+	t.Cleanup(func() { release.MaxArchiveBytes = old })
+
+	// "junk" claims 5GB but only 4096 real bytes follow the header — well
+	// past the lowered 2048-byte cap, nowhere near an actual 5GB fixture.
+	tarball := forgedOversizedMember(t, "junk", 5_000_000_000, 4096)
+
+	_, err := release.ExtractBinaries(bytes.NewReader(tarball), []string{"orchard"})
+	if !errors.Is(err, release.ErrArchiveTooLarge) {
+		t.Fatalf("ExtractBinaries on a forged oversized skipped member = %v; want ErrArchiveTooLarge", err)
 	}
 }

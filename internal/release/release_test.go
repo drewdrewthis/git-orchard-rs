@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/drewdrewthis/orchardist/internal/release"
@@ -34,6 +35,106 @@ func TestResolveTarget_URLOverridesAPIRoot(t *testing.T) {
 	c := release.NewClient()
 	if c.API != "http://127.0.0.1:1/fixture" {
 		t.Errorf("API = %q; want the fixture root with its trailing slash trimmed", c.API)
+	}
+}
+
+// AC: a URL root is rejected unless it is https, its host is loopback, or
+// ORCHARD_RELEASE_ALLOW_HTTP=1 opts back in.
+func TestResolveTarget_SchemeGate(t *testing.T) {
+	cases := []struct {
+		name      string
+		repo      string
+		allowHTTP string // ORCHARD_RELEASE_ALLOW_HTTP; "" leaves it unset
+		wantAPI   string
+		wantRepo  string
+		wantErr   bool
+	}{
+		{
+			name:     "empty value defaults to github",
+			repo:     "",
+			wantAPI:  release.DefaultAPI,
+			wantRepo: release.DefaultRepo,
+		},
+		{
+			name:     "owner/repo slug overrides only the repo",
+			repo:     "someone/fork",
+			wantAPI:  release.DefaultAPI,
+			wantRepo: "someone/fork",
+		},
+		{
+			name:     "https is always allowed, on any host",
+			repo:     "https://example.com/api/",
+			wantAPI:  "https://example.com/api",
+			wantRepo: release.DefaultRepo,
+		},
+		{
+			name:     "http on 127.0.0.1 is loopback, allowed",
+			repo:     "http://127.0.0.1:9999/fixture",
+			wantAPI:  "http://127.0.0.1:9999/fixture",
+			wantRepo: release.DefaultRepo,
+		},
+		{
+			name:     "http on localhost is loopback, allowed",
+			repo:     "http://localhost:9999",
+			wantAPI:  "http://localhost:9999",
+			wantRepo: release.DefaultRepo,
+		},
+		{
+			name:     "http on ::1 is loopback, allowed",
+			repo:     "http://[::1]:9999",
+			wantAPI:  "http://[::1]:9999",
+			wantRepo: release.DefaultRepo,
+		},
+		{
+			name:    "http on a routable host is rejected",
+			repo:    "http://example.com",
+			wantErr: true,
+		},
+		{
+			name:    "a non-http(s) scheme on a routable host is rejected",
+			repo:    "ftp://example.com/repo",
+			wantErr: true,
+		},
+		{
+			name:      "ORCHARD_RELEASE_ALLOW_HTTP=1 opts a routable http host back in",
+			repo:      "http://example.com",
+			allowHTTP: "1",
+			wantAPI:   "http://example.com",
+			wantRepo:  release.DefaultRepo,
+		},
+		{
+			name:      "any ALLOW_HTTP value other than 1 does not opt in",
+			repo:      "http://example.com",
+			allowHTTP: "yes",
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(release.AllowHTTPEnv, tc.allowHTTP)
+
+			api, repo, err := release.ResolveTarget(tc.repo)
+
+			if tc.wantErr {
+				if !errors.Is(err, release.ErrInsecureURL) {
+					t.Fatalf("ResolveTarget(%q) error = %v; want ErrInsecureURL", tc.repo, err)
+				}
+				if api != "" || repo != "" {
+					t.Errorf("ResolveTarget(%q) = (%q, %q); want both empty on error", tc.repo, api, repo)
+				}
+				if !strings.Contains(err.Error(), release.AllowHTTPEnv) {
+					t.Errorf("error %q does not name the %s opt-in", err.Error(), release.AllowHTTPEnv)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveTarget(%q): %v", tc.repo, err)
+			}
+			if api != tc.wantAPI || repo != tc.wantRepo {
+				t.Errorf("ResolveTarget(%q) = (%q, %q); want (%q, %q)", tc.repo, api, repo, tc.wantAPI, tc.wantRepo)
+			}
+		})
 	}
 }
 
