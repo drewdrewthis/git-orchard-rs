@@ -49,6 +49,7 @@ func (r *queryResolver) queryPullRequestsResolver(ctx context.Context, repo stri
 	for _, p := range prs {
 		out = append(out, toGraphQLPullRequest(p))
 	}
+	primeEnrichment(ctx, prs)
 	return out, nil
 }
 
@@ -153,12 +154,15 @@ func (r *queryResolver) queryOpenPullRequestsResolver(ctx context.Context, repo 
 		return nil, err
 	}
 	out := make([]*graphql1.PullRequest, 0, len(prs))
+	kept := make([]gh.PullRequest, 0, len(prs))
 	for _, p := range prs {
 		if author != nil && *author != "" && p.AuthorLogin != *author {
 			continue
 		}
 		out = append(out, toGraphQLPullRequest(p))
+		kept = append(kept, p)
 	}
+	primeEnrichment(ctx, kept)
 	return out, nil
 }
 

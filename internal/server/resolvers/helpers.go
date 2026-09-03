@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/99designs/gqlgen/graphql"
+
 	graphql1 "github.com/drewdrewthis/orchardist/internal/server/graphql"
 	"github.com/drewdrewthis/orchardist/internal/server/loaders"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/gh"
@@ -44,6 +46,66 @@ func enrichPR(ctx context.Context, r *Resolver, key gh.PullRequestKey) (gh.PullR
 		return pr, nil
 	}
 	return r.GH.EnrichPullRequest(ctx, key)
+}
+
+// enrichmentFieldNames is the set of PullRequest fields whose values come
+// from the GraphQL enrichment fetch rather than the REST list payload.
+var enrichmentFieldNames = map[string]struct{}{
+	"headRefOid":            {},
+	"reviews":               {},
+	"mergeable":             {},
+	"mergeStateStatus":      {},
+	"reviewDecision":        {},
+	"statusCheckRollup":     {},
+	"labels":                {},
+	"reviewThreads":         {},
+	"unresolvedThreadCount": {},
+}
+
+// primeEnrichment collapses PR enrichment for a whole list into one GitHub
+// round-trip. Each enrichment field resolver Loads its PR key independently,
+// spread across gqlgen's per-item goroutines; the DataLoader only groups Loads
+// that arrive inside its wait window, so under scheduling jitter the keys split
+// across batches and fire more than one GraphQL request (a latent N+1).
+// Enqueuing every key here — synchronously, before field resolution begins —
+// puts them all in one batch and warms the provider cache the field resolvers
+// then read. No-op when no enrichment field is selected, so a bare
+// `{ number }` query still pays nothing.
+func primeEnrichment(ctx context.Context, prs []gh.PullRequest) {
+	if len(prs) == 0 {
+		return
+	}
+	l := loaders.FromContext(ctx)
+	if l == nil || l.PullRequestEnrichment == nil || !enrichmentSelected(ctx) {
+		return
+	}
+	// Drive Load directly rather than LoadMany: LoadMany fans out a goroutine
+	// per key, which would reintroduce the very scheduling split this avoids.
+	// A synchronous enqueue loop lands every key in one batch window.
+	thunks := make([]func() (gh.PullRequest, error), 0, len(prs))
+	for _, p := range prs {
+		key := gh.PullRequestKey{Owner: p.RepoOwner, Name: p.RepoName, Number: p.Number}
+		thunks = append(thunks, l.PullRequestEnrichment.Load(ctx, key))
+	}
+	for _, thunk := range thunks {
+		_, _ = thunk() // best-effort warm-up; field resolvers surface real errors
+	}
+}
+
+// enrichmentSelected reports whether the PullRequest selection set for the
+// current list field requests any enrichment-sourced field.
+func enrichmentSelected(ctx context.Context) bool {
+	fc := graphql.GetFieldContext(ctx)
+	octx := graphql.GetOperationContext(ctx)
+	if fc == nil || octx == nil {
+		return false
+	}
+	for _, f := range graphql.CollectFields(octx, fc.Field.Selections, nil) {
+		if _, ok := enrichmentFieldNames[f.Name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *subscriptionResolver) streamLocalEvents(ctx context.Context) (<-chan graphql1.Node, error) {
