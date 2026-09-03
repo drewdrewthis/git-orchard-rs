@@ -1,0 +1,237 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// @scenario upgrade --check reports without mutating anything
+//
+// AC7: --check exits 0, prints current and latest, and modifies no file.
+func TestCheck_ReportsWithoutWriting(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard", "orchard-shell")
+	before := snapshot(t, dir)
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--check", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--check) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"current: 1.0.0", "latest:  2.0.0", "an update is available"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--check output %q is missing %q", out, want)
+		}
+	}
+	assertUnchanged(t, dir, before)
+}
+
+func TestCheck_UpToDateSaysSo(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v1.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard")
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--check", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--check) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "up to date") {
+		t.Errorf("output %q does not report an up-to-date install", stdout.String())
+	}
+}
+
+// AC7: vN -> vN+1 leaves every installed binary reporting the new version.
+func TestUpgrade_ReplacesEveryInstalledBinary(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "old", "orchard", "orchard-shell", "orchard-daemon")
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	for _, name := range []string{"orchard", "orchard-shell", "orchard-daemon"} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != name+"@v2.0.0" {
+			t.Errorf("%s = %q; want the v2.0.0 build", name, got)
+		}
+	}
+	// One release lookup, one SHA256SUMS, one tarball. GitHub allows 60
+	// anonymous requests an hour; a second lookup for the same release would
+	// be half an upgrade's budget spent on nothing.
+	if f.count() != 3 {
+		t.Errorf("fixture saw %d requests; want 3 (release, SHA256SUMS, tarball)", f.count())
+	}
+}
+
+// An upgrade installs what is installed. A binary the user never had must not
+// appear — that is the installer's job, not upgrade's.
+func TestUpgrade_LeavesUninstalledBinariesAlone(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "old", "orchard")
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		names := []string{}
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("install dir holds %v; want only the binary that was already there", names)
+	}
+}
+
+// @scenario Checksum mismatch aborts and leaves existing binaries untouched
+//
+// AC7: a tampered download replaces nothing and exits non-zero.
+func TestUpgrade_ChecksumMismatchInstallsNothing(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, true)
+	dir := installDirWith(t, "v1", "orchard", "orchard-shell")
+	before := snapshot(t, dir)
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code == 0 {
+		t.Fatal("run() = 0 despite a checksum mismatch")
+	}
+	if !strings.Contains(stderr.String(), "checksum mismatch") {
+		t.Errorf("stderr %q does not name the checksum mismatch", stderr.String())
+	}
+	assertUnchanged(t, dir, before)
+}
+
+// @scenario upgrade refuses when the install directory is not writable
+//
+// AC7: a read-only install directory exits non-zero, names the directory, and
+// leaves every binary at its original digest.
+func TestUpgrade_ReadOnlyInstallDirIsRefusedByName(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not gate root")
+	}
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard")
+	before := snapshot(t, dir)
+	withVersion(t, "1.0.0")
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code == 0 {
+		t.Fatal("run() = 0 against a read-only install directory")
+	}
+	if !strings.Contains(stderr.String(), dir) {
+		t.Errorf("stderr %q does not name the directory", stderr.String())
+	}
+	if f.count() != 0 {
+		t.Errorf("fixture saw %d requests; the writability refusal must come before the download", f.count())
+	}
+	os.Chmod(dir, 0o700)
+	assertUnchanged(t, dir, before)
+}
+
+// @scenario --version pins a specific release
+//
+// AC7: --version pins, including to an older release.
+func TestUpgrade_PinnedVersionDowngrades(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v1.0.0", false, false)
+	f.publish(t, "v3.0.0", true, false)
+	dir := installDirWith(t, "v3", "orchard")
+	withVersion(t, "3.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--version", "v1.0.0", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--version v1.0.0) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "orchard"))
+	if string(got) != "orchard@v1.0.0" {
+		t.Errorf("orchard = %q; want the pinned v1.0.0 build", got)
+	}
+}
+
+func TestUpgrade_DryRunVerifiesAndReportsWithoutInstalling(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard", "orchard-shell")
+	before := snapshot(t, dir)
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--dry-run", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--dry-run) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "would install orchard 2.0.0") {
+		t.Errorf("--dry-run output %q does not say what it would install", out)
+	}
+	for _, name := range []string{"orchard-shell", "orchard"} {
+		if !strings.Contains(out, name) {
+			t.Errorf("--dry-run output %q does not list %s", out, name)
+		}
+	}
+	assertUnchanged(t, dir, before)
+	if f.count() == 0 {
+		t.Error("--dry-run made no requests; it must still download and verify")
+	}
+}
+
+// An install that is already current must not download the release again.
+func TestUpgrade_AlreadyLatestSkipsTheDownload(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v1.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard")
+	before := snapshot(t, dir)
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "already the latest") {
+		t.Errorf("output %q does not report an already-current install", stdout.String())
+	}
+	if f.count() != 1 {
+		t.Errorf("fixture saw %d requests; want only the latest-release lookup", f.count())
+	}
+	assertUnchanged(t, dir, before)
+}
+
+func TestUpgrade_EmptyInstallDirIsAnHonestError(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := t.TempDir()
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code == 0 {
+		t.Fatal("run() = 0 with no orchard binaries to replace")
+	}
+	if !strings.Contains(stderr.String(), dir) {
+		t.Errorf("stderr %q does not name the directory it looked in", stderr.String())
+	}
+}
+
+func TestRun_MissingPrefixDirectoryIsRejected(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--check", "--prefix", filepath.Join(t.TempDir(), "nope")}, &stdout, &stderr); code == 0 {
+		t.Fatal("run() = 0 with a --prefix that does not exist")
+	}
+}

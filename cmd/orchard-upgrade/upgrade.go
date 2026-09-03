@@ -1,0 +1,96 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
+)
+
+// upgrade runs one invocation against a resolved install directory.
+func upgrade(ctx context.Context, opts Options, dir, current string, out io.Writer) error {
+	client := release.NewClient()
+
+	if opts.Check {
+		return check(ctx, client, opts.Target, current, out)
+	}
+
+	triple, err := release.HostTriple()
+	if err != nil {
+		return err
+	}
+
+	// The writability probe runs BEFORE the download, not after: failing on
+	// the last step of a 40MB fetch, having already made the user wait, is
+	// the same refusal delivered as badly as possible.
+	if !opts.DryRun {
+		if err := release.Writable(dir); err != nil {
+			return fmt.Errorf("%w — re-run with a writable --prefix, or with the privileges that own %s", err, dir)
+		}
+	}
+
+	// One lookup, not two: an unpinned upgrade needs the latest release both
+	// to decide whether to act and to download from.
+	rel, err := release.Resolve(ctx, client, opts.Target)
+	if err != nil {
+		return err
+	}
+	if opts.Target == "" && !release.IsNewer(rel.Version(), current) {
+		fmt.Fprintf(out, "orchard %s is already the latest release.\n", current)
+		return nil
+	}
+
+	suite, err := release.FetchSuiteFromRelease(ctx, client, rel, triple)
+	if err != nil {
+		return err
+	}
+	plan := suite.Plan(dir, exists)
+	if len(plan) == 0 {
+		return fmt.Errorf("no orchard binaries found in %s — nothing to upgrade (install with scripts/install.sh)", dir)
+	}
+
+	if opts.DryRun {
+		fmt.Fprintf(out, "would install orchard %s (from %s) into %s:\n", suite.Version, suite.Asset, dir)
+		for _, item := range plan {
+			fmt.Fprintf(out, "  %s\n", filepath.Base(item.Path))
+		}
+		return nil
+	}
+
+	if err := release.ReplaceAll(plan); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "installed orchard %s into %s:\n", suite.Version, dir)
+	for _, item := range plan {
+		fmt.Fprintf(out, "  %s\n", filepath.Base(item.Path))
+	}
+	return nil
+}
+
+// check reports the current and available versions without writing anything —
+// not a download, not a temp file, not the update-check cache.
+func check(ctx context.Context, client *release.Client, target, current string, out io.Writer) error {
+	rel, err := release.Resolve(ctx, client, target)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "current: %s\n", current)
+	fmt.Fprintf(out, "latest:  %s\n", rel.Version())
+	if release.IsNewer(rel.Version(), current) {
+		fmt.Fprintf(out, "an update is available — run: orchard upgrade\n")
+	} else {
+		fmt.Fprintf(out, "up to date\n")
+	}
+	return nil
+}
+
+// exists reports whether path is a regular file, which is what "this binary
+// is installed here" means. A directory or a dangling symlink is neither
+// installed nor replaceable.
+func exists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.Mode().IsRegular()
+}
