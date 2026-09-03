@@ -64,6 +64,7 @@ func upgrade(ctx context.Context, opts Options, dir, current string, out io.Writ
 	if err != nil {
 		return err
 	}
+	invalidateUpdateCheckCache()
 	fmt.Fprintf(out, "orchard %s in %s:\n", suite.Version, dir)
 	unchanged := 0
 	for _, r := range results {
@@ -104,4 +105,17 @@ func check(ctx context.Context, client *release.Client, target, current string, 
 func exists(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.Mode().IsRegular()
+}
+
+// invalidateUpdateCheckCache clears the update-check cache after a real
+// install, so `orchard shell doctor` and the sidebar never read back a check
+// the just-replaced binary wrote (see release.LoadCheckFor,
+// release.InvalidateCheck). Best-effort and silent: an unresolvable state
+// dir is the same "nothing to clean up" case InvalidateCheck already treats
+// a missing file as, and neither should fail an otherwise successful
+// upgrade.
+func invalidateUpdateCheckCache() {
+	if path, err := release.CheckPath(); err == nil {
+		release.InvalidateCheck(path)
+	}
 }

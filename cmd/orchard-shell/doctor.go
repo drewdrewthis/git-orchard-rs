@@ -145,13 +145,17 @@ type updateInfo struct {
 
 // loadUpdateInfo reads the update-check cache, returning nil when no check
 // has ever run — the same "absent file renders nothing" contract the sidebar
-// follows (plan step 10, AC9).
+// follows (plan step 10, AC9) — or when the cache was written by a version
+// other than the one now running: a cache left behind by a since-replaced
+// binary (e.g. right after `orchard upgrade`) is exactly as stale as no
+// cache at all, and doctor must never print a Current that does not match
+// the binary actually running (see release.LoadCheckFor).
 func loadUpdateInfo(current string) *updateInfo {
 	path, err := release.CheckPath()
 	if err != nil {
 		return nil
 	}
-	c := release.LoadCheck(path)
+	c := release.LoadCheckFor(path, current)
 	if c.CheckedAt.IsZero() {
 		return nil
 	}

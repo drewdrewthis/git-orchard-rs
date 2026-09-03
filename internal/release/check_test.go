@@ -35,6 +35,41 @@ func TestLoadCheck_MissingOrCorruptFileIsAZeroCheck(t *testing.T) {
 	}
 }
 
+// A cache written by a different version than the one now running (e.g.
+// right after `orchard upgrade` replaces the binaries) is exactly as stale
+// as a missing file: LoadCheckFor must resolve it to the zero Check, not
+// hand back a Current that does not match current.
+func TestLoadCheckFor_VersionMismatchResolvesToTheZeroCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), release.CheckFile)
+	if err := release.SaveCheck(path, release.Check{CheckedAt: time.Now(), Current: "dev", Latest: "1.1.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := release.LoadCheckFor(path, "1.1.0"); got != (release.Check{}) {
+		t.Errorf("LoadCheckFor(cache current=dev, running=1.1.0) = %+v; want the zero Check", got)
+	}
+}
+
+func TestLoadCheckFor_MatchingVersionIsReturnedUnchanged(t *testing.T) {
+	path := filepath.Join(t.TempDir(), release.CheckFile)
+	want := release.Check{CheckedAt: time.Now(), Current: "1.1.0", Latest: "1.2.0"}
+	if err := release.SaveCheck(path, want); err != nil {
+		t.Fatal(err)
+	}
+
+	got := release.LoadCheckFor(path, "1.1.0")
+	if got.Current != want.Current || got.Latest != want.Latest {
+		t.Errorf("LoadCheckFor(matching current) = %+v; want Current=%q Latest=%q", got, want.Current, want.Latest)
+	}
+}
+
+func TestLoadCheckFor_MissingFileIsTheZeroCheck(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent.json")
+	if got := release.LoadCheckFor(path, "1.1.0"); got != (release.Check{}) {
+		t.Errorf("LoadCheckFor(missing) = %+v; want the zero Check", got)
+	}
+}
+
 func TestCheck_UpdateAvailableComparesLatestAgainstCurrent(t *testing.T) {
 	cases := []struct {
 		current, latest string
@@ -180,5 +215,28 @@ func TestRefreshCheck_CurrentVersionChangeInvalidatesAFreshCache(t *testing.T) {
 	}
 	if got.Current != "3.0.0" || got.UpdateAvailable() {
 		t.Errorf("check = %+v; want current 3.0.0 with no update available", got)
+	}
+}
+
+// `orchard upgrade` calls InvalidateCheck after a successful install so the
+// check a pre-upgrade binary wrote is never read back against the new one.
+func TestInvalidateCheck_RemovesTheCacheFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), release.CheckFile)
+	if err := release.SaveCheck(path, release.Check{CheckedAt: time.Now(), Current: "1.0.0", Latest: "1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+
+	release.InvalidateCheck(path)
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("cache file at %s still exists after InvalidateCheck", path)
+	}
+}
+
+func TestInvalidateCheck_MissingFileIsANoOp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "absent.json")
+	release.InvalidateCheck(path) // must not panic or error out loud
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("InvalidateCheck unexpectedly created %s", path)
 	}
 }

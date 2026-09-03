@@ -66,6 +66,22 @@ func LoadCheck(path string) Check {
 	return c
 }
 
+// LoadCheckFor reads the cache and returns it only if it was written against
+// the exact version now running. A cache whose Current does not match —
+// written by a build that has since been replaced, e.g. right after `orchard
+// upgrade` — is exactly as stale as a missing file: a read-only caller (like
+// `orchard shell doctor`, which never triggers a network refresh itself)
+// must never surface a Current that does not match the binary actually
+// running, so a mismatch resolves to the zero Check, same as LoadCheck's own
+// missing-file case.
+func LoadCheckFor(path, current string) Check {
+	c := LoadCheck(path)
+	if c.Current != current {
+		return Check{}
+	}
+	return c
+}
+
 // SaveCheck writes the cache, creating the state directory if needed.
 func SaveCheck(path string, c Check) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -76,6 +92,17 @@ func SaveCheck(path string, c Check) error {
 		return fmt.Errorf("encode update check: %w", err)
 	}
 	return Replace(path, append(data, '\n'), 0o644)
+}
+
+// InvalidateCheck removes the update-check cache file, if any. `orchard
+// upgrade` calls this after a successful install so the check a pre-upgrade
+// binary wrote is never read back against the new one — doctor and the
+// sidebar only ever read this file (see LoadCheckFor, cmd/orchard-shell's
+// doctor.go). A missing file, or any other removal error, is silently
+// ignored: this is best-effort cleanup, not something that should fail an
+// otherwise successful upgrade.
+func InvalidateCheck(path string) {
+	_ = os.Remove(path)
 }
 
 // RefreshCheck refreshes the cache when it is older than ttl, and returns the

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
 )
 
 // @scenario upgrade --check reports without mutating anything
@@ -89,6 +91,53 @@ func TestUpgrade_ReplacesEveryInstalledBinary(t *testing.T) {
 	// be half an upgrade's budget spent on nothing.
 	if f.count() != 3 {
 		t.Errorf("fixture saw %d requests; want 3 (release, SHA256SUMS, tarball)", f.count())
+	}
+}
+
+// A successful install invalidates the update-check cache: doctor and the
+// sidebar only ever read that file (internal/release.LoadCheckFor), and a
+// Current left over from the binary this upgrade just replaced must not
+// outlive it — the exact staleness reported against `orchard shell doctor`
+// after an upgrade from a dev build.
+func TestUpgrade_SuccessfulInstallInvalidatesTheUpdateCheckCache(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard", "orchard-shell")
+	withVersion(t, "1.0.0")
+	cachePath := seedUpdateCheckCache(t, "dev", "2.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() = %d; want 0. stderr: %s", code, stderr.String())
+	}
+
+	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
+		t.Errorf("update-check cache at %s still exists after a successful upgrade", cachePath)
+	}
+}
+
+// --check changes nothing per its own contract ("not the update-check
+// cache" — see upgrade.go's check()); --dry-run's contract is the same for
+// the install dir (assertUnchanged) and must hold here too.
+func TestUpgrade_CheckAndDryRunLeaveTheUpdateCheckCacheAlone(t *testing.T) {
+	for _, flag := range []string{"--check", "--dry-run"} {
+		t.Run(flag, func(t *testing.T) {
+			f := newFixture(t)
+			f.publish(t, "v2.0.0", true, false)
+			dir := installDirWith(t, "v1", "orchard")
+			withVersion(t, "1.0.0")
+			cachePath := seedUpdateCheckCache(t, "dev", "2.0.0")
+
+			var stdout, stderr strings.Builder
+			if code := run([]string{flag, "--prefix", dir}, &stdout, &stderr); code != 0 {
+				t.Fatalf("run(%s) = %d; want 0. stderr: %s", flag, code, stderr.String())
+			}
+
+			got := release.LoadCheck(cachePath)
+			if got.Current != "dev" || got.Latest != "2.0.0" {
+				t.Errorf("%s mutated the update-check cache: %+v", flag, got)
+			}
+		})
 	}
 }
 

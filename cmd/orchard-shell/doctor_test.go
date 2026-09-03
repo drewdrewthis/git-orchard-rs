@@ -187,6 +187,31 @@ func TestLoadUpdateInfo(t *testing.T) {
 			t.Errorf("loadUpdateInfo = %+v; want current=1.0.0 latest=1.4.0 available=true", got)
 		}
 	})
+
+	// A cache left behind by a since-replaced binary — e.g. written while
+	// running "dev", read after `orchard upgrade` installed 1.1.0 — must
+	// never be surfaced: doctor must not print a Current that differs from
+	// the version actually running.
+	t.Run("cache written by a different version is treated as absent", func(t *testing.T) {
+		stateHome := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", stateHome)
+		cachePath := filepath.Join(stateHome, "orchard", release.CheckFile)
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		check := release.Check{CheckedAt: time.Now(), Current: "dev", Latest: "1.1.0"}
+		data, err := json.Marshal(check)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cachePath, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if got := loadUpdateInfo("1.1.0"); got != nil {
+			t.Errorf("loadUpdateInfo = %+v; want nil when the cache's current (dev) does not match the running version (1.1.0)", got)
+		}
+	})
 }
 
 // AC8's exact order: tmux, tmux-nesting, daemon, suite-versions,

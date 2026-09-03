@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/drewdrewthis/orchardist/internal/release"
 )
@@ -213,4 +214,21 @@ func withVersion(t *testing.T, v string) {
 	prev := version
 	version = v
 	t.Cleanup(func() { version = prev })
+}
+
+// seedUpdateCheckCache points XDG_STATE_HOME at a fresh temp dir and writes
+// an internal/release update-check cache into it, standing in for a check
+// `orchard shell` wrote before this test's upgrade runs. Returns the cache
+// file's path so a test can assert on it afterward.
+func seedUpdateCheckCache(t *testing.T, current, latest string) string {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	path, err := release.CheckPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release.SaveCheck(path, release.Check{CheckedAt: time.Now(), Current: current, Latest: latest}); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
