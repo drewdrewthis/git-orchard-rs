@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // Open a session in a split (issue #777): a SECOND outer pane to the right of
@@ -155,43 +157,58 @@ var detachClient = func(tty clientTTY, pane outerPane) {
 	}()
 }
 
+// splitDoneMsg carries the result of the off-UI-goroutine doSplit back to
+// Update, where the split's model state (splitOpen, alt) is set — nothing may
+// mutate the model from the exec goroutine (R13 shared state).
+type splitDoneMsg struct {
+	pane workPaneRef
+	ok   bool
+}
+
 // openInSplit is the reusable entry point: it opens one session in a second
 // work pane, refusing when splitBlocked says so. The #776 right-click `Open in
 // split` menu item calls this directly on the card it acts on, so the split
 // logic never has to leak into menu.go / menuops.go / menuview.go.
-func (m *model) openInSplit(session string, fake bool) {
+//
+// The synchronous guards refuse (and set status) inline, returning no command;
+// on a pass it returns a tea.Cmd that runs doSplit off the UI goroutine — a
+// tmux exec must never stall a paint — and reports the result as a splitDoneMsg
+// for Update to apply.
+func (m *model) openInSplit(session string, fake bool) tea.Cmd {
 	if !env.wrapped() || m.activeOuter() == "" {
 		m.setStatus("open in split needs the outer shell")
-		return
+		return nil
 	}
-	if m.splitOpen {
+	if m.splitOpen || m.splitPending {
 		// One split at a time (#777 keep-it-simple): a second would orphan the
-		// pane already tracked in m.alt, leaving M-w unable to close it. Close
-		// the current split first.
+		// pane already tracked in m.alt, leaving M-w unable to close it. Refuse
+		// while one is in flight too (splitPending) — the async doSplit window
+		// otherwise lets a second M-Enter through before splitOpen is set.
 		m.setStatus("split already open — M-w closes it first")
-		return
+		return nil
 	}
 	if why := splitBlocked(session, fake, m.attachedBySess); why != "" {
 		m.setStatus(why)
-		return
+		return nil
 	}
-	pane, ok := doSplit(m.activeOuter(), env.inner, session)
-	if !ok {
-		m.setStatus("split failed — see log")
-		return
+	beside := m.activeOuter() // snapshot on the UI goroutine; the exec reads no model state
+	m.splitPending = true
+	return func() tea.Msg {
+		pane, ok := doSplit(beside, env.inner, session)
+		return splitDoneMsg{pane: pane, ok: ok}
 	}
-	m.splitOpen = true
-	m.alt = pane
 }
 
 // splitSelected opens the card the pane is describing in a split — the M-Enter
 // gesture. It reads railRow (not the raw cursor) so a filtered-away selection
 // still splits the card the user sees the rail on, exactly as P and the pin
-// reorder keys do.
-func (m *model) splitSelected() {
+// reorder keys do. It returns openInSplit's command so the caller hands it to
+// Bubble Tea.
+func (m *model) splitSelected() tea.Cmd {
 	if r, ok := m.railRow(); ok {
-		m.openInSplit(r.session, r.fake)
+		return m.openInSplit(r.session, r.fake)
 	}
+	return nil
 }
 
 // detachSplit closes the split pane (M-w), restoring the two-pane layout, or

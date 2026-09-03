@@ -84,6 +84,17 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			m.retargetWork(msg.tty)
 		}
 		return next
+	case splitDoneMsg:
+		// The doSplit exec ran off the UI goroutine; its result lands here so the
+		// split's model state is set on the UI goroutine only (R13 shared state).
+		m.splitPending = false // the in-flight doSplit has landed
+		if !msg.ok {
+			m.setStatus("split failed — see log")
+			return nil
+		}
+		m.splitOpen = true
+		m.alt = msg.pane
+		return nil
 	case clientTickMsg:
 		return fetchClientSession(m.clientGen, m.workTTYs())
 	case animTickMsg:

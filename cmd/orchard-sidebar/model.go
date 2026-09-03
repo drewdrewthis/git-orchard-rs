@@ -142,7 +142,11 @@ type model struct {
 	// pane was focused last — the sidebar drives it, defaulting to the env pane
 	// when unset. Kept here (not a package global) so switchClientExec reads a
 	// snapshot taken on the UI goroutine (split.go, tmux_switch.go).
-	splitOpen    bool
+	splitOpen bool
+	// splitPending guards the async window: a doSplit is in flight (cmd returned,
+	// splitDoneMsg not yet applied). A second M-Enter in that window would pass
+	// the splitOpen guard and open a second, untracked pane, so it is refused too.
+	splitPending bool
 	alt          workPaneRef
 	workOverride workPaneRef
 	// status is a transient refusal/notice from a keyboard chord (M-Enter,

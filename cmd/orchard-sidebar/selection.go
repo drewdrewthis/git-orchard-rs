@@ -169,9 +169,10 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 	}
 	if msg.Alt && msg.Type == tea.KeyEnter {
 		// M-Enter opens the selected session in a split (#777). outer.conf
-		// forwards it into this pane the same way it forwards M-1..M-9.
-		m.splitSelected()
-		return nil
+		// forwards it into this pane the same way it forwards M-1..M-9. The
+		// split's tmux exec runs off the UI goroutine, so hand its command back
+		// to Bubble Tea.
+		return m.splitSelected()
 	}
 	if msg.Alt && msg.Type == tea.KeyRunes {
 		// The alt chords outer.conf forwards INTO this pane: M-1..M-9 jump

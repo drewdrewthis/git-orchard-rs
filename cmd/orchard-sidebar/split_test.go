@@ -139,7 +139,7 @@ func TestOpenInSplitEmitsSplitAndTracksPane(t *testing.T) {
 	t.Cleanup(func() { doSplit = prev })
 
 	m := splitModel()
-	m.splitSelected()
+	runCmd(t, m, m.splitSelected())
 
 	if gotBeside != "%1" || gotInner != "default" || gotSession != "beta" {
 		t.Errorf("doSplit args = (%q,%q,%q), want (%%1, default, beta)", gotBeside, gotInner, gotSession)
@@ -167,7 +167,7 @@ func TestOpenInSplitTakesAnExplicitSession(t *testing.T) {
 	t.Cleanup(func() { doSplit = prev })
 
 	m := splitModel()
-	m.openInSplit("gamma", false) // a card that is neither selected nor attached
+	runCmd(t, m, m.openInSplit("gamma", false)) // a card that is neither selected nor attached
 
 	if gotSession != "gamma" || !m.splitOpen {
 		t.Errorf("openInSplit did not act on the given session: got %q open=%v", gotSession, m.splitOpen)
@@ -231,7 +231,7 @@ func TestSplitChordsRoute(t *testing.T) {
 	t.Cleanup(func() { doSplit, detachClient = pd, pc })
 
 	m := splitModel()
-	m.key(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	runCmd(t, m, m.key(tea.KeyMsg{Type: tea.KeyEnter, Alt: true}))
 	if !opened {
 		t.Error("M-Enter did not open a split")
 	}
