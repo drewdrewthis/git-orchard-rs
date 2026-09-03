@@ -51,6 +51,8 @@ func (m *model) menuTitle() string {
 	switch m.menu.mode {
 	case menuRename:
 		return "rename"
+	case menuBreakPane:
+		return "pane → session"
 	case menuConfirm:
 		return "close"
 	}
@@ -62,7 +64,7 @@ func (m *model) menuTitle() string {
 func (m *model) menuBody(inner int) []string {
 	var out []string
 	switch m.menu.mode {
-	case menuRename:
+	case menuRename, menuBreakPane:
 		out = append(out,
 			m.menu.input.view(max(1, inner)),
 			styDim.Render("⏎ save · esc cancel"))

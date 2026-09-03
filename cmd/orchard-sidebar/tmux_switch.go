@@ -36,7 +36,9 @@ var errUnscopedSwitch = errors.New(
 // refusal comes back as an error rather than a silent skip: a launch that
 // created the session and quietly failed to move you to it looks like the
 // session never launched.
-func switchClientTo(session string) error {
+// A var so the break-pane flow's test can observe the switch without a live
+// tmux, the same reason switchClient is a var.
+var switchClientTo = func(session string) error {
 	args, ok := switchClientArgs(session)
 	if !ok {
 		return errUnscopedSwitch
@@ -116,7 +118,9 @@ const tmuxOpTimeout = 2 * time.Second
 // wrapped) and returns tmux's own message as the error — that text is what the
 // menu shows, and tmux says "can't find session: x" far better than any
 // wrapper could.
-func runTmux(args ...string) error {
+// A var so the break-pane flow's test can record the exact argv of each step
+// and inject a mid-sequence failure without a live tmux server.
+var runTmux = func(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxOpTimeout)
 	defer cancel()
 	out, err := env.innerCmdContext(ctx, args...).CombinedOutput()
@@ -129,6 +133,31 @@ func runTmux(args ...string) error {
 	}
 	logf("%s: %s", strings.Join(args, " "), msg)
 	return errors.New(msg)
+}
+
+// runTmuxOutput is runTmux's read-back sibling: it runs one command against
+// the sessions' server and returns tmux's trimmed stdout on success, so a step
+// that must consume what tmux printed (a window id from new-session -P) can.
+// On error it returns tmux's own stderr message as the error, exactly like
+// runTmux, so a failure reads the same in the status line.
+// A var for the same reason runTmux is: the break-pane flow's test injects the
+// printed id and a mid-sequence failure without a live tmux server.
+var runTmuxOutput = func(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxOpTimeout)
+	defer cancel()
+	cmd := env.innerCmdContext(ctx, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		logf("%s: %s", strings.Join(args, " "), msg)
+		return "", errors.New(msg)
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // handBackFocusArgs is the select-pane argv, or ok=false when there is no
