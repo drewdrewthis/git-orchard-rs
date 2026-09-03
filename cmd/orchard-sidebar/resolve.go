@@ -2,7 +2,7 @@ package main
 
 import (
 	"strings"
-	"sync"
+	"sync/atomic"
 )
 
 // Click-time client resolution and env-shape validation (orchardist#787).
@@ -25,14 +25,31 @@ const clientNotFoundStatus = "inner client not found — restart the outer shell
 
 // launcherOutdatedStatus is the one-time startup hint that the env shape is one
 // only a stale launcher produces; a fresh build from main trips neither leg of
-// staleEnvShape (#787 AC3).
+// the drift check (#787 AC3).
 const launcherOutdatedStatus = "outer-shell launcher outdated — reinstall from main"
 
-// Once per process: a stale env is stale for the whole process life, so a
-// per-click log line would bury sidebar.log under identical failures.
+// onceGuard logs (or runs) its first call and drops the rest: a stale env is
+// stale for the whole process life, so a per-click log line would bury
+// sidebar.log under identical failures. Unlike sync.Once it exposes reset, so a
+// test can restore the fresh-process state a package var otherwise carries
+// between cases. Its atomic makes it safe for the concurrent hand-back
+// goroutines switchClientExec spawns.
+type onceGuard struct{ done atomic.Bool }
+
+func (o *onceGuard) do(f func()) {
+	if o.done.CompareAndSwap(false, true) {
+		f()
+	}
+}
+
+func (o *onceGuard) reset() { o.done.Store(false) }
+
+// resolveFailGuard and outerPaneGuard hold the once-per-process semantics for
+// the two stale-env log lines (the click's no-client failure and the
+// hand-back's bad-outer-pane fallback).
 var (
-	resolveFailOnce    sync.Once
-	outerPaneGuardOnce sync.Once
+	resolveFailGuard onceGuard
+	outerPaneGuard   onceGuard
 )
 
 // resolveClientTTY validates want (the wrapper's ORCHARD_TMUX_CLIENT, or a
@@ -52,7 +69,7 @@ func resolveClientTTY(want clientTTY) (clientTTY, bool) {
 	if !ok {
 		return "", false
 	}
-	if want != "" && live[want] {
+	if clientAttached(want, live) {
 		return want, true
 	}
 	_, tty, ok := outerInnerPane()
@@ -127,31 +144,32 @@ func isPaneID(p outerPane) bool {
 	return true
 }
 
-// staleEnvShape reports whether the wrapper handed an env shape a current
-// launcher would not: a non-%N outer pane, or a client tty that is not an
-// attached inner client. Either is the signature of a stale/prototype
-// orchard-shell (#787 AC3); a healthy env trips neither.
-func staleEnvShape(outerValid, clientAttached bool) bool {
-	return !outerValid || !clientAttached
+// clientAttached reports whether tty names a currently attached inner client.
+// The shared predicate for "trust this client tty" that both the click-time
+// resolver and the startup drift check turn on.
+func clientAttached(tty clientTTY, live map[clientTTY]bool) bool {
+	return tty != "" && live[tty]
 }
 
 // envDriftStatus is the startup drift check: it returns launcherOutdatedStatus
-// (and logs one line) when the wrapper's env shape is stale, or ok=false when
-// it is healthy or the sidebar is unwrapped. Called once per process from main,
-// so the hint is shown once.
+// (and logs one line) when the wrapper's env shape is one a current launcher
+// would not produce — a non-%N outer pane, or a client tty that is not an
+// attached inner client (#787 AC3) — or ok=false when it is healthy or the
+// sidebar is unwrapped. Called once per process from main, so the hint is shown
+// once.
 func envDriftStatus() (string, bool) {
 	if !env.wrapped() {
 		return "", false
 	}
 	outerValid := validOuterPane(env.outer, env.self)
-	clientAttached := false
+	attached := false
 	if live, ok := liveInnerClients(); ok {
-		clientAttached = env.client != "" && live[env.client]
+		attached = clientAttached(env.client, live)
 	}
-	if !staleEnvShape(outerValid, clientAttached) {
+	if outerValid && attached {
 		return "", false
 	}
 	logf("env drift: outer pane %q is-pane-id=%v, client %q attached=%v — stale outer-shell launcher (#787)",
-		string(env.outer), outerValid, string(env.client), clientAttached)
+		string(env.outer), outerValid, string(env.client), attached)
 	return launcherOutdatedStatus, true
 }

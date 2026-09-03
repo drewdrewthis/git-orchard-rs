@@ -4,56 +4,75 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
 )
 
 // checkRevisions is #787's defense inside the toolchain: two suite binaries can
 // report the same --version "dev" yet come from different commits — the exact
 // shape of the stale prototype launcher that silently broke sidebar clicks.
 // vcs.revision distinguishes them where the semver check (checkSuiteVersions)
-// cannot.
+// cannot, so it covers the same release.SuiteBinaries set.
 func checkRevisions(ctx context.Context, env doctorEnv) checkResult {
-	return evaluateRevisions(env.selfRevision, resolveSidebarRevision(ctx, env))
+	return evaluateRevisions(resolveSuiteRevisions(ctx, env))
 }
 
-// resolveSidebarRevision execs `orchard-sidebar --revision`. orchard-shell's
-// own revision is read in-process (env.selfRevision) for the same reason
+// resolveSuiteRevisions is the impure half: a revision per suite binary, using
+// the same sibling-then-PATH resolution as resolveSuiteVersions.
+func resolveSuiteRevisions(ctx context.Context, env doctorEnv) []binaryVersion {
+	out := make([]binaryVersion, 0, len(release.SuiteBinaries))
+	for _, name := range release.SuiteBinaries {
+		out = append(out, binaryVersion{name: name, version: resolveOneRevision(ctx, env, name)})
+	}
+	return out
+}
+
+// resolveOneRevision resolves and runs a single suite binary's --revision.
+//
+// orchard-shell is read in-process (env.selfRevision) for the same reason
 // resolveOneVersion special-cases it: self-exec would just rerun this binary.
-func resolveSidebarRevision(ctx context.Context, env doctorEnv) string {
-	path := resolveBinary(env.self, "orchard-sidebar")
+// A binary that cannot be found or errors returns unresolvedVersion — its own
+// distinct group, so a missing binary FAILs the check rather than reading as an
+// unstamped-but-matching build. An empty ("") revision is a value like any
+// other: a genuinely unstamped build, distinct from unresolvedVersion.
+func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string {
+	if name == "orchard-shell" {
+		return env.selfRevision
+	}
+	path := resolveBinary(env.self, name)
 	if path == "" {
-		return ""
+		return unresolvedVersion
 	}
 	out, err := env.run(ctx, path, "--revision")
 	if err != nil {
-		return ""
+		return unresolvedVersion
 	}
 	return strings.TrimSpace(out)
 }
 
-// evaluateRevisions is the pure decision: OK when the two revisions are equal,
-// FAIL naming both when they differ. An empty revision (a binary that could not
-// be resolved, or a build with no VCS stamp) is a value like any other — two
-// empties match (nothing to distinguish), one empty against a real revision is
-// a mismatch worth failing.
-func evaluateRevisions(shell, sidebar string) checkResult {
-	if shell == sidebar {
-		detail := "orchard-shell and orchard-sidebar built from revision " + shell
-		if shell == "" {
-			detail = "orchard-shell and orchard-sidebar carry no VCS revision (an unstamped build)"
+// evaluateRevisions is the pure decision: OK when every binary agrees, FAIL
+// naming each group when they differ. It shares grouping and the mismatch
+// listing with the version check (groupSuite, suiteMismatch); only the
+// single-group verdicts differ — revisions have no dev-warn, an all-unstamped
+// suite passes, and an all-unresolved suite fails.
+func evaluateRevisions(revisions []binaryVersion) checkResult {
+	groups := groupSuite(revisions)
+	if len(groups) == 1 {
+		for rev := range groups {
+			switch rev {
+			case unresolvedVersion:
+				return checkResult{ID: "suite-revisions", Status: statusFail,
+					Detail: "none of the suite binaries could report a revision",
+					Remedy: "reinstall orchard so its binaries are on $PATH or beside orchard-shell"}
+			case "":
+				return checkResult{ID: "suite-revisions", Status: statusPass,
+					Detail: fmt.Sprintf("all %d suite binaries carry no VCS revision (an unstamped build)", len(revisions))}
+			default:
+				return checkResult{ID: "suite-revisions", Status: statusPass,
+					Detail: fmt.Sprintf("all %d suite binaries built from revision %s", len(revisions), rev)}
+			}
 		}
-		return checkResult{ID: "suite-revision", Status: statusPass, Detail: detail}
 	}
-	return checkResult{ID: "suite-revision", Status: statusFail,
-		Detail: fmt.Sprintf("orchard-shell (%s) and orchard-sidebar (%s) built from different revisions",
-			revLabel(shell), revLabel(sidebar)),
-		Remedy: "reinstall or rebuild both from the same checkout so their revisions match"}
-}
-
-// revLabel renders an unresolved revision as "unknown" rather than an empty
-// pair of parens, so the mismatch detail still names which side is missing.
-func revLabel(r string) string {
-	if r == "" {
-		return "unknown"
-	}
-	return r
+	return suiteMismatch("suite-revisions", "suite binaries built from different revisions: ",
+		"reinstall or rebuild every orchard binary from the same checkout so their revisions match", groups)
 }

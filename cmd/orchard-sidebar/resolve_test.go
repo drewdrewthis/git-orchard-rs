@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 // swapTmuxReaders overrides the two injectable tmux read seams the resolver
 // uses (runTmuxOutput on the inner server, runOuterOut on the outer) and
@@ -185,6 +190,49 @@ func TestEnvDriftStatus(t *testing.T) {
 				t.Errorf("status = %q, want %q", s, launcherOutdatedStatus)
 			}
 		})
+	}
+}
+
+// @scenario The hand-back pane guard rejects a bad outer pane and falls back to pane 0.1
+//
+// End-to-end (#787 AC2): the wrapper handed a bad ORCHARD_OUTER_PANE (here the
+// sidebar's own pane), so handBackFocus resolves outer pane 0.1 via
+// outerInnerPane and issues select-pane against the resolved %N id — and logs
+// the fallback once per process, not once per click.
+func TestHandBackFocusFallsBackToInnerPane(t *testing.T) {
+	dir := stateHome(t)
+	resetLog(t)
+	setTmuxEnv(t, tmuxEnv{inner: "in", self: "%0", outer: "%0"}) // outer == self: unusable
+	outerPaneGuard.reset()
+
+	var outerCalls [][]string
+	prevOuter, prevOuterOut := runOuter, runOuterOut
+	runOuter = func(args ...string) { outerCalls = append(outerCalls, args) }
+	// Pane index 1 (%7) is this wrapper's inner attach; %0 is the sidebar itself.
+	runOuterOut = func(args ...string) (string, error) {
+		return "0 %0 /dev/ttys000\n1 %7 /dev/ttys009\n", nil
+	}
+	t.Cleanup(func() { runOuter, runOuterOut = prevOuter, prevOuterOut })
+
+	handBackFocus(env.outer)
+	handBackFocus(env.outer)
+
+	want := selectPaneArgs("%7")
+	if len(outerCalls) != 2 {
+		t.Fatalf("runOuter called %d times, want 2 (one hand-back each)", len(outerCalls))
+	}
+	for i, got := range outerCalls {
+		if !equalStrings(got, want) {
+			t.Errorf("call %d = %v, want %v (resolved 0.1 pane id)", i, got, want)
+		}
+	}
+
+	b, err := os.ReadFile(filepath.Join(dir, "sidebar.log"))
+	if err != nil {
+		t.Fatalf("no log file written: %v", err)
+	}
+	if n := strings.Count(string(b), "falling back to outer pane 0.1"); n != 1 {
+		t.Errorf("fallback logged %d times, want 1 (once per process): %q", n, b)
 	}
 }
 

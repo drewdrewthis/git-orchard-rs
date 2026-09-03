@@ -215,8 +215,8 @@ func TestLoadUpdateInfo(t *testing.T) {
 }
 
 // AC8's exact order: tmux, tmux-nesting, daemon, suite-versions,
-// suite-revision, inner-socket, outer-socket, systemd, path, plugin — one per
-// line in the human renderer (issue #772 adds plugin; #787 adds suite-revision).
+// suite-revisions, inner-socket, outer-socket, systemd, path, plugin — one per
+// line in the human renderer (issue #772 adds plugin; #787 adds suite-revisions).
 func TestRunChecks_ReturnsAllNineInDocumentedOrder(t *testing.T) {
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"data":{"version":"1.0.0"}}`))
@@ -241,7 +241,7 @@ func TestRunChecks_ReturnsAllNineInDocumentedOrder(t *testing.T) {
 	}
 
 	got := runChecks(context.Background(), env)
-	want := []string{"tmux", "tmux-nesting", "daemon", "suite-versions", "suite-revision", "inner-socket", "outer-socket", "systemd", "path", "plugin"}
+	want := []string{"tmux", "tmux-nesting", "daemon", "suite-versions", "suite-revisions", "inner-socket", "outer-socket", "systemd", "path", "plugin"}
 	if len(got) != len(want) {
 		t.Fatalf("runChecks returned %d results; want %d", len(got), len(want))
 	}

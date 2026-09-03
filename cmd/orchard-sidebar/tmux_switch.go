@@ -35,16 +35,24 @@ var errUnscopedSwitch = errors.New(
 	"ORCHARD_TMUX_SOCKET set without ORCHARD_TMUX_CLIENT: refusing an unscoped switch-client")
 
 // switchClientTo runs the switch SYNCHRONOUSLY and returns tmux's own error —
-// the launch modal's path, where a failure has a screen to land on. The
-// refusal comes back as an error rather than a silent skip: a launch that
+// the launch/break-pane modal path, where a failure has a screen to land on.
+// The refusal comes back as an error rather than a silent skip: a launch that
 // created the session and quietly failed to move you to it looks like the
 // session never launched.
 // A var so the break-pane flow's test can observe the switch without a live
 // tmux, the same reason switchClient is a var.
 var switchClientTo = func(session string) error {
-	// The launch modal runs in the sidebar's own (primary) work pane, so the
-	// switch scopes to env.client — a split's focus-follow never applies here.
-	args, ok := switchClientArgs(session, env.client)
+	// The modal runs in the sidebar's own (primary) work pane, so a split's
+	// focus-follow never applies — but env.client can still be the stale tty a
+	// prototype launcher handed (#787), so resolve it against the live inner
+	// clients exactly as the click path does rather than trusting it verbatim.
+	// Unresolvable surfaces the same signal as the footer, here as an error the
+	// modal shows.
+	client, ok := resolveClientTTY(env.client)
+	if !ok {
+		return errors.New(clientNotFoundStatus)
+	}
+	args, ok := switchClientArgs(session, client)
 	if !ok {
 		return errUnscopedSwitch
 	}
@@ -80,7 +88,7 @@ func (m *model) switchClientBound(session string, handBack bool) {
 	if handBack {
 		resolved, ok := resolveClientTTY(client)
 		if !ok {
-			resolveFailOnce.Do(func() {
+			resolveFailGuard.do(func() {
 				logf("switch: no live inner client for tty %q — stale outer-shell launcher (#787)", string(client))
 			})
 			m.setStatus(clientNotFoundStatus)
@@ -235,7 +243,7 @@ var handBackFocus = func(outer outerPane) {
 	// line on every switch would bury the log. Runs off the UI goroutine
 	// (switchClientExec's own goroutine), so the extra read never stalls a paint.
 	id, _, ok := outerInnerPane()
-	outerPaneGuardOnce.Do(func() {
+	outerPaneGuard.do(func() {
 		logf("hand-back: ORCHARD_OUTER_PANE %q is not a usable pane id; falling back to outer pane 0.1 (#787)", string(outer))
 	})
 	if !ok {

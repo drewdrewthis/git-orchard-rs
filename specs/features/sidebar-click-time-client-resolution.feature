@@ -53,8 +53,16 @@ Feature: click-time inner-client resolution and stale-launcher defence
     And a healthy env shows no hint and changes no behaviour
 
   @unit
-  Scenario: doctor fails when orchard-shell and orchard-sidebar revisions differ
-    Given orchard-shell and orchard-sidebar report different vcs.revision values
+  Scenario: The launch and break-pane modals resolve the client at switch time
+    Given ORCHARD_TMUX_CLIENT is a tty that no longer belongs to any inner client
+    When a modal switches the client to a session it just created
+    Then the switch is resolved and scoped exactly as a row click is
+    And an unresolvable client comes back as the same "inner client not found" error the modal shows
+
+  @unit
+  Scenario: doctor fails when the suite binaries were built from different revisions
+    Given the release suite binaries report different vcs.revision values
     When I run `orchard shell doctor`
-    Then the suite-revision check FAILs naming both revisions
-    And it reports OK when the two revisions are equal
+    Then the suite-revisions check FAILs naming every differing revision
+    And a binary that cannot be resolved FAILs rather than reading as an unstamped match
+    And it reports OK only when every suite binary reports the same revision

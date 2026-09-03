@@ -74,10 +74,7 @@ func lastToken(s string) string {
 // garbage --version prints) must never compare equal, which a semver-aware
 // comparison could get wrong by treating both as equally invalid.
 func evaluateSuiteVersions(versions []binaryVersion) checkResult {
-	groups := map[string][]string{}
-	for _, v := range versions {
-		groups[v.version] = append(groups[v.version], v.name)
-	}
+	groups := groupSuite(versions)
 	if len(groups) == 1 {
 		for version := range groups {
 			switch version {
@@ -94,21 +91,49 @@ func evaluateSuiteVersions(versions []binaryVersion) checkResult {
 			}
 		}
 	}
+	return suiteMismatch("suite-versions", "suite binaries report mismatched versions: ",
+		"reinstall or rebuild so every orchard binary comes from the same release", groups)
+}
 
-	versionList := make([]string, 0, len(groups))
-	for version := range groups {
-		versionList = append(versionList, version)
+// groupSuite groups suite members by their resolved value (a version or a
+// revision), so a single group means every binary agrees and more than one is a
+// mismatch to name.
+func groupSuite(values []binaryVersion) map[string][]string {
+	groups := map[string][]string{}
+	for _, v := range values {
+		groups[v.version] = append(groups[v.version], v.name)
 	}
-	sort.Strings(versionList)
-	parts := make([]string, 0, len(versionList))
-	for _, version := range versionList {
-		label := version
-		if label == unresolvedVersion {
-			label = "not found"
-		}
-		parts = append(parts, fmt.Sprintf("%s (%s)", label, strings.Join(groups[version], ", ")))
+	return groups
+}
+
+// suiteMismatch is the FAIL listing both the version and revision checks share
+// when the suite disagrees: a sorted "value (bin, bin); ..." with the
+// unresolvedVersion sentinel and an empty value rendered as words rather than
+// bare parens.
+func suiteMismatch(id, detailPrefix, remedy string, groups map[string][]string) checkResult {
+	values := make([]string, 0, len(groups))
+	for value := range groups {
+		values = append(values, value)
 	}
-	return checkResult{ID: "suite-versions", Status: statusFail,
-		Detail: "suite binaries report mismatched versions: " + strings.Join(parts, "; "),
-		Remedy: "reinstall or rebuild so every orchard binary comes from the same release"}
+	sort.Strings(values)
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprintf("%s (%s)", mismatchLabel(value), strings.Join(groups[value], ", ")))
+	}
+	return checkResult{ID: id, Status: statusFail,
+		Detail: detailPrefix + strings.Join(parts, "; "), Remedy: remedy}
+}
+
+// mismatchLabel renders a group's value for the mismatch detail: the
+// unresolvedVersion sentinel as "not found", an unstamped ("") revision as
+// "unknown", everything else verbatim.
+func mismatchLabel(value string) string {
+	switch value {
+	case unresolvedVersion:
+		return "not found"
+	case "":
+		return "unknown"
+	default:
+		return value
+	}
 }
