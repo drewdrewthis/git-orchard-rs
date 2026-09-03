@@ -178,22 +178,27 @@ func TestEnvDriftStatus(t *testing.T) {
 	noDriftSleep(t)
 	live := "/dev/ttys001\n"
 	cases := []struct {
-		name   string
-		env    tmuxEnv
-		inner  string
-		wantOK bool
+		name     string
+		env      tmuxEnv
+		inner    string
+		innerErr error
+		wantOK   bool
 	}{
-		{"healthy", tmuxEnv{inner: "in", client: "/dev/ttys001", outer: "%1", self: "%0"}, live, false},
-		{"non-%N outer pane", tmuxEnv{inner: "in", client: "/dev/ttys001", outer: "0.1", self: "%0"}, live, true},
-		{"client tty not attached", tmuxEnv{inner: "in", client: "/dev/ttysDEAD", outer: "%1", self: "%0"}, live, true},
-		{"unwrapped: never drifts", tmuxEnv{self: "%0"}, live, false},
+		{"healthy", tmuxEnv{inner: "in", client: "/dev/ttys001", outer: "%1", self: "%0"}, live, nil, false},
+		{"non-%N outer pane", tmuxEnv{inner: "in", client: "/dev/ttys001", outer: "0.1", self: "%0"}, live, nil, true},
+		{"client tty not attached", tmuxEnv{inner: "in", client: "/dev/ttysDEAD", outer: "%1", self: "%0"}, live, nil, true},
+		{"unwrapped: never drifts", tmuxEnv{self: "%0"}, live, nil, false},
+		// @scenario list-clients errors on every poll attempt: the tty can never
+		// be confirmed attached, so the check reads exactly like an unattached
+		// client — the stale-launcher hint (#787).
+		{"list-clients errors every attempt: hint", tmuxEnv{inner: "in", client: "/dev/ttys001", outer: "%1", self: "%0"}, "", &tmuxReadErr{}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			stateHome(t)
 			resetLog(t)
 			setTmuxEnv(t, c.env)
-			swapTmuxReaders(t, c.inner, nil, "", nil)
+			swapTmuxReaders(t, c.inner, c.innerErr, "", nil)
 			s, ok := envDriftStatus()
 			if ok != c.wantOK {
 				t.Fatalf("ok = %v, want %v (status %q)", ok, c.wantOK, s)
