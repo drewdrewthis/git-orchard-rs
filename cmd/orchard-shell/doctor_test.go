@@ -263,6 +263,9 @@ func TestNewDoctorEnv_PopulatesProductionSeams(t *testing.T) {
 	if env.run == nil {
 		t.Error("run seam is nil")
 	}
+	if env.lookPath == nil {
+		t.Error("lookPath seam is nil")
+	}
 	if env.daemonURL != "http://127.0.0.1:7777/graphql" {
 		t.Errorf("daemonURL = %q; want the production daemon endpoint", env.daemonURL)
 	}

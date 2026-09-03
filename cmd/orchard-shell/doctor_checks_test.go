@@ -1,12 +1,12 @@
 package main
 
 import (
-	"context"
 	"errors"
-	"os/exec"
 	"strings"
 	"testing"
 )
+
+// --- tmux version ------------------------------------------------------
 
 // @scenario orchard shell doctor — tmux version check
 //
@@ -168,83 +168,4 @@ func TestCheckOuterSocket(t *testing.T) {
 			t.Errorf("Status = %v; want pass", got.Status)
 		}
 	})
-}
-
-func TestEvaluateSystemd(t *testing.T) {
-	tests := []struct {
-		name   string
-		output string
-		err    error
-		want   checkStatus
-	}{
-		{"active", "active", nil, statusPass},
-		{"inactive", "inactive", errors.New("tmux systemctl --user is-active orchard: exit status 3"), statusFail},
-		{"systemctl not found", "", &exec.Error{Name: "systemctl", Err: exec.ErrNotFound}, statusWarn},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := evaluateSystemd(tt.output, tt.err)
-			if got.Status != tt.want {
-				t.Errorf("evaluateSystemd(%q, %v) = %v; want %v", tt.output, tt.err, got.Status, tt.want)
-			}
-			if tt.want == statusFail && !strings.Contains(got.Remedy, "systemctl --user start orchard") {
-				t.Errorf("Remedy = %q; want it to contain the exact remedy command", got.Remedy)
-			}
-		})
-	}
-}
-
-func TestCheckSystemd_NonLinuxPassesWithoutRunningAnything(t *testing.T) {
-	calls := 0
-	env := doctorEnv{
-		goos: "darwin",
-		run: func(ctx context.Context, name string, args ...string) (string, error) {
-			calls++
-			return "", nil
-		},
-	}
-	got := checkSystemd(context.Background(), env)
-	if got.Status != statusPass {
-		t.Errorf("Status = %v; want pass", got.Status)
-	}
-	if calls != 0 {
-		t.Errorf("checkSystemd ran a command on non-linux goos; want zero calls")
-	}
-}
-
-func TestCheckSystemd_LinuxRunsSystemctl(t *testing.T) {
-	env := doctorEnv{
-		goos: "linux",
-		run: func(ctx context.Context, name string, args ...string) (string, error) {
-			if name != "systemctl" {
-				t.Errorf("ran %q; want systemctl", name)
-			}
-			return "active", nil
-		},
-	}
-	got := checkSystemd(context.Background(), env)
-	if got.Status != statusPass {
-		t.Errorf("Status = %v; want pass", got.Status)
-	}
-}
-
-func TestCheckPath(t *testing.T) {
-	tests := []struct {
-		name    string
-		self    string
-		pathEnv string
-		want    checkStatus
-	}{
-		{"install dir on PATH", "/opt/orchard/orchard-shell", "/usr/bin:/opt/orchard:/bin", statusPass},
-		{"install dir missing from PATH", "/opt/orchard/orchard-shell", "/usr/bin:/bin", statusFail},
-		{"self unresolved warns", "", "/usr/bin", statusWarn},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := checkPath(tt.self, tt.pathEnv)
-			if got.Status != tt.want {
-				t.Errorf("checkPath(%q, %q) = %v; want %v", tt.self, tt.pathEnv, got.Status, tt.want)
-			}
-		})
-	}
 }

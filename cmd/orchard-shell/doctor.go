@@ -62,10 +62,16 @@ func runCommand(ctx context.Context, name string, args ...string) (string, error
 	return trimmed, nil
 }
 
+// pathLookup resolves a binary name via $PATH, like exec.LookPath. Injected
+// so the path check's shadow detection (checkPath) is testable without real
+// binaries on disk.
+type pathLookup func(name string) (string, error)
+
 // doctorEnv bundles every check's IO seam.
 type doctorEnv struct {
 	tmux        tmuxExec
 	run         cmdRunner
+	lookPath    pathLookup // exec.LookPath; for the path check's suite-binary shadow detection
 	daemonURL   string
 	goos        string
 	self        string // selfPath(); "" if it could not be resolved
@@ -83,6 +89,7 @@ func newDoctorEnv(selfVersion, innerSocket, outerSocket string) doctorEnv {
 	return doctorEnv{
 		tmux:        runTmux,
 		run:         runCommand,
+		lookPath:    exec.LookPath,
 		daemonURL:   "http://127.0.0.1:7777/graphql",
 		goos:        runtime.GOOS,
 		self:        selfPath(),
@@ -130,7 +137,7 @@ func runChecks(ctx context.Context, env doctorEnv) []checkResult {
 		checkInnerSocket(env),
 		checkOuterSocket(env),
 		checkSystemd(ctx, env),
-		checkPath(env.self, env.pathEnv),
+		checkPath(env),
 	}
 }
 

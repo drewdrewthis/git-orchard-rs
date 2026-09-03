@@ -104,3 +104,18 @@ Feature: orchard install, upgrade, and doctor
     When I run "orchard shell doctor" with no socket flags
     Then the inner-socket check runs against socket "from-env"
     And an explicit "--inner-socket" or "--outer-socket" flag overrides both the environment and the default
+
+  @unit
+  Scenario: doctor's systemd check recognizes orchard-daemon.service as well as orchard.service
+    Given "systemctl --user is-active orchard-daemon.service" reports "active"
+    And "systemctl --user is-active orchard.service" reports "inactive"
+    When I run "orchard shell doctor" on Linux
+    Then the systemd check passes and names "orchard-daemon.service" as the active unit
+
+  @unit
+  Scenario: doctor's path check warns when an earlier $PATH entry shadows a suite binary
+    Given "orchard-shell" resolves to "/opt/orchard/orchard-shell"
+    And "orchard-daemon" resolves via $PATH to "/home/u/go/bin/orchard-daemon", a stale build outside "/opt/orchard"
+    When I run "orchard shell doctor"
+    Then the path check warns
+    And the remedy suggests reordering $PATH or removing the stale binary
