@@ -74,7 +74,7 @@ func TestPickerSearchesWalkedCandidates(t *testing.T) {
 		t.Fatalf("dir() = %q, want %q", p.dir(), want)
 	}
 	// clearing the query returns to the empty-query list (roots, no crash)
-	if !p.backspaceSearch() {
+	if deleted, _ := p.backspaceSearch(); !deleted {
 		t.Fatal("backspace on a typed query reported nothing to delete")
 	}
 }
@@ -121,7 +121,7 @@ func TestPickerSetCandsDropsStaleGeneration(t *testing.T) {
 	if !p.walking {
 		t.Error("a stale walkDoneMsg cleared walking")
 	}
-	if hasPath(p.cands, "/should-not-apply") {
+	if hasPath(p.plainCands, "/should-not-apply") {
 		t.Error("a stale walkDoneMsg's candidates were applied")
 	}
 
@@ -131,7 +131,7 @@ func TestPickerSetCandsDropsStaleGeneration(t *testing.T) {
 	if p.walking {
 		t.Error("the current walkDoneMsg left walking true")
 	}
-	if !hasPath(p.cands, current[0]) {
+	if !hasPath(p.plainCands, current[0]) {
 		t.Error("the current walkDoneMsg's candidates were not applied")
 	}
 }
@@ -175,5 +175,98 @@ func TestPickerWindowScrollsUnderTheCursor(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// runesMsg is a typed-text key burst, as bubbletea coalesces one.
+func runesMsg(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+
+// drivePickerWalk runs a re-walk command synchronously and installs its result,
+// so a test can assert on the set a background walk would have produced.
+func drivePickerWalk(t *testing.T, p *picker, cmd tea.Cmd) {
+	t.Helper()
+	if cmd == nil {
+		t.Fatal("expected a re-walk command, got nil")
+	}
+	msg, ok := cmd().(walkDoneMsg)
+	if !ok {
+		t.Fatalf("re-walk command did not produce a walkDoneMsg")
+	}
+	p.setCands(msg.gen, msg.cands)
+}
+
+// AC1: a query whose path segment starts with a dot flips the picker into
+// dot-mode and re-walks with hidden dirs included, surfacing the hidden
+// directory without the user touching ⌥h.
+func TestPickerDotQuerySurfacesHiddenDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // no leaked recents in the pool
+	root := t.TempDir()
+	mkdirs(t, root, ".hidden/inside", "visible")
+	p := newPicker(root, nil)
+	p.cfg = walkConfig{roots: []string{root}} // keep the test walk off the real $HOME
+	p.setCands(p.walkGen, walkCandidates(p.cfg))
+
+	if hasPath(matchPaths(p.matches), filepath.Join(root, ".hidden")) {
+		t.Fatal("the plain walk surfaced the hidden dir before any dot query")
+	}
+	cmd := p.searchKey(runesMsg(".hidden"))
+	drivePickerWalk(t, p, cmd)
+	if !hasPath(matchPaths(p.matches), filepath.Join(root, ".hidden")) {
+		t.Errorf("dot query did not surface .hidden: %v", matchPaths(p.matches))
+	}
+}
+
+// AC1: an ordinary (dot-free) query keeps the hidden-off default — no re-walk,
+// no hidden dir in the results.
+func TestPickerNonDotQueryKeepsHiddenOff(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkdirs(t, root, ".hidden", "visible")
+	p := newPicker(root, nil)
+	p.cfg = walkConfig{roots: []string{root}}
+	p.setCands(p.walkGen, walkCandidates(p.cfg))
+
+	if cmd := p.searchKey(runesMsg("visible")); cmd != nil {
+		t.Fatal("a non-dot query asked for a re-walk")
+	}
+	if hasPath(matchPaths(p.matches), filepath.Join(root, ".hidden")) {
+		t.Errorf("a non-dot query surfaced a hidden dir: %v", matchPaths(p.matches))
+	}
+}
+
+// AC2: ⌥h cycles auto → on → off → auto, and the override wins over the query
+// in both directions.
+func TestPickerHiddenOverridePrecedence(t *testing.T) {
+	if !effectiveHidden(hiddenOn, "visible") {
+		t.Error("hiddenOn did not force hidden for a non-dot query")
+	}
+	if effectiveHidden(hiddenOff, ".claude") {
+		t.Error("hiddenOff did not suppress hidden for a dot query")
+	}
+
+	p := &picker{}
+	p.search = newTextField("", searchWidth)
+	for i, want := range []hiddenMode{hiddenOn, hiddenOff, hiddenAuto} {
+		p.toggleHidden()
+		if p.mode != want {
+			t.Fatalf("⌥h press %d left mode %v, want %v", i+1, p.mode, want)
+		}
+	}
+}
+
+// AC2/AC3: toggling ⌥h back to a hidden state already walked reuses the cached
+// tree — no re-walk command.
+func TestPickerHiddenToggleReusesCachedTree(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	mkdirs(t, root, ".hidden", "visible")
+	p := newPicker(root, nil)
+	p.cfg = walkConfig{roots: []string{root}}
+	p.setCands(p.walkGen, walkCandidates(p.cfg)) // plain walk cached
+
+	drivePickerWalk(t, p, p.toggleHidden()) // auto → on: walks + caches hidden
+	p.toggleHidden()                        // on → off: plain already cached
+	if p.walking {
+		t.Error("flip to a cached hidden state re-walked instead of reusing")
 	}
 }

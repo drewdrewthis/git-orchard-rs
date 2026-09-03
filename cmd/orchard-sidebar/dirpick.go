@@ -36,15 +36,20 @@ type walkDoneMsg struct {
 type picker struct {
 	roots   []string   // walk roots; also the empty-query tail
 	recents []string   // recent launch dirs; the empty-query head
-	cands   []string   // every walked directory; nil until the walk lands
 	matches []dirMatch // the current ranked view
 	cursor  int
 	search  textField
-	hidden  bool
+	mode    hiddenMode
 	walking bool
 	walkGen int // bumped each time a new walk is kicked off; see walkDoneMsg
 	spin    spinner.Model
 	cfg     walkConfig
+
+	// The walked candidate sets, one per hidden state, cached so a flip back
+	// to a state already walked reuses it instead of re-walking. Both nil until
+	// their walk lands; a widen (roots change) invalidates both.
+	plainCands  []string // hidden-off walk
+	hiddenCands []string // hidden-on walk
 }
 
 func newPicker(selected string, known []string) *picker {
@@ -72,15 +77,20 @@ func (p *picker) walkCmd() tea.Cmd {
 	return func() tea.Msg { return walkDoneMsg{gen: gen, cands: walkCandidates(cfg)} }
 }
 
-// setCands installs the walked set and re-derives the visible list — unless
-// gen names a walk that a later widen/toggle has since superseded, in which
-// case the stale result is dropped and p.walking is left alone so the
-// in-flight walk's spinner keeps spinning.
+// setCands caches the walked set under the hidden state it was walked with
+// (read from cfg, which the matching generation still reflects) and re-derives
+// the visible list — unless gen names a walk that a later widen/toggle has since
+// superseded, in which case the stale result is dropped and p.walking is left
+// alone so the in-flight walk's spinner keeps spinning.
 func (p *picker) setCands(gen int, cands []string) {
 	if gen != p.walkGen {
 		return
 	}
-	p.cands = cands
+	if p.cfg.showHidden {
+		p.hiddenCands = cands
+	} else {
+		p.plainCands = cands
+	}
 	p.walking = false
 	p.rebuild()
 }
@@ -89,7 +99,7 @@ func (p *picker) setCands(gen int, cands []string) {
 // is always reachable), then the walked candidates — or, while the walk is
 // still running, just the roots, so typing is never dead.
 func (p *picker) pool() []string {
-	base := p.cands
+	base := p.activeCands()
 	if base == nil {
 		base = p.roots
 	}
@@ -156,43 +166,35 @@ func (p *picker) widen() tea.Cmd {
 	}
 	p.roots = next
 	p.cfg.roots = next
+	p.plainCands, p.hiddenCands = nil, nil // the roots moved; both caches are stale
 	p.walking = true
 	p.walkGen++
 	p.rebuild()
 	return p.walkCmd()
 }
 
-// toggleHidden flips the hidden-directory filter and re-walks — hidden dirs are
-// pruned during the walk, not the search, so revealing them needs a fresh walk.
-func (p *picker) toggleHidden() tea.Cmd {
-	p.hidden = !p.hidden
-	p.cfg.showHidden = p.hidden
-	p.walking = true
-	p.walkGen++
-	return p.walkCmd()
-}
-
-// searchKey hands one key to the search field and re-derives the list. The
+// searchKey hands one key to the search field and re-derives the list, returning
+// a re-walk command when the new query crossed the dot-mode boundary (auto). The
 // field is a textField, so a coalesced burst or a paste lands whole.
-func (p *picker) searchKey(msg tea.KeyMsg) {
+func (p *picker) searchKey(msg tea.KeyMsg) tea.Cmd {
 	before := p.search.value()
 	p.search.key(msg)
 	if p.search.value() == before {
-		return
+		return nil
 	}
 	p.cursor = 0 // a new query re-ranks from the top
-	p.rebuild()
+	return p.syncHidden()
 }
 
 // backspaceSearch deletes the last search character, reporting false when the
 // query was already empty — the caller then reads the backspace as "widen the
-// roots" instead.
-func (p *picker) backspaceSearch() bool {
+// roots" instead. A non-nil command means the deletion crossed the dot-mode
+// boundary and a re-walk is needed.
+func (p *picker) backspaceSearch() (bool, tea.Cmd) {
 	if p.search.value() == "" {
-		return false
+		return false, nil
 	}
-	p.searchKey(tea.KeyMsg{Type: tea.KeyBackspace})
-	return true
+	return true, p.searchKey(tea.KeyMsg{Type: tea.KeyBackspace})
 }
 
 func (p *picker) searchView(w int) string { return p.search.view(w) }
