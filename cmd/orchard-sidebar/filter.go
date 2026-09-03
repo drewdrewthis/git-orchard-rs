@@ -27,6 +27,15 @@ type filterState struct {
 // wide enough that a fresh field does not open already scrolled.
 const filterFieldWidth = 32
 
+// filterMinWidth is the visible cell width the query field must keep for the
+// header to also seat the update hint beside it. A dev build's ident (dev@<rev>,
+// ~12 cells) prepended to the right strip at defaultWidth starved the field to
+// ~7 cells, so typing "payments" scrolled the textinput and drew "/yments"
+// (#801). 16 cells clears the longest fake session query with the slash, the
+// cursor cell and the count still on the line; below it the header drops the
+// hint for that frame rather than shred the query the user is typing.
+const filterMinWidth = 16
+
 func (m *model) filterQuery() string { return m.filter.field.value() }
 
 // filterOn reports whether the header shows the filter instead of the title:
@@ -133,17 +142,37 @@ func (m *model) railIndex(vis []int) int {
 // and cannot end up pointing at a session that is not even on screen.
 func (m *model) railRow() (row, bool) { return m.rowAt(m.railIndex(m.visibleRows())) }
 
+// hintFitsFilter reports whether the header may prepend the update hint to its
+// right strip without starving the open filter field. With the filter closed
+// the hint always fits (the title yields to it); open, the hint and the field
+// share the row, so the hint is kept only while the field would stay at least
+// filterMinWidth cells (#801). iw is the header's inner width and right the
+// strip the hint would lead — the same budget filterHead is handed at layout.
+func (m *model) hintFitsFilter(iw int, hint, right string) bool {
+	if !m.filterOn() {
+		return true
+	}
+	headW := iw - cellWidth(hint+"  "+right) - 1
+	return m.filterFieldSpace(headW) >= filterMinWidth
+}
+
+// filterFieldSpace is the visible cell width the query field gets inside a
+// header left-hand strip of w cells. Two cells come off rather than one after
+// the slash and the count: a focused textinput draws its Width PLUS the cell
+// its cursor sits in, and a count clipped to "(…" is a count that says nothing.
+// The header reads it to decide whether the update hint still fits beside the
+// field (#801); filterHead lays the field out at exactly this width.
+func (m *model) filterFieldSpace(w int) int {
+	count := fmt.Sprintf(" (%d)", len(m.visibleRows()))
+	return max(1, w-2-cellWidth(count))
+}
+
 // filterHead is the header's left-hand text while the filter is on:
 // `/query (n)`, n being how many cards survive it. Focused, the query is the
 // live field with its cursor; after Enter it is the same string, static.
 func (m *model) filterHead(w int) string {
 	count := styDim.Render(fmt.Sprintf(" (%d)", len(m.visibleRows())))
-	// What is left after the slash and the count, so a long query scrolls
-	// under the cursor instead of pushing the count off the line. Two cells
-	// come off rather than one: a focused textinput draws its Width PLUS the
-	// cell its cursor sits in, and a count clipped to "(…" is a count that
-	// says nothing.
-	fw := max(1, w-2-cellWidth(count))
+	fw := m.filterFieldSpace(w)
 	if m.filter.open {
 		return styDim.Render("/") + m.filter.field.view(fw) + count
 	}
