@@ -98,15 +98,3 @@ func (m *model) pruneStalePins(live map[string]bool) {
 		m.persistState()
 	}
 }
-
-// rowIndex is the current model index of a session, false when no row carries
-// it. Used where a gesture recorded a session name and must re-find its row
-// after the list may have re-sorted (a drag release).
-func (m *model) rowIndex(name string) (int, bool) {
-	for i, r := range m.rows {
-		if r.session == name {
-			return i, true
-		}
-	}
-	return 0, false
-}

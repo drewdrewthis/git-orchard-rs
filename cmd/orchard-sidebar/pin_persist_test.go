@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -45,6 +46,14 @@ func TestCorruptStateYieldsEmptyPins(t *testing.T) {
 	writeStateFile(t, "sidebar-state.json", `{not json`)
 	if st := loadSidebarState(); len(st.Pinned) != 0 {
 		t.Errorf("corrupt file loaded pins = %v, want none", st.Pinned)
+	}
+
+	// missing file also yields empty pins
+	if err := os.Remove(stateFile("sidebar-state.json")); err != nil {
+		t.Fatal(err)
+	}
+	if st := loadSidebarState(); len(st.Pinned) != 0 {
+		t.Errorf("missing file loaded pins = %v, want none", st.Pinned)
 	}
 }
 
