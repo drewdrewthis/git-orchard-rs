@@ -61,7 +61,7 @@ func readTmuxEnv() tmuxEnv {
 }
 
 // wrapped reports whether the sidebar is running inside the outer-shell
-// wrapper (docs/outer-shell-prototype.md) rather than as a plain pane.
+// wrapper (docs/outer-shell.md) rather than as a plain pane.
 func (e tmuxEnv) wrapped() bool { return e.inner != "" }
 
 // problem names the environment combination the sidebar cannot work in, for

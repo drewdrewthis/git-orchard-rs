@@ -1,14 +1,17 @@
-# Outer-tmux-wrapper prototype (issue #747)
+# Outer tmux wrapper (issue #747)
 
-Spike proving an outer tmux server can wrap a nested inner tmux server —
-sidebar pane pinned to a fixed width, inner session churning freely inside
-it — using shell + tmux, plus three Go-side additions in
-`cmd/orchard-sidebar`: a routing shim so the sidebar's own tmux execs reach
-the right server (see "Routing orchard-sidebar's own tmux execs" below),
-a focus hand-back that returns keyboard focus to the inner pane after a
-switch (see "Sidebar focus hand-back" below), and the sidebar's own
-fixed-header/fixed-footer layout and collapse button (see "Sidebar layout and
-collapse" below). Lives at `scripts/outer-shell/`.
+An outer tmux server wraps a nested inner tmux server — sidebar pane pinned
+to a fixed width, inner session churning freely inside it — using shell +
+tmux, plus three Go-side additions in `cmd/orchard-sidebar`: a routing shim
+so the sidebar's own tmux execs reach the right server (see "Routing
+orchard-sidebar's own tmux execs" below), a focus hand-back that returns
+keyboard focus to the inner pane after a switch (see "Sidebar focus
+hand-back" below), and the sidebar's own fixed-header/fixed-footer layout
+and collapse button (see "Sidebar layout and collapse" below). The wrapper
+itself ships as `cmd/orchard-shell` (dispatched as `orchard shell` per
+ADR-013); `scripts/outer-shell/` retains `outer.conf` (embedded in the
+binary; the file here is what a human edits — see `cmd/orchard-shell/conf_test.go`
+for the drift guard) and `verify.sh`, the automated proof battery.
 
 ## How it works
 
@@ -36,7 +39,7 @@ one the user ever needs to reach for.
 
 ## The one place `TMUX=` is needed
 
-`launch.sh`'s right pane runs:
+`orchard-shell`'s right pane runs:
 
 ```sh
 TMUX= tmux -L "$INNER_SOCKET" attach -t "$SESSION"
@@ -69,7 +72,7 @@ switch lives on the **inner** one. A bare exec would silently talk to the
 wrong server — `switch-client` no-ops, the "which session is current"
 highlight never anchors, and nothing on screen says why.
 
-`launch.sh` sets `ORCHARD_TMUX_SOCKET=<inner-socket>` when it starts the real
+`orchard-shell` sets `ORCHARD_TMUX_SOCKET=<inner-socket>` when it starts the real
 sidebar in pane 0.0 (falling back to the `watch` placeholder when the binary
 isn't on PATH). `cmd/orchard-sidebar/env.go` resolves that variable ONCE at
 startup into a `tmuxEnv`, and `env.innerCmd`/`innerCmdContext` route every
@@ -83,7 +86,7 @@ other, unrelated clients (a plain terminal attached to the same inner
 session for other reasons). `switch-client -t <session>` with no `-c` lets
 tmux pick *any* attached client to move — on a shared server that picked an
 unrelated client instead of the wrapper's own pane (#747 defect 2, seen
-live). `launch.sh` also sets `ORCHARD_TMUX_CLIENT=<tty>`, resolved from
+live). `orchard-shell` also sets `ORCHARD_TMUX_CLIENT=<tty>`, resolved from
 outer pane 0.1's `#{pane_tty}` right after sending the inner attach (that
 pane's pty *is* the inner client's `client_tty`, once attached).
 `switchClient` and `fetchClientSession`/`pickClient` scope every
@@ -117,7 +120,7 @@ inner one did. Landing on pane 0.0 after a switch and finding every
 keystroke still going to the sidebar, not the shell just switched to, was
 issue #747's defect 3.
 
-`launch.sh` resolves outer pane 0.1's `#{pane_id}` once at boot and hands it
+`orchard-shell` resolves outer pane 0.1's `#{pane_id}` once at boot and hands it
 to the sidebar as `ORCHARD_OUTER_PANE`. `cmd/orchard-sidebar/env.go`'s
 `env.outerCmd` execs `tmux` against the OUTER server with no modification —
 deliberately bypassing `innerCmd`'s inner-socket routing, since
@@ -217,7 +220,7 @@ the wrong width for a beat after every resize and anything reading the width
 straight afterwards reads the un-pinned one. `select-layout main-vertical`
 reads `main-pane-width` inside tmux, with no shell and no delay, and is a
 no-op on a window that still has only one pane (during boot, before
-`launch.sh` splits).
+`orchard-shell` splits).
 
 ### What survives a restart
 
@@ -770,7 +773,7 @@ it.
   suppress loading the user's real `~/.tmux.conf`; omitting `-f <outer.conf>`
   on every invocation would silently pull in the user's actual config
   (their prefix, their plugins, their status line) into what's supposed to
-  be a minimal wrapper. `launch.sh` and `verify.sh` both pass `-f` on every
+  be a minimal wrapper. `orchard-shell` and `verify.sh` both pass `-f` on every
   tmux invocation against the outer socket for this reason.
 - **Popups need a real attached client.** `display-popup` requires at
   least one attached client to render into (`no current client` otherwise)
@@ -795,11 +798,11 @@ it.
 
 ## Next steps
 
-- Write a `specs/features/` BDD feature for the wrapper behavior this
-  spike proved (sidebar width invariant, `TMUX=` clearing, popup-over-inner
-  rendering) so it graduates from spike to spec'd behavior.
-- Wire `launch.sh`'s boot path into the real session-launch flow instead
-  of being invoked standalone.
+- Write a `specs/features/` BDD feature for the wrapper behavior originally
+  proved here as a spike (sidebar width invariant, `TMUX=` clearing,
+  popup-over-inner rendering) so it graduates from spike to spec'd behavior.
+- `orchard-shell`'s boot path is already wired into `orchard shell` (ADR-013);
+  remaining work is #3's reattach hardening and #726's daemon mutations below.
 - Per ADR-016/017/018 (GraphQL is the protocol, no client-side shellouts):
   the outer server's mutating operations here — attaching a client,
   opening a popup, resizing the sidebar — are exactly the shape of

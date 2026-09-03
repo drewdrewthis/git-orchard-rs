@@ -10,7 +10,7 @@ import (
 // uses, and the destructive one sits behind a confirm as well.
 //
 // It is an IN-APP overlay, not tmux's display-menu or display-popup, per the
-// modal rule in docs/outer-shell-prototype.md: it acts on a row and has to be
+// modal rule in docs/outer-shell.md: it acts on a row and has to be
 // capture-pane-testable. A popup composites into the attached client's stream
 // and into no pane's grid, so capture-pane cannot see it — and it would live
 // on the OUTER server while every session it acts on lives on the inner one.

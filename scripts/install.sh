@@ -560,7 +560,7 @@ install_service() {
 
   dest_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   mkdir -p "$dest_dir"
-  tmp="$dest_dir/.orchard-service-tmp-$$"
+  tmp=$(mktemp "$dest_dir/.orchard-service-tmp-XXXXXX") || fail "could not create a temp file in $dest_dir"
   sed "s#^ExecStart=.*#ExecStart=$prefix/orchard daemon start#" "$src" >"$tmp"
   mv -f "$tmp" "$dest_dir/orchard.service"
 

@@ -148,7 +148,6 @@ build_via_docker() {
     -u "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e CARGO_HOME=/repo/target/.cargo-home \
-    -e VERSION="$VERSION" \
     -v "$ROOT:/repo:ro" \
     -v "$cache:/repo/target" \
     -w /repo \

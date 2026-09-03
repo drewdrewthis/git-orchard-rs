@@ -54,7 +54,7 @@ const minWidth = 34
 // collapsedWidth is what the pane shrinks to when collapsed: wide enough for
 // the » button and a one-cell state rail, narrow enough to be a margin.
 // defaultWidth is what it reopens to when no shared width is known — the same
-// 40 columns launch.sh splits the wrapper at.
+// 40 columns orchard-shell splits the wrapper at.
 const collapsedWidth = 3
 
 const defaultWidth = 40

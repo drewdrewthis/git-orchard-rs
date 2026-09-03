@@ -108,7 +108,7 @@ orchard shell doctor         # health check; --json for machine-readable output
 | Click a card | Switch to that session |
 | Right-click a card | Rename or close that session |
 
-Details, layout, and full rationale: [docs/outer-shell-prototype.md](docs/outer-shell-prototype.md).
+Details, layout, and full rationale: [docs/outer-shell.md](docs/outer-shell.md).
 
 ## Upgrading
 

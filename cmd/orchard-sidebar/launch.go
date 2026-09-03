@@ -13,7 +13,7 @@ import (
 // popup (see openLaunchPopup). It is the same binary so there is one build to
 // keep in sync, and a popup because it is the one modal that needs a full
 // window and a program of its own — the modal rule in
-// docs/outer-shell-prototype.md.
+// docs/outer-shell.md.
 //
 // ADR-016 (the daemon owns tmux) is bent here, not honoured: this creates the
 // session with `tmux new-session` on the inner socket, the same client-side
@@ -21,7 +21,7 @@ import (
 // launchSession mutation, but it only launches Claude — cwd/name/model/prompt,
 // no arbitrary command — and the point of this modal is "run the last command
 // again, wherever I say". Replacing this with a daemon mutation that takes a
-// command is the follow-up; it is noted in docs/outer-shell-prototype.md.
+// command is the follow-up; it is noted in docs/outer-shell.md.
 
 // lastLaunch is what the modal remembers between runs, so "the last command"
 // survives a restart of everything.

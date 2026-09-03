@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# verify.sh — Automated proof for the outer-tmux-wrapper spike (issue #747).
+# verify.sh — Automated proof for the outer tmux wrapper (issue #747).
 #
 # Usage: verify.sh
 #
-# Drives the REAL launch.sh (not a reimplementation) against throwaway
-# tmux sockets, using only tmux send-keys / capture-pane / display -p as
-# the probe surface, plus a real attached pty client for the popup check
-# (popups render only to a client's composited stream — capture-pane
-# cannot see them). Prints PASS/FAIL per check; exits nonzero on any FAIL.
+# Drives the REAL bin/orchard-shell (built fresh below from cmd/orchard-shell,
+# not a reimplementation) against throwaway tmux sockets, using only tmux
+# send-keys / capture-pane / display -p as the probe surface, plus a real
+# attached pty client for the popup check (popups render only to a client's
+# composited stream — capture-pane cannot see them). Prints PASS/FAIL per
+# check; exits nonzero on any FAIL.
 #
 # Sockets used (never the user's real servers):
 #   -L orchard-shell-test  (outer)
@@ -16,7 +17,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-LAUNCH="$SCRIPT_DIR/launch.sh"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
 
 OUTER="orchard-shell-test"
 INNER="orchard-inner-test"
@@ -51,6 +52,41 @@ HB_REPO_BIN_BACKUP=""
 # scratch dir before booting anything so any such side effect is cleaned
 # up by the trap instead of leaking into the caller's working directory.
 cd "$SCRATCH" || exit 1
+
+# Build bin/orchard-shell fresh so this always drives current source, not a
+# stale binary. mv into place rather than `go build -o` straight onto a live
+# path: go build truncates the existing inode, and overwriting a Mach-O a
+# process is still executing from gets that process SIGKILLed by the kernel
+# (macOS) -- irrelevant for THIS build (nothing is running bin/orchard-shell
+# yet) but kept consistent with the same pattern used for orchard-sidebar
+# further down.
+echo "==> building bin/orchard-shell"
+mkdir -p "$REPO_ROOT/bin"
+SHELL_BUILD_TMP="$(mktemp -d)"
+if ! ( cd "$REPO_ROOT" && go build -o "$SHELL_BUILD_TMP/orchard-shell" ./cmd/orchard-shell ) >"$SCRATCH/shell-build.log" 2>&1; then
+  cat "$SCRATCH/shell-build.log" >&2
+  echo "error: go build ./cmd/orchard-shell failed" >&2
+  exit 1
+fi
+mv -f "$SHELL_BUILD_TMP/orchard-shell" "$REPO_ROOT/bin/orchard-shell"
+rm -rf "$SHELL_BUILD_TMP"
+
+# LAUNCH speaks the same interface every check below already calls it with
+# (INNER_SOCKET SESSION positionally, OUTER_SOCKET from the environment) --
+# only what it execs underneath has changed, from the old shell prototype to
+# the real binary that replaced it. --detach: boot and return 0 without an
+# attach, since nothing invoking $LAUNCH below has a tty to attach to.
+LAUNCH="$SCRATCH/launch-shim.sh"
+cat >"$LAUNCH" <<SHIM
+#!/usr/bin/env bash
+set -euo pipefail
+exec "$REPO_ROOT/bin/orchard-shell" \\
+  --inner-socket "\$1" \\
+  --session "\$2" \\
+  --outer-socket "\${OUTER_SOCKET:-orchard-shell}" \\
+  --detach
+SHIM
+chmod +x "$LAUNCH"
 
 cleanup() {
   [[ -n "$PYWRAP_PID" ]] && kill "$PYWRAP_PID" 2>/dev/null
@@ -191,20 +227,20 @@ tmux -L "$INNER" split-window -h -t "$INNER_SESSION"
 tmux -L "$INNER" send-keys -t "$INNER_SESSION" 'echo INNER_MARKER_747' Enter
 sleep 0.2
 
-# --- boot outer via the REAL launch.sh --------------------------------------
-# stdin/stdout redirected away from a tty: launch.sh's final `exec ... attach`
-# fails fast ("not a terminal") without harming the session it just built —
-# this lets verify.sh drive the actual production script non-interactively.
+# --- boot outer via the REAL bin/orchard-shell (through $LAUNCH) -----------
+# $LAUNCH passes --detach, so this returns 0 without needing a tty to attach
+# to -- this lets verify.sh drive the actual production binary
+# non-interactively.
 BOOT_LOG="$SCRATCH/boot.log"
 OUTER_SOCKET="$OUTER" "$LAUNCH" "$INNER" "$INNER_SESSION" </dev/null >"$BOOT_LOG" 2>&1
 
 if ! tmux -L "$OUTER" has-session -t "$OUTER_SESSION" 2>/dev/null; then
-  record FAIL "outer session boots" "session '$OUTER_SESSION' not found after launch.sh; see $BOOT_LOG"
+  record FAIL "outer session boots" "session '$OUTER_SESSION' not found after orchard-shell boot; see $BOOT_LOG"
   cat "$BOOT_LOG" >&2
   echo "cannot continue without a booted outer session" >&2
   exit 1
 fi
-record PASS "outer session boots" "launch.sh created session '$OUTER_SESSION' on socket '$OUTER'"
+record PASS "outer session boots" "orchard-shell created session '$OUTER_SESSION' on socket '$OUTER'"
 
 # --- boot correctness: the right command must be in the right pane ---------
 # Regression guard for the send-keys-before-split bug: sending the sidebar
@@ -259,11 +295,11 @@ else
 fi
 
 # --- focus lands on the inner pane, not the sidebar (#747 live defect) -----
-# Before the launch.sh fix, tmux leaves the newly-split pane (0.0) active by
+# Before the orchard-shell fix, tmux leaves the newly-split pane (0.0) active by
 # default, and with `mouse off`/`prefix None` (the pre-fix outer.conf) there
 # was no way to move focus at all -- everything typed went to the sidebar
 # and never reached the inner shell. No select-pane has run anywhere above
-# this point, so a PASS here is entirely launch.sh's own doing.
+# this point, so a PASS here is entirely orchard-shell's own doing.
 BOOT_ACTIVE="$(tmux -L "$OUTER" display -p -t "$OUTER_SESSION" '#{pane_index}' 2>/dev/null)"
 if [[ "$BOOT_ACTIVE" == "1" ]]; then
   record PASS "inner pane (0.1) has focus after boot" "active pane index=1, no select-pane run by verify.sh"
@@ -317,17 +353,17 @@ PYWRAP_PID=""
 CHILD_ATTACH_PID=""
 
 # Pin to an exact, deterministic baseline size regardless of the calling
-# environment's own tty (verify.sh has none, so launch.sh's tput fallback
+# environment's own tty (verify.sh has none, so orchard-shell's tput fallback
 # already targets 160x45, but resize-window here makes the baseline explicit
 # and exercises the window-resized hook at the same time).
 tmux -L "$OUTER" resize-window -t "$OUTER_SESSION" -x 160 -y 45
 check_width40 "initial layout (160x45)"
 
-# --- idempotent-boot check: re-running launch.sh must not error or duplicate
+# --- idempotent-boot check: re-running orchard-shell must not error or duplicate
 OUTER_SOCKET="$OUTER" "$LAUNCH" "$INNER" "$INNER_SESSION" </dev/null >"$SCRATCH/boot2.log" 2>&1
 WINCOUNT="$(tmux -L "$OUTER" list-windows -t "$OUTER_SESSION" 2>/dev/null | wc -l | tr -d ' ')"
 if [[ "$WINCOUNT" == "1" ]]; then
-  record PASS "idempotent re-run" "still exactly 1 outer window after second launch.sh invocation"
+  record PASS "idempotent re-run" "still exactly 1 outer window after second orchard-shell invocation"
 else
   record FAIL "idempotent re-run" "expected 1 outer window, found $WINCOUNT"
 fi
@@ -386,7 +422,7 @@ fi
 # entirely), so this drives a real attached pty client, the same way the
 # popup check below does.
 #
-# Belt-and-suspenders, not load-bearing: launch.sh's own boot-time fix
+# Belt-and-suspenders, not load-bearing: orchard-shell's own boot-time fix
 # (see "inner pane (0.1) has focus after boot" above) already leaves 0.1
 # active by the time execution reaches here, and nothing between boot and
 # this point calls select-pane on $OUTER. Kept explicit anyway so this
@@ -911,8 +947,9 @@ tmux -L "$OUTER" resize-window -t "$OUTER_SESSION" -x 160 -y 45 2>/dev/null
 # throughout so this can't disturb, or be disturbed by, any check above.
 HB_OUTER="orchard-shell-test3"
 HB_INNER="orchard-inner-test3"
-# launch.sh hardcodes its own outer session name to "shell" regardless of
-# caller (see launch.sh: OUTER_SESSION="shell") -- sockets, not session
+# orchard-shell hardcodes its own outer session name to "shell" regardless
+# of caller (see cmd/orchard-shell/outer.go: outerSessionName) -- sockets,
+# not session
 # names, are what keep this instance isolated from $OUTER/$OUTER2 above.
 HB_OUTER_SESSION="shell"
 HB_BOOT_SESSION="boot3"
@@ -1006,8 +1043,8 @@ else
     record FAIL "$HB_CHECK3" "build failed -- see $HB_CHECK1"
     record FAIL "$HB_CHECK4" "build failed -- see $HB_CHECK1"
   else
-    # bin/orchard-sidebar is what launch.sh execs when present (see
-    # launch.sh's SIDEBAR_BIN resolution) -- swap in the fake-daemon build
+    # bin/orchard-sidebar is what orchard-shell execs when present (see
+    # cmd/orchard-shell/discover.go's sidebar resolution) -- swap in the fake-daemon build
     # for this boot. Backup-and-swap uses `mv`, never `cp`, onto the live
     # path: `cp` writes into the EXISTING inode in place, and overwriting
     # a Mach-O that a just-launched process is still executing from gets
@@ -1176,8 +1213,8 @@ tmux -L "$HB_INNER" kill-server 2>/dev/null
 # inner server, a plain `switch-client -t <session>` (no -c) lets tmux pick
 # an ARBITRARY attached client to move -- in the wild this hijacked the
 # user's unrelated terminal instead of the wrapper's own pane. The fix
-# scopes every switch to -c $ORCHARD_TMUX_CLIENT, which launch.sh resolves
-# from outer pane 0.1's #{pane_tty} (see launch.sh, INNER_TTY). This proves
+# scopes every switch to -c $ORCHARD_TMUX_CLIENT, which orchard-shell resolves
+# from outer pane 0.1's #{pane_tty}. This proves
 # BOTH halves: the scoped command moves only the wrapper's own client, and
 # -- informational only, never a gate -- that the OLD unscoped form really
 # is capable of moving a bystander, evidence the -c fix is load-bearing.
@@ -1185,7 +1222,7 @@ tmux -L "$INNER" new-session -d -s A
 tmux -L "$INNER" new-session -d -s B
 
 # A second, independent outer wrapper attached to inner session A via the
-# REAL launch.sh, so the wrapper's own inner client below is produced
+# REAL orchard-shell (through $LAUNCH), so the wrapper's own inner client below is produced
 # exactly the way production does it -- not synthesized.
 OUTER_SOCKET="$OUTER2" "$LAUNCH" "$INNER" A </dev/null >"$SCRATCH/boot_switchcheck.log" 2>&1
 
@@ -1292,7 +1329,7 @@ FK_SESSION="shell"
 FK_ROWS=30
 FK_REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
 
-FK_CHECK1="fake rows fill three labelled sections"
+FK_CHECK1="fake rows render as one flat last-attached list"
 FK_CHECK2="wheel scrolls the list under fixed chrome"
 FK_CHECK3="clicking + opens the launch modal in a popup"
 FK_CHECK4="esc closes the launch modal"
@@ -1370,12 +1407,10 @@ JSON
   else
     FK_CAP0="$(tmux -L "$FK_OUTER" capture-pane -p -t "$FK_PANE" 2>/dev/null)"
 
-    # 1. all three buckets, by their user-facing labels. "Working vs idle"
-    #    is gone by request -- anything still running groups under Sessions,
-    #    where the spinner already says so. $FK_ROWS four-line cards are far
-    #    taller than the pane, which is the point of the exercise, so the
-    #    headers have to be collected across a full scroll of the list
-    #    rather than from the one screenful that happens to be on top.
+    # 1. one flat list ordered by attach recency. $FK_ROWS four-line cards are
+    #    far taller than the pane, which is the point of the exercise, so the
+    #    list is collected across a full scroll rather than from the one
+    #    screenful that happens to be on top.
     FK_SEEN="$FK_CAP0"
     for _ in $(seq 1 12); do
       for _ in 1 2 3 4 5 6; do
@@ -1385,14 +1420,20 @@ JSON
       FK_SEEN="$FK_SEEN
 $(tmux -L "$FK_OUTER" capture-pane -p -t "$FK_PANE" 2>/dev/null)"
     done
-    FK_MISSING=""
+    # the section headers are gone by request: the list orders by last_attached,
+    # not by activity bucket, so there is nothing to head. The claim is that
+    # many synthetic rows render AND none of the old headers appear anywhere.
+    FK_STRAY=""
     for label in "Needs attention" "Done" "Sessions"; do
-      printf '%s\n' "$FK_SEEN" | grep -qF "$label" || FK_MISSING="$FK_MISSING $label"
+      printf '%s\n' "$FK_SEEN" | grep -qF "$label" && FK_STRAY="$FK_STRAY $label"
     done
-    if [[ -z "$FK_MISSING" ]]; then
-      record PASS "$FK_CHECK1" "$FK_ROWS synthetic rows rendered under all three headers"
+    FK_NAMES="$(printf '%s\n' "$FK_SEEN" | grep -cE 'fake-[0-9]')"
+    if [[ -n "$FK_STRAY" ]]; then
+      record FAIL "$FK_CHECK1" "a removed section header still renders:$FK_STRAY"
+    elif [[ "$FK_NAMES" -lt 3 ]]; then
+      record FAIL "$FK_CHECK1" "expected many fake rows, saw $FK_NAMES card lines"
     else
-      record FAIL "$FK_CHECK1" "missing header(s):$FK_MISSING"
+      record PASS "$FK_CHECK1" "$FK_ROWS synthetic rows rendered flat, no section headers"
     fi
 
     # back to the top of the list so the scroll check below starts from a
@@ -1669,8 +1710,9 @@ sys.stdout.buffer.write(("\n".join(out) + "\n").encode("utf-8"))
     # $FK_INNER: "a menu appeared" is not the claim, "the session got renamed"
     # is. The synthetic rows cannot serve here -- they name no tmux session.
     #
-    # Back to the top of the list first: the real row is the most recently
-    # active row in the attention bucket, so it sorts first of all.
+    # Back to the top of the list first: the real session was just created, so
+    # among the never-attached rows it has the newest created time and sorts
+    # ahead of every (older) synthetic row.
     for _ in $(seq 1 80); do
       tmux -L "$FK_OUTER" send-keys -t "$FK_PANE" -l "$(printf '\033[<64;10;10M')" 2>/dev/null
     done
@@ -1906,7 +1948,7 @@ fi
 # past a dead sidebar back to a bare prompt then exiting that too. Before
 # remain-on-exit (outer.conf) that closed the pane outright and renumbered
 # 0.1 down to 0.0, so a rerun's hardcoded "0.1" target missed the survivor
-# and launch.sh left a broken single-pane window (`select-pane -t
+# and orchard-shell left a broken single-pane window (`select-pane -t
 # shell:0.1: can't find pane: 1`, the exact live-drive failure this check
 # guards against).
 #
