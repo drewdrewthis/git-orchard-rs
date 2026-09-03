@@ -359,7 +359,7 @@ fn work_view_pr_to_cached(
         ci_gate_state: None,
         ci_checks: crate::ci_state::CiChecks::default(),
         has_conflicts,
-        unresolved_threads: 0,
+        unresolved_threads: pr.unresolved_thread_count,
         linked_issue_state: None,
         labels: pr.labels.clone(),
         title: Some(pr.title.clone()),
@@ -628,6 +628,7 @@ mod tests {
             mergeable: Some("MERGEABLE".to_string()),
             draft: false,
             labels: Vec::new(),
+            unresolved_thread_count: 0,
         }
     }
 
@@ -902,6 +903,7 @@ mod tests {
             mergeable: mergeable.map(|s| s.to_string()),
             draft: false,
             labels: Vec::new(),
+            unresolved_thread_count: 0,
         };
 
         // CONFLICTING → has_conflicts true
@@ -943,6 +945,41 @@ mod tests {
             !cached.has_conflicts,
             "BLOCKED merge_state_status with MERGEABLE should yield has_conflicts false"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // unresolved_thread_count flows daemon -> cache (#607)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pr_unresolved_thread_count_flows_into_cached_pr() {
+        // classify.rs and types.rs both gate on CachedPr::unresolved_threads,
+        // so a daemon-sourced PR that drops the count is silently reported as
+        // ready when threads are still blocking it.
+        let pr = WorkViewPr {
+            number: 3298,
+            state: "OPEN".to_string(),
+            title: "PR".to_string(),
+            status_check_rollup: Some("SUCCESS".to_string()),
+            review_decision: Some("APPROVED".to_string()),
+            merge_state_status: Some("BLOCKED".to_string()),
+            mergeable: Some("MERGEABLE".to_string()),
+            draft: false,
+            labels: Vec::new(),
+            unresolved_thread_count: 2,
+        };
+        let cached = work_view_pr_to_cached(&pr, "feature/threads", None);
+        assert_eq!(
+            cached.unresolved_threads, 2,
+            "daemon unresolvedThreadCount must reach CachedPr::unresolved_threads"
+        );
+    }
+
+    #[test]
+    fn pr_unresolved_thread_count_defaults_to_zero() {
+        let pr = minimal_pr(1, "feat/x");
+        let cached = work_view_pr_to_cached(&pr, "feat/x", None);
+        assert_eq!(cached.unresolved_threads, 0);
     }
 
     // -----------------------------------------------------------------------
@@ -995,6 +1032,7 @@ mod tests {
             mergeable: Some("MERGEABLE".to_string()),
             draft: false,
             labels: Vec::new(),
+            unresolved_thread_count: 0,
         };
         let cached = work_view_pr_to_cached(&pr, "fix/something", Some(429));
         assert_eq!(

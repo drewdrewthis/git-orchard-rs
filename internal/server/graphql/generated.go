@@ -209,27 +209,30 @@ type ComplexityRoot struct {
 	}
 
 	PullRequest struct {
-		AuthorLogin       func(childComplexity int) int
-		BaseRef           func(childComplexity int) int
-		Body              func(childComplexity int) int
-		Comments          func(childComplexity int) int
-		CreatedAt         func(childComplexity int) int
-		Draft             func(childComplexity int) int
-		HeadRef           func(childComplexity int) int
-		ID                func(childComplexity int) int
-		Labels            func(childComplexity int) int
-		MergeStateStatus  func(childComplexity int) int
-		Mergeable         func(childComplexity int) int
-		Number            func(childComplexity int) int
-		RepoName          func(childComplexity int) int
-		RepoOwner         func(childComplexity int) int
-		ReviewDecision    func(childComplexity int) int
-		Reviews           func(childComplexity int) int
-		State             func(childComplexity int) int
-		StatusCheckRollup func(childComplexity int) int
-		Title             func(childComplexity int) int
-		URL               func(childComplexity int) int
-		UpdatedAt         func(childComplexity int) int
+		AuthorLogin           func(childComplexity int) int
+		BaseRef               func(childComplexity int) int
+		Body                  func(childComplexity int) int
+		Comments              func(childComplexity int) int
+		CreatedAt             func(childComplexity int) int
+		Draft                 func(childComplexity int) int
+		HeadRef               func(childComplexity int) int
+		HeadRefOid            func(childComplexity int) int
+		ID                    func(childComplexity int) int
+		Labels                func(childComplexity int) int
+		MergeStateStatus      func(childComplexity int) int
+		Mergeable             func(childComplexity int) int
+		Number                func(childComplexity int) int
+		RepoName              func(childComplexity int) int
+		RepoOwner             func(childComplexity int) int
+		ReviewDecision        func(childComplexity int) int
+		ReviewThreads         func(childComplexity int) int
+		Reviews               func(childComplexity int) int
+		State                 func(childComplexity int) int
+		StatusCheckRollup     func(childComplexity int) int
+		Title                 func(childComplexity int) int
+		URL                   func(childComplexity int) int
+		UnresolvedThreadCount func(childComplexity int) int
+		UpdatedAt             func(childComplexity int) int
 	}
 
 	PullRequestReview struct {
@@ -282,6 +285,16 @@ type ComplexityRoot struct {
 		LoadAvg1m   func(childComplexity int) int
 		LoadAvg5m   func(childComplexity int) int
 		MemPercent  func(childComplexity int) int
+	}
+
+	ReviewThread struct {
+		AuthorLogin   func(childComplexity int) int
+		CommentCount  func(childComplexity int) int
+		ID            func(childComplexity int) int
+		IsOutdated    func(childComplexity int) int
+		IsResolved    func(childComplexity int) int
+		LastUpdatedAt func(childComplexity int) int
+		Path          func(childComplexity int) int
 	}
 
 	Subscription struct {
@@ -455,11 +468,17 @@ type ProcessResolver interface {
 	ClaudeInstance(ctx context.Context, obj *Process) (*ClaudeInstance, error)
 }
 type PullRequestResolver interface {
+	HeadRefOid(ctx context.Context, obj *PullRequest) (string, error)
+
+	Reviews(ctx context.Context, obj *PullRequest) ([]*PullRequestReview, error)
+
 	Mergeable(ctx context.Context, obj *PullRequest) (MergeableState, error)
 	MergeStateStatus(ctx context.Context, obj *PullRequest) (string, error)
 	ReviewDecision(ctx context.Context, obj *PullRequest) (*ReviewDecisionEnum, error)
 	StatusCheckRollup(ctx context.Context, obj *PullRequest) (CiStatus, error)
 	Labels(ctx context.Context, obj *PullRequest) ([]*Label, error)
+	ReviewThreads(ctx context.Context, obj *PullRequest) ([]*ReviewThread, error)
+	UnresolvedThreadCount(ctx context.Context, obj *PullRequest) (int64, error)
 }
 type QueryResolver interface {
 	Health(ctx context.Context) (*Health, error)
@@ -1345,6 +1364,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.PullRequest.HeadRef(childComplexity), true
+	case "PullRequest.headRefOid":
+		if e.ComplexityRoot.PullRequest.HeadRefOid == nil {
+			break
+		}
+
+		return e.ComplexityRoot.PullRequest.HeadRefOid(childComplexity), true
 	case "PullRequest.id":
 		if e.ComplexityRoot.PullRequest.ID == nil {
 			break
@@ -1393,6 +1418,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.PullRequest.ReviewDecision(childComplexity), true
+	case "PullRequest.reviewThreads":
+		if e.ComplexityRoot.PullRequest.ReviewThreads == nil {
+			break
+		}
+
+		return e.ComplexityRoot.PullRequest.ReviewThreads(childComplexity), true
 	case "PullRequest.reviews":
 		if e.ComplexityRoot.PullRequest.Reviews == nil {
 			break
@@ -1423,6 +1454,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.PullRequest.URL(childComplexity), true
+	case "PullRequest.unresolvedThreadCount":
+		if e.ComplexityRoot.PullRequest.UnresolvedThreadCount == nil {
+			break
+		}
+
+		return e.ComplexityRoot.PullRequest.UnresolvedThreadCount(childComplexity), true
 	case "PullRequest.updatedAt":
 		if e.ComplexityRoot.PullRequest.UpdatedAt == nil {
 			break
@@ -1734,6 +1771,49 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.ResourceLoad.MemPercent(childComplexity), true
+
+	case "ReviewThread.authorLogin":
+		if e.ComplexityRoot.ReviewThread.AuthorLogin == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.AuthorLogin(childComplexity), true
+	case "ReviewThread.commentCount":
+		if e.ComplexityRoot.ReviewThread.CommentCount == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.CommentCount(childComplexity), true
+	case "ReviewThread.id":
+		if e.ComplexityRoot.ReviewThread.ID == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.ID(childComplexity), true
+	case "ReviewThread.isOutdated":
+		if e.ComplexityRoot.ReviewThread.IsOutdated == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.IsOutdated(childComplexity), true
+	case "ReviewThread.isResolved":
+		if e.ComplexityRoot.ReviewThread.IsResolved == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.IsResolved(childComplexity), true
+	case "ReviewThread.lastUpdatedAt":
+		if e.ComplexityRoot.ReviewThread.LastUpdatedAt == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.LastUpdatedAt(childComplexity), true
+	case "ReviewThread.path":
+		if e.ComplexityRoot.ReviewThread.Path == nil {
+			break
+		}
+
+		return e.ComplexityRoot.ReviewThread.Path(childComplexity), true
 
 	case "Subscription.conversationChanged":
 		if e.ComplexityRoot.Subscription.ConversationChanged == nil {
@@ -3705,9 +3785,24 @@ type PullRequest implements Node {
   authorLogin: String!
   baseRef: String!
   headRef: String!
+
+  """
+  Head commit sha of the PR branch (#658). Read from the same GraphQL
+  enrichment snapshot as ` + "`" + `statusCheckRollup` + "`" + `, so the two always describe
+  the same commit — a consumer can trust "CI green on this sha". Empty
+  string until an enrichment fetch has succeeded.
+  """
+  headRefOid: String!
   url: String!
   createdAt: String!
   updatedAt: String!
+
+  """
+  Reviews submitted on this PR, oldest-first, capped at the 20 most
+  recent. Sourced from the shared enrichment fetch (#651). The cap is
+  deliberately tighter than ` + "`" + `reviewThreads` + "`" + ` because review bodies are
+  unbounded prose and this rides the sidebar hot path.
+  """
   reviews: [PullRequestReview!]
   comments: [IssueComment!]
   mergeable: MergeableState!
@@ -3715,6 +3810,22 @@ type PullRequest implements Node {
   reviewDecision: ReviewDecisionEnum
   statusCheckRollup: CiStatus!
   labels: [Label!]!
+
+  """
+  Review comment threads on this PR, capped at the 50 oldest (#607).
+  Every thread is returned regardless of state; use
+  ` + "`" + `unresolvedThreadCount` + "`" + ` for the merge-gate number.
+  """
+  reviewThreads: [ReviewThread!]!
+
+  """
+  Threads that still block a merge: ` + "`" + `isResolved == false` + "`" + `, regardless of
+  ` + "`" + `isOutdated` + "`" + ` (#607). GitHub's "Require conversation resolution before
+  merging" gate blocks on isResolved alone; an outdated thread still blocks
+  merge until resolved. Derived from the same fetch as ` + "`" + `reviewThreads` + "`" + ` so a
+  merge gate can read the count without walking the list.
+  """
+  unresolvedThreadCount: Int!
 }
 
 "A review submitted on a pull request."
@@ -3724,6 +3835,38 @@ type PullRequestReview {
   state: String!
   body: String!
   submittedAt: String!
+}
+
+"""
+A review comment thread on a pull request — one inline conversation
+anchored to a file. Deliberately flat: the merge gate needs to know
+whether a thread blocks, where it is, and who is waiting, not to render
+the conversation. Fetch the comments via ` + "`" + `Query.gh` + "`" + ` when the body text
+is actually needed.
+"""
+type ReviewThread {
+  id: ID!
+
+  "Whether a reviewer marked the thread resolved."
+  isResolved: Boolean!
+
+  """
+  Whether the thread is anchored to a diff hunk that no longer exists on
+  the head commit. Outdated threads do not block a merge.
+  """
+  isOutdated: Boolean!
+
+  "Repository-relative path the thread is anchored to."
+  path: String!
+
+  "Total comments in the thread, including any beyond the fetched page."
+  commentCount: Int!
+
+  "Login of the reviewer who opened the thread."
+  authorLogin: String!
+
+  "ISO-8601 timestamp of the most recent comment in the thread."
+  lastUpdatedAt: String!
 }
 
 """
@@ -4376,6 +4519,8 @@ func (ec *executionContext) childFields_PullRequest(ctx context.Context, field g
 		return ec.fieldContext_PullRequest_baseRef(ctx, field)
 	case "headRef":
 		return ec.fieldContext_PullRequest_headRef(ctx, field)
+	case "headRefOid":
+		return ec.fieldContext_PullRequest_headRefOid(ctx, field)
 	case "url":
 		return ec.fieldContext_PullRequest_url(ctx, field)
 	case "createdAt":
@@ -4396,6 +4541,10 @@ func (ec *executionContext) childFields_PullRequest(ctx context.Context, field g
 		return ec.fieldContext_PullRequest_statusCheckRollup(ctx, field)
 	case "labels":
 		return ec.fieldContext_PullRequest_labels(ctx, field)
+	case "reviewThreads":
+		return ec.fieldContext_PullRequest_reviewThreads(ctx, field)
+	case "unresolvedThreadCount":
+		return ec.fieldContext_PullRequest_unresolvedThreadCount(ctx, field)
 	}
 	return nil, fmt.Errorf("no field named %q was found under type PullRequest", field.Name)
 }
@@ -4446,6 +4595,26 @@ func (ec *executionContext) childFields_ResourceLoad(ctx context.Context, field 
 		return ec.fieldContext_ResourceLoad_loadAvg15m(ctx, field)
 	}
 	return nil, fmt.Errorf("no field named %q was found under type ResourceLoad", field.Name)
+}
+
+func (ec *executionContext) childFields_ReviewThread(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+	switch field.Name {
+	case "id":
+		return ec.fieldContext_ReviewThread_id(ctx, field)
+	case "isResolved":
+		return ec.fieldContext_ReviewThread_isResolved(ctx, field)
+	case "isOutdated":
+		return ec.fieldContext_ReviewThread_isOutdated(ctx, field)
+	case "path":
+		return ec.fieldContext_ReviewThread_path(ctx, field)
+	case "commentCount":
+		return ec.fieldContext_ReviewThread_commentCount(ctx, field)
+	case "authorLogin":
+		return ec.fieldContext_ReviewThread_authorLogin(ctx, field)
+	case "lastUpdatedAt":
+		return ec.fieldContext_ReviewThread_lastUpdatedAt(ctx, field)
+	}
+	return nil, fmt.Errorf("no field named %q was found under type ReviewThread", field.Name)
 }
 
 func (ec *executionContext) childFields_TmuxClient(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
@@ -8539,6 +8708,29 @@ func (ec *executionContext) fieldContext_PullRequest_headRef(_ context.Context, 
 	return graphql.NewScalarFieldContext("PullRequest", field, false, false, errors.New("field of type String does not have child fields"))
 }
 
+func (ec *executionContext) _PullRequest_headRefOid(ctx context.Context, field graphql.CollectedField, obj *PullRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_PullRequest_headRefOid(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return ec.Resolvers.PullRequest().HeadRefOid(ctx, obj)
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_PullRequest_headRefOid(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("PullRequest", field, true, true, errors.New("field of type String does not have child fields"))
+}
+
 func (ec *executionContext) _PullRequest_url(ctx context.Context, field graphql.CollectedField, obj *PullRequest) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -8617,7 +8809,7 @@ func (ec *executionContext) _PullRequest_reviews(ctx context.Context, field grap
 			return ec.fieldContext_PullRequest_reviews(ctx, field)
 		},
 		func(ctx context.Context) (any, error) {
-			return obj.Reviews, nil
+			return ec.Resolvers.PullRequest().Reviews(ctx, obj)
 		},
 		nil,
 		func(ctx context.Context, selections ast.SelectionSet, v []*PullRequestReview) graphql.Marshaler {
@@ -8631,8 +8823,8 @@ func (ec *executionContext) fieldContext_PullRequest_reviews(_ context.Context, 
 	fc = &graphql.FieldContext{
 		Object:     "PullRequest",
 		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
+		IsMethod:   true,
+		IsResolver: true,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return ec.childFields_PullRequestReview(ctx, field)
 		},
@@ -8794,6 +8986,61 @@ func (ec *executionContext) fieldContext_PullRequest_labels(_ context.Context, f
 		},
 	}
 	return fc, nil
+}
+
+func (ec *executionContext) _PullRequest_reviewThreads(ctx context.Context, field graphql.CollectedField, obj *PullRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_PullRequest_reviewThreads(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return ec.Resolvers.PullRequest().ReviewThreads(ctx, obj)
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v []*ReviewThread) graphql.Marshaler {
+			return ec.marshalNReviewThread2ᚕᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐReviewThreadᚄ(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_PullRequest_reviewThreads(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PullRequest",
+		Field:      field,
+		IsMethod:   true,
+		IsResolver: true,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.childFields_ReviewThread(ctx, field)
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PullRequest_unresolvedThreadCount(ctx context.Context, field graphql.CollectedField, obj *PullRequest) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_PullRequest_unresolvedThreadCount(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return ec.Resolvers.PullRequest().UnresolvedThreadCount(ctx, obj)
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v int64) graphql.Marshaler {
+			return ec.marshalNInt2int64(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_PullRequest_unresolvedThreadCount(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("PullRequest", field, true, true, errors.New("field of type Int does not have child fields"))
 }
 
 func (ec *executionContext) _PullRequestReview_id(ctx context.Context, field graphql.CollectedField, obj *PullRequestReview) (ret graphql.Marshaler) {
@@ -10156,6 +10403,167 @@ func (ec *executionContext) _ResourceLoad_loadAvg15m(ctx context.Context, field 
 }
 func (ec *executionContext) fieldContext_ResourceLoad_loadAvg15m(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	return graphql.NewScalarFieldContext("ResourceLoad", field, false, false, errors.New("field of type Float does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_id(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_id(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.ID, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNID2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_id(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type ID does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_isResolved(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_isResolved(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.IsResolved, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v bool) graphql.Marshaler {
+			return ec.marshalNBoolean2bool(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_isResolved(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type Boolean does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_isOutdated(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_isOutdated(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.IsOutdated, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v bool) graphql.Marshaler {
+			return ec.marshalNBoolean2bool(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_isOutdated(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type Boolean does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_path(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_path(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.Path, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_path(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_commentCount(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_commentCount(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.CommentCount, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v int64) graphql.Marshaler {
+			return ec.marshalNInt2int64(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_commentCount(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type Int does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_authorLogin(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_authorLogin(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.AuthorLogin, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_authorLogin(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _ReviewThread_lastUpdatedAt(ctx context.Context, field graphql.CollectedField, obj *ReviewThread) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_ReviewThread_lastUpdatedAt(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.LastUpdatedAt, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v string) graphql.Marshaler {
+			return ec.marshalNString2string(ctx, selections, v)
+		},
+		true,
+		true,
+	)
+}
+func (ec *executionContext) fieldContext_ReviewThread_lastUpdatedAt(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("ReviewThread", field, false, false, errors.New("field of type String does not have child fields"))
 }
 
 func (ec *executionContext) _Subscription_nodeChanged(ctx context.Context, field graphql.CollectedField) (ret func(ctx context.Context) graphql.Marshaler) {
@@ -16058,6 +16466,42 @@ func (ec *executionContext) _PullRequest(ctx context.Context, sel ast.SelectionS
 			if out.Values[i] == graphql.Null {
 				atomic.AddUint32(&out.Invalids, 1)
 			}
+		case "headRefOid":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._PullRequest_headRefOid(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "url":
 			out.Values[i] = ec._PullRequest_url(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -16074,7 +16518,38 @@ func (ec *executionContext) _PullRequest(ctx context.Context, sel ast.SelectionS
 				atomic.AddUint32(&out.Invalids, 1)
 			}
 		case "reviews":
-			out.Values[i] = ec._PullRequest_reviews(ctx, field, obj)
+			field := field
+
+			innerFunc := func(ctx context.Context, _ *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._PullRequest_reviews(ctx, field, obj)
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
 		case "comments":
 			out.Values[i] = ec._PullRequest_comments(ctx, field, obj)
 		case "mergeable":
@@ -16228,6 +16703,78 @@ func (ec *executionContext) _PullRequest(ctx context.Context, sel ast.SelectionS
 					}
 				}()
 				res = ec._PullRequest_labels(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "reviewThreads":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._PullRequest_reviewThreads(ctx, field, obj)
+				if res == graphql.Null {
+					atomic.AddUint32(&fs.Invalids, 1)
+				}
+				return res
+			}
+
+			if field.Deferrable != nil {
+				dfs, ok := deferred[field.Deferrable.Label]
+				di := 0
+				if ok {
+					dfs.AddField(field)
+					di = len(dfs.Values) - 1
+				} else {
+					dfs = graphql.NewFieldSet([]graphql.CollectedField{field})
+					deferred[field.Deferrable.Label] = dfs
+				}
+				dfs.Concurrently(di, func(ctx context.Context) graphql.Marshaler {
+					return innerFunc(ctx, dfs)
+				})
+
+				// don't run the out.Concurrently() call below
+				out.Values[i] = graphql.Null
+				continue
+			}
+
+			out.Concurrently(i, func(ctx context.Context) graphql.Marshaler { return innerFunc(ctx, out) })
+		case "unresolvedThreadCount":
+			field := field
+
+			innerFunc := func(ctx context.Context, fs *graphql.FieldSet) (res graphql.Marshaler) {
+				defer func() {
+					if r := recover(); r != nil {
+						ec.Error(ctx, ec.Recover(ctx, r))
+					}
+				}()
+				res = ec._PullRequest_unresolvedThreadCount(ctx, field, obj)
 				if res == graphql.Null {
 					atomic.AddUint32(&fs.Invalids, 1)
 				}
@@ -17032,6 +17579,75 @@ func (ec *executionContext) _ResourceLoad(ctx context.Context, sel ast.Selection
 			}
 		case "loadAvg15m":
 			out.Values[i] = ec._ResourceLoad_loadAvg15m(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.Deferred, int32(min(len(deferred), math.MaxInt32)))
+
+	for label, dfs := range deferred {
+		ec.ProcessDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
+var reviewThreadImplementors = []string{"ReviewThread"}
+
+func (ec *executionContext) _ReviewThread(ctx context.Context, sel ast.SelectionSet, obj *ReviewThread) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, reviewThreadImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ReviewThread")
+		case "id":
+			out.Values[i] = ec._ReviewThread_id(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "isResolved":
+			out.Values[i] = ec._ReviewThread_isResolved(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "isOutdated":
+			out.Values[i] = ec._ReviewThread_isOutdated(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "path":
+			out.Values[i] = ec._ReviewThread_path(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "commentCount":
+			out.Values[i] = ec._ReviewThread_commentCount(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "authorLogin":
+			out.Values[i] = ec._ReviewThread_authorLogin(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "lastUpdatedAt":
+			out.Values[i] = ec._ReviewThread_lastUpdatedAt(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -20193,6 +20809,32 @@ func (ec *executionContext) marshalNRepo2ᚖgithubᚗcomᚋdrewdrewthisᚋorchar
 		return graphql.Null
 	}
 	return ec._Repo(ctx, sel, v)
+}
+
+func (ec *executionContext) marshalNReviewThread2ᚕᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐReviewThreadᚄ(ctx context.Context, sel ast.SelectionSet, v []*ReviewThread) graphql.Marshaler {
+	ret := graphql.MarshalSliceConcurrently(ctx, len(v), 0, false, func(ctx context.Context, i int) graphql.Marshaler {
+		fc := graphql.GetFieldContext(ctx)
+		fc.Result = &v[i]
+		return ec.marshalNReviewThread2ᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐReviewThread(ctx, sel, v[i])
+	})
+
+	for _, e := range ret {
+		if e == graphql.Null {
+			return graphql.Null
+		}
+	}
+
+	return ret
+}
+
+func (ec *executionContext) marshalNReviewThread2ᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐReviewThread(ctx context.Context, sel ast.SelectionSet, v *ReviewThread) graphql.Marshaler {
+	if v == nil {
+		if !graphql.HasFieldError(ctx, graphql.GetFieldContext(ctx)) {
+			graphql.AddErrorf(ctx, "the requested element is null which the schema does not allow")
+		}
+		return graphql.Null
+	}
+	return ec._ReviewThread(ctx, sel, v)
 }
 
 func (ec *executionContext) unmarshalNString2string(ctx context.Context, v any) (string, error) {

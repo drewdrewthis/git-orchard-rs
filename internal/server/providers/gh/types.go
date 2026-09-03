@@ -126,8 +126,9 @@ const (
 // CLOSED, MERGED) so resolvers don't need to repeat the mapping.
 //
 // The enrichment fields (Mergeable, MergeStateStatus, ReviewDecision,
-// StatusCheckRollup, Labels) are populated lazily by EnrichPullRequest
-// and are zero-valued until that call succeeds.
+// StatusCheckRollup, Labels, HeadRefOid, Reviews, ReviewThreads) are
+// populated lazily by EnrichPullRequest and are zero-valued until that
+// call succeeds.
 type PullRequest struct {
 	RepoOwner   string
 	RepoName    string
@@ -150,6 +151,36 @@ type PullRequest struct {
 	ReviewDecision    *ReviewDecision // nil when GitHub returns null
 	StatusCheckRollup CiStatus
 	Labels            []Label // user labels only; phase labels excluded
+
+	// HeadRefOid is the head commit sha of the PR branch. It comes from the
+	// same enrichment response as StatusCheckRollup, so the two always
+	// describe one commit — a consumer pairing a fresh sha with a stale
+	// rollup would draw the wrong "CI is green on latest" conclusion (#658).
+	HeadRefOid string
+
+	// Reviews are the submitted reviews, oldest-first, capped at
+	// enrichReviewCap (#651).
+	Reviews []PullRequestReview
+
+	// ReviewThreads are the inline comment threads, capped at
+	// enrichThreadCap (#607). All threads, in every state — callers wanting
+	// the merge-gate number use UnresolvedThreadCount.
+	ReviewThreads []ReviewThread
+}
+
+// UnresolvedThreadCount reports how many review threads still block a
+// merge: unresolved, regardless of outdated state. GitHub's "Require
+// conversation resolution before merging" gate blocks on isResolved ==
+// false alone — an outdated thread (anchored to a diff hunk no longer on
+// the head commit) still blocks merge until it is resolved.
+func (p PullRequest) UnresolvedThreadCount() int {
+	n := 0
+	for _, t := range p.ReviewThreads {
+		if !t.IsResolved {
+			n++
+		}
+	}
+	return n
 }
 
 // Label mirrors a GitHub label attached to an issue or pull request.
@@ -179,6 +210,39 @@ type PullRequestReview struct {
 // NodeID is the stable GraphQL id `PullRequestReview:<id>`.
 func (r PullRequestReview) NodeID() string {
 	return fmt.Sprintf("PullRequestReview:%d", r.GitHubID)
+}
+
+// ReviewThread is one inline review conversation anchored to a file in the
+// PR diff. Flat by design: consumers gate merges on it, they do not render
+// the conversation, so the comment bodies are deliberately not carried.
+//
+// Populated by EnrichPullRequest; empty until that call succeeds.
+type ReviewThread struct {
+	// GitHubID is GitHub's own GraphQL node id for the thread (`PRRT_...`).
+	// Threads have no numeric database id, so this string is the identity.
+	GitHubID string
+
+	IsResolved bool
+	IsOutdated bool
+
+	// Path is the repository-relative file the thread is anchored to.
+	Path string
+
+	// CommentCount is the thread's full comment total, including comments
+	// beyond the single node the enrichment query fetches.
+	CommentCount int
+
+	// AuthorLogin is the reviewer who opened the thread (its first comment).
+	AuthorLogin string
+
+	// LastUpdatedAt is the createdAt of the thread'''s most recent comment,
+	// ISO-8601. Empty when the thread carries no comments.
+	LastUpdatedAt string
+}
+
+// NodeID is the stable GraphQL id `ReviewThread:<github node id>`.
+func (t ReviewThread) NodeID() string {
+	return "ReviewThread:" + t.GitHubID
 }
 
 // Issue mirrors a GitHub issue (real issues only — PRs are filtered out

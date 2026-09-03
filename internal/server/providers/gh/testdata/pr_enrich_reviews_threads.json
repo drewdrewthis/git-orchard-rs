@@ -1,0 +1,84 @@
+{
+  "headRefOid": "d3adb33fd3adb33fd3adb33fd3adb33fd3adb33f",
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "BLOCKED",
+  "reviewDecision": "CHANGES_REQUESTED",
+  "labels": { "nodes": [{ "name": "P0", "color": "b60205", "description": "top priority" }] },
+  "commits": {
+    "nodes": [{ "commit": { "statusCheckRollup": { "state": "SUCCESS" } } }]
+  },
+  "reviews": {
+    "nodes": [
+      {
+        "databaseId": 4336053435,
+        "author": { "login": "bob" },
+        "state": "COMMENTED",
+        "body": "one nit inline",
+        "submittedAt": "2026-04-02T10:23:41Z"
+      },
+      {
+        "databaseId": 4336053999,
+        "author": { "login": "carol" },
+        "state": "CHANGES_REQUESTED",
+        "body": "please split this",
+        "submittedAt": "2026-04-02T11:05:00Z"
+      }
+    ]
+  },
+  "reviewThreads": {
+    "nodes": [
+      {
+        "id": "PRRT_kwDOblocking1",
+        "isResolved": false,
+        "isOutdated": false,
+        "path": "internal/server/providers/gh/provider.go",
+        "comments": {
+          "totalCount": 3,
+          "nodes": [{ "author": { "login": "bob" }, "createdAt": "2026-04-02T10:23:41Z" }]
+        },
+        "latestComment": {
+          "nodes": [{ "createdAt": "2026-04-02T12:47:02Z" }]
+        }
+      },
+      {
+        "id": "PRRT_kwDOresolved2",
+        "isResolved": true,
+        "isOutdated": false,
+        "path": "internal/server/resolvers/gh.go",
+        "comments": {
+          "totalCount": 1,
+          "nodes": [{ "author": { "login": "carol" }, "createdAt": "2026-04-02T09:00:00Z" }]
+        },
+        "latestComment": {
+          "nodes": [{ "createdAt": "2026-04-02T09:00:00Z" }]
+        }
+      },
+      {
+        "id": "PRRT_kwDOoutdated3",
+        "isResolved": false,
+        "isOutdated": true,
+        "path": "internal/server/providers/gh/types.go",
+        "comments": {
+          "totalCount": 2,
+          "nodes": [{ "author": { "login": "bob" }, "createdAt": "2026-04-01T08:00:00Z" }]
+        },
+        "latestComment": {
+          "nodes": [{ "createdAt": "2026-04-01T08:30:00Z" }]
+        }
+      },
+      {
+        "id": "PRRT_kwDOblocking4",
+        "isResolved": false,
+        "isOutdated": false,
+        "path": "schema.graphql",
+        "comments": {
+          "totalCount": 1,
+          "nodes": [{ "author": { "login": "carol" }, "createdAt": "2026-04-02T13:10:00Z" }]
+        },
+        "latestComment": {
+          "nodes": [{ "createdAt": "2026-04-02T13:10:00Z" }]
+        }
+      }
+    ]
+  }
+}

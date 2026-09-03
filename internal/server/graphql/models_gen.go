@@ -448,20 +448,29 @@ type ProviderHealth struct {
 
 // A pull request on a GitHub repository. Sourced from the GitHub REST API.
 type PullRequest struct {
-	ID                string               `json:"id"`
-	RepoOwner         string               `json:"repoOwner"`
-	RepoName          string               `json:"repoName"`
-	Number            int64                `json:"number"`
-	Title             string               `json:"title"`
-	Body              string               `json:"body"`
-	State             PullRequestState     `json:"state"`
-	Draft             bool                 `json:"draft"`
-	AuthorLogin       string               `json:"authorLogin"`
-	BaseRef           string               `json:"baseRef"`
-	HeadRef           string               `json:"headRef"`
-	URL               string               `json:"url"`
-	CreatedAt         string               `json:"createdAt"`
-	UpdatedAt         string               `json:"updatedAt"`
+	ID          string           `json:"id"`
+	RepoOwner   string           `json:"repoOwner"`
+	RepoName    string           `json:"repoName"`
+	Number      int64            `json:"number"`
+	Title       string           `json:"title"`
+	Body        string           `json:"body"`
+	State       PullRequestState `json:"state"`
+	Draft       bool             `json:"draft"`
+	AuthorLogin string           `json:"authorLogin"`
+	BaseRef     string           `json:"baseRef"`
+	HeadRef     string           `json:"headRef"`
+	// Head commit sha of the PR branch (#658). Read from the same GraphQL
+	// enrichment snapshot as `statusCheckRollup`, so the two always describe
+	// the same commit — a consumer can trust "CI green on this sha". Empty
+	// string until an enrichment fetch has succeeded.
+	HeadRefOid string `json:"headRefOid"`
+	URL        string `json:"url"`
+	CreatedAt  string `json:"createdAt"`
+	UpdatedAt  string `json:"updatedAt"`
+	// Reviews submitted on this PR, oldest-first, capped at the 20 most
+	// recent. Sourced from the shared enrichment fetch (#651). The cap is
+	// deliberately tighter than `reviewThreads` because review bodies are
+	// unbounded prose and this rides the sidebar hot path.
 	Reviews           []*PullRequestReview `json:"reviews,omitempty"`
 	Comments          []*IssueComment      `json:"comments,omitempty"`
 	Mergeable         MergeableState       `json:"mergeable"`
@@ -469,6 +478,16 @@ type PullRequest struct {
 	ReviewDecision    *ReviewDecisionEnum  `json:"reviewDecision,omitempty"`
 	StatusCheckRollup CiStatus             `json:"statusCheckRollup"`
 	Labels            []*Label             `json:"labels"`
+	// Review comment threads on this PR, capped at the 50 oldest (#607).
+	// Every thread is returned regardless of state; use
+	// `unresolvedThreadCount` for the merge-gate number.
+	ReviewThreads []*ReviewThread `json:"reviewThreads"`
+	// Threads that still block a merge: `isResolved == false`, regardless of
+	// `isOutdated` (#607). GitHub's "Require conversation resolution before
+	// merging" gate blocks on isResolved alone; an outdated thread still blocks
+	// merge until resolved. Derived from the same fetch as `reviewThreads` so a
+	// merge gate can read the count without walking the list.
+	UnresolvedThreadCount int64 `json:"unresolvedThreadCount"`
 }
 
 func (PullRequest) IsNode() {}
@@ -520,6 +539,28 @@ type ResourceLoad struct {
 	LoadAvg5m float64 `json:"loadAvg5m"`
 	// 15-minute load average.
 	LoadAvg15m float64 `json:"loadAvg15m"`
+}
+
+// A review comment thread on a pull request — one inline conversation
+// anchored to a file. Deliberately flat: the merge gate needs to know
+// whether a thread blocks, where it is, and who is waiting, not to render
+// the conversation. Fetch the comments via `Query.gh` when the body text
+// is actually needed.
+type ReviewThread struct {
+	ID string `json:"id"`
+	// Whether a reviewer marked the thread resolved.
+	IsResolved bool `json:"isResolved"`
+	// Whether the thread is anchored to a diff hunk that no longer exists on
+	// the head commit. Outdated threads do not block a merge.
+	IsOutdated bool `json:"isOutdated"`
+	// Repository-relative path the thread is anchored to.
+	Path string `json:"path"`
+	// Total comments in the thread, including any beyond the fetched page.
+	CommentCount int64 `json:"commentCount"`
+	// Login of the reviewer who opened the thread.
+	AuthorLogin string `json:"authorLogin"`
+	// ISO-8601 timestamp of the most recent comment in the thread.
+	LastUpdatedAt string `json:"lastUpdatedAt"`
 }
 
 // Push-on-change channels backed by each provider's invalidation broadcast.

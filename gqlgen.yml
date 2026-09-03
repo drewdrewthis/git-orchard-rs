@@ -203,11 +203,19 @@ models:
       - github.com/99designs/gqlgen/graphql.Time
 
   # PullRequest enrichment fields are populated lazily by EnrichPullRequest
-  # (a GraphQL round-trip). Marking them resolver: true lets the five
-  # field resolvers share one EnrichPullRequest call per request via the
-  # provider's 60s cache.
+  # (a GraphQL round-trip). Marking them resolver: true lets the field
+  # resolvers share one EnrichPullRequest call per request via the
+  # provider's cache.
+  #
+  # headRefOid (#658), reviews (#651), reviewThreads and
+  # unresolvedThreadCount (#607) ride the same fetch, so they are
+  # resolver-bound for the same reason. `reviews` in particular MUST stay
+  # a resolver: auto-binding it to the model struct is what made it
+  # resolve null — nothing ever populated the field.
   PullRequest:
     fields:
+      headRefOid:
+        resolver: true
       mergeable:
         resolver: true
       mergeStateStatus:
@@ -217,6 +225,12 @@ models:
       statusCheckRollup:
         resolver: true
       labels:
+        resolver: true
+      reviews:
+        resolver: true
+      reviewThreads:
+        resolver: true
+      unresolvedThreadCount:
         resolver: true
 
   # Issue.labels is populated by the gh provider's REST fetch (single +
