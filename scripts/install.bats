@@ -314,3 +314,46 @@ teardown() {
   [ "$status" -ne 0 ]
   grep -qF "refusing plain http" <<<"$output"
 }
+
+# --- check_root_owned_conflict: explicit --prefix vs implicit fallback ---
+# Sources install.sh's function/variable definitions only (drops the
+# trailing `main "$@"` so nothing actually runs) directly into this test's
+# own bats subshell, then stubs `id` (force non-root) and
+# root_owned_suite_binary (report a hit only for /usr/local/bin) to
+# exercise check_root_owned_conflict in isolation -- a real root-owned
+# /usr/local/bin/orchard-daemon can't be fixtured without actual root.
+
+@test "check_root_owned_conflict: PREFIX unset (implicit fallback) still flags a root-owned /usr/local/bin" {
+  # shellcheck disable=SC1090
+  source <(sed '$d' "$SCRIPT")
+
+  id() { echo 501; }
+  root_owned_suite_binary() {
+    [ "$1" = "/usr/local/bin" ] && { printf 'orchard-daemon'; return 0; }
+    return 1
+  }
+
+  PREFIX=""
+  SYSTEM=0
+
+  run check_root_owned_conflict "$FAKE_HOME/.local/bin"
+  [ "$status" -eq 1 ]
+  grep -qF "/usr/local/bin/orchard-daemon is root-owned" <<<"$output"
+}
+
+@test "check_root_owned_conflict: explicit --prefix does not check /usr/local/bin" {
+  # shellcheck disable=SC1090
+  source <(sed '$d' "$SCRIPT")
+
+  id() { echo 501; }
+  root_owned_suite_binary() {
+    [ "$1" = "/usr/local/bin" ] && { printf 'orchard-daemon'; return 0; }
+    return 1
+  }
+
+  PREFIX="$PREFIX_DIR"
+  SYSTEM=0
+
+  run check_root_owned_conflict "$PREFIX_DIR"
+  [ "$status" -eq 0 ]
+}

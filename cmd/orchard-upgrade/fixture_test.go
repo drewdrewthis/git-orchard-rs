@@ -155,6 +155,22 @@ func installDirWith(t *testing.T, contents string, names ...string) string {
 	return dir
 }
 
+// installDirWithVersion creates an install directory holding the named
+// binaries with content matching what fixture.publish's tarball produces for
+// tag (name+"@"+tag) -- the shape a truly up-to-date install has, letting a
+// test construct a byte-identical no-op scenario without downloading
+// anything first.
+func installDirWithVersion(t *testing.T, tag string, names ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(n+"@"+tag), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
 // snapshot records every file's digest and modification time, so a test can
 // prove a run changed nothing at all.
 func snapshot(t *testing.T, dir string) map[string]string {

@@ -60,12 +60,20 @@ func upgrade(ctx context.Context, opts Options, dir, current string, out io.Writ
 		return nil
 	}
 
-	if err := release.ReplaceAll(plan); err != nil {
+	results, err := release.ReplaceAll(plan)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "installed orchard %s into %s:\n", suite.Version, dir)
-	for _, item := range plan {
-		fmt.Fprintf(out, "  %s\n", filepath.Base(item.Path))
+	fmt.Fprintf(out, "orchard %s in %s:\n", suite.Version, dir)
+	unchanged := 0
+	for _, r := range results {
+		fmt.Fprintf(out, "  %s: %s\n", filepath.Base(r.Path), r.Action)
+		if r.Action == release.ActionUnchanged {
+			unchanged++
+		}
+	}
+	if unchanged == len(results) {
+		fmt.Fprintf(out, "already up to date (%d unchanged)\n", unchanged)
 	}
 	return nil
 }
@@ -78,6 +86,9 @@ func check(ctx context.Context, client *release.Client, target, current string, 
 		return err
 	}
 	fmt.Fprintf(out, "current: %s\n", current)
+	if current == release.DevVersion {
+		fmt.Fprintf(out, "  (current version is a dev build; comparison is not meaningful)\n")
+	}
 	fmt.Fprintf(out, "latest:  %s\n", rel.Version())
 	if release.IsNewer(rel.Version(), current) {
 		fmt.Fprintf(out, "an update is available — run: orchard upgrade\n")

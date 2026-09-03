@@ -30,6 +30,25 @@ func TestCheck_ReportsWithoutWriting(t *testing.T) {
 	assertUnchanged(t, dir, before)
 }
 
+// AC: --check on a dev build hints that the comparison is not meaningful,
+// since "dev" always sorts older than any real release (see release.Compare)
+// and would otherwise read as a real, actionable update.
+func TestCheck_DevBuildHintsComparisonIsNotMeaningful(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWith(t, "v1", "orchard")
+	withVersion(t, "dev")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--check", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--check) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "current version is a dev build; comparison is not meaningful") {
+		t.Errorf("--check output %q does not hint at the dev build", out)
+	}
+}
+
 func TestCheck_UpToDateSaysSo(t *testing.T) {
 	f := newFixture(t)
 	f.publish(t, "v1.0.0", true, false)
@@ -70,6 +89,70 @@ func TestUpgrade_ReplacesEveryInstalledBinary(t *testing.T) {
 	// be half an upgrade's budget spent on nothing.
 	if f.count() != 3 {
 		t.Errorf("fixture saw %d requests; want 3 (release, SHA256SUMS, tarball)", f.count())
+	}
+}
+
+// @scenario upgrade is a no-op when every binary is already byte-identical
+//
+// AC: a real upgrade run where the download matches what's already installed
+// must not claim to have installed anything — it reports every binary
+// unchanged and prints a single up-to-date summary.
+func TestUpgrade_ByteIdenticalBinariesReportAlreadyUpToDate(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWithVersion(t, "v2.0.0", "orchard", "orchard-shell")
+	before := snapshot(t, dir)
+	// current is older than latest so the version-string short-circuit above
+	// does not fire before the download; the no-op is discovered by content.
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "already up to date (2 unchanged)") {
+		t.Errorf("output %q does not report the no-op upgrade", out)
+	}
+	for _, name := range []string{"orchard", "orchard-shell"} {
+		if !strings.Contains(out, name+": unchanged") {
+			t.Errorf("output %q does not report %s as unchanged", out, name)
+		}
+	}
+	assertUnchanged(t, dir, before)
+}
+
+// A mixed batch — one binary already current, one genuinely stale — must
+// report each by its own action, and must not claim to be fully up to date.
+func TestUpgrade_MixedBatchReportsPerBinaryActions(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "v2.0.0", true, false)
+	dir := installDirWithVersion(t, "v2.0.0", "orchard")
+	if err := os.WriteFile(filepath.Join(dir, "orchard-shell"), []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run() = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "orchard: unchanged") {
+		t.Errorf("output %q does not report orchard as unchanged", out)
+	}
+	if !strings.Contains(out, "orchard-shell: updated") {
+		t.Errorf("output %q does not report orchard-shell as updated", out)
+	}
+	if strings.Contains(out, "already up to date") {
+		t.Errorf("output %q claims fully up to date despite orchard-shell actually changing", out)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "orchard-shell"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "orchard-shell@v2.0.0" {
+		t.Errorf("orchard-shell = %q; want the v2.0.0 build", got)
 	}
 }
 

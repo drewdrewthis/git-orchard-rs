@@ -129,7 +129,7 @@ clean:
 # no working method is skipped with a warning, not a failure).
 # Single-target build: make dist TRIPLE=aarch64-unknown-linux-gnu
 dist:
-	bash scripts/dist.sh $(VERSION) $(if $(TRIPLE),--only $(TRIPLE),)
+	VERSION=$(VERSION) bash scripts/dist.sh $(if $(TRIPLE),--only $(TRIPLE),)
 
 test: test-go test-rust
 

@@ -19,12 +19,25 @@
 # `orchard`) is unchanged: npm/install.js hardcodes it (plan AC12).
 #
 # Usage: scripts/dist.sh [VERSION] [--only TRIPLE]
-#   VERSION   defaults to "dev"
+#   VERSION   defaults to the VERSION env var, else the version in
+#             crates/orchard/Cargo.toml, else "dev"
 #   --only    limit the run to one PLATFORMS triple, e.g.
 #             --only aarch64-unknown-linux-gnu (also: make dist TRIPLE=...)
 set -euo pipefail
 
-VERSION="dev"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIST="$ROOT/dist"
+
+# derive_version -- mirrors the Makefile's own Cargo.toml-derived default
+# (VERSION ?= ... crates/orchard/Cargo.toml), so a direct invocation of
+# this script (bypassing `make dist`) still bakes a real version into the
+# Go binaries instead of the "dev" placeholder.
+derive_version() {
+  awk -F'"' '/^version = / { print $2; exit }' "$ROOT/crates/orchard/Cargo.toml" 2>/dev/null || true
+}
+
+VERSION="${VERSION:-$(derive_version)}"
+VERSION="${VERSION:-dev}"
 ONLY_TRIPLE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,9 +55,6 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST="$ROOT/dist"
 
 rm -rf "$DIST"
 mkdir -p "$DIST"
@@ -138,6 +148,7 @@ build_via_docker() {
     -u "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e CARGO_HOME=/repo/target/.cargo-home \
+    -e VERSION="$VERSION" \
     -v "$ROOT:/repo:ro" \
     -v "$cache:/repo/target" \
     -w /repo \
@@ -258,3 +269,28 @@ if compgen -G "$DIST"/*.tar.gz >/dev/null; then
 else
   echo "no tarballs produced; skipping SHA256SUMS"
 fi
+
+# --- Self-check: prove every built Go binary actually baked in $VERSION.
+# `go version -m` reads a binary's embedded build info (including ldflags)
+# without executing it, so this works on foreign-arch cross binaries too.
+# Catches a direct `bash scripts/dist.sh` invocation where VERSION landed
+# on "dev" (env unset, Cargo.toml unreadable), or a future regression that
+# stops forwarding VERSION into the build. ---
+version_check_failed=0
+for entry in "${PLATFORMS[@]}"; do
+  read -r _ _ triple <<<"$entry"
+  platform_dir="$work/$triple"
+  for bin in "${GO_BINS[@]}"; do
+    bin_path="$platform_dir/$bin"
+    [ -f "$bin_path" ] || continue
+    if ! go version -m "$bin_path" 2>/dev/null | grep -qF -- "-X main.version=$VERSION"; then
+      echo "ERROR: $bin ($triple) did not bake in VERSION=$VERSION" >&2
+      version_check_failed=1
+    fi
+  done
+done
+if [ "$version_check_failed" -eq 1 ]; then
+  echo "error: one or more Go binaries do not report VERSION=$VERSION (see above)" >&2
+  exit 1
+fi
+echo "verified: all built Go binaries report VERSION=$VERSION"

@@ -255,18 +255,23 @@ root_owned_suite_binary() {
 }
 
 # check_root_owned_conflict PREFIX -- refuses to silently fight a
-# root-owned install. Checks both PREFIX and (when different) the canonical
-# /usr/local/bin -- the latter catches resolve_prefix's own silent fallback
-# to ~/.local/bin when /usr/local/bin already holds root-owned binaries and
-# isn't writable, which would otherwise "succeed" by installing somewhere
-# not on PATH. Only relevant when we're not already root and --system
-# wasn't given (that's the acknowledged opt-in to elevate, see
+# root-owned install. Always checks PREFIX itself; only also checks the
+# canonical /usr/local/bin when the user did NOT pass an explicit --prefix
+# (an empty PREFIX means resolve_prefix chose the location itself, via its
+# own default/fallback logic) -- that's the only case where resolve_prefix
+# could have silently fallen back to ~/.local/bin because /usr/local/bin
+# held a root-owned binary and wasn't writable. An explicit --prefix is a
+# deliberate choice the user already made and isn't second-guessed against
+# an unrelated directory. Only relevant when we're not already root and
+# --system wasn't given (that's the acknowledged opt-in to elevate, see
 # resolve_install_sudo).
 check_root_owned_conflict() {
   local prefix=$1 hit dir
+  local dirs=("$prefix")
   [ "$SYSTEM" -eq 1 ] && return 0
   [ "$(id -u)" -eq 0 ] && return 0
-  for dir in "$prefix" /usr/local/bin; do
+  [ -z "$PREFIX" ] && dirs+=(/usr/local/bin)
+  for dir in "${dirs[@]}"; do
     if hit=$(root_owned_suite_binary "$dir"); then
       fail "$dir/$hit is root-owned; re-run with sudo (sudo $0 --system), or choose a --prefix you own"
     fi

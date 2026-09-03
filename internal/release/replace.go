@@ -67,6 +67,21 @@ func Replace(path string, data []byte, mode os.FileMode) error {
 	return nil
 }
 
+// ReplaceAction reports what ReplaceAll did with one ReplaceItem.
+type ReplaceAction string
+
+const (
+	ActionInstalled ReplaceAction = "installed" // no prior file at this path
+	ActionUpdated   ReplaceAction = "updated"   // prior file's content differed
+	ActionUnchanged ReplaceAction = "unchanged" // prior file already matched byte-for-byte; left untouched
+)
+
+// ReplaceResult is what ReplaceAll did with one ReplaceItem, in item order.
+type ReplaceResult struct {
+	Path   string
+	Action ReplaceAction
+}
+
 // ReplaceAll installs a set of binaries and rolls the whole set back if any
 // single install fails.
 //
@@ -75,7 +90,12 @@ func Replace(path string, data []byte, mode os.FileMode) error {
 // suite whose parts no longer agree. Each existing target is backed up
 // beside itself first (a hard link, so it costs nothing), and a failure
 // renames every backup taken so far back over its original.
-func ReplaceAll(items []ReplaceItem) (err error) {
+//
+// An item whose on-disk content already matches Data byte-for-byte is left
+// completely untouched -- no backup, no write, no mtime change -- and
+// reported as ActionUnchanged, so a re-run of an already-current install is
+// a true no-op rather than a silent rewrite.
+func ReplaceAll(items []ReplaceItem) (results []ReplaceResult, err error) {
 	type backup struct{ path, saved string }
 	var done []backup
 
@@ -92,25 +112,33 @@ func ReplaceAll(items []ReplaceItem) (err error) {
 			os.Rename(done[i].saved, done[i].path)
 			os.Remove(done[i].saved)
 		}
+		results = nil
 	}()
 
 	for _, it := range items {
+		action := ActionInstalled
 		if st, statErr := os.Stat(it.Path); statErr == nil {
 			if !st.Mode().IsRegular() {
-				return fmt.Errorf("refusing to replace %s: not a regular file", it.Path)
+				return nil, fmt.Errorf("refusing to replace %s: not a regular file", it.Path)
 			}
+			if existing, sumErr := SHA256File(it.Path); sumErr == nil && existing == SHA256(it.Data) {
+				results = append(results, ReplaceResult{it.Path, ActionUnchanged})
+				continue
+			}
+			action = ActionUpdated
 			saved := it.Path + ".orchard-backup"
 			os.Remove(saved)
 			if backupErr := backupFile(it.Path, saved); backupErr != nil {
-				return fmt.Errorf("back up %s before replacing it: %w", it.Path, backupErr)
+				return nil, fmt.Errorf("back up %s before replacing it: %w", it.Path, backupErr)
 			}
 			done = append(done, backup{it.Path, saved})
 		}
 		if replaceErr := Replace(it.Path, it.Data, it.Mode); replaceErr != nil {
-			return replaceErr
+			return nil, replaceErr
 		}
+		results = append(results, ReplaceResult{it.Path, action})
 	}
-	return nil
+	return results, nil
 }
 
 // backupFile links src to dst, copying only if the filesystem refuses the

@@ -98,7 +98,7 @@ func TestReplaceAll_InstallsEverySetMember(t *testing.T) {
 		}
 	}
 
-	err := release.ReplaceAll([]release.ReplaceItem{
+	results, err := release.ReplaceAll([]release.ReplaceItem{
 		{Path: filepath.Join(dir, "orchard-shell"), Data: []byte("v2")},
 		{Path: filepath.Join(dir, "orchard"), Data: []byte("v2")},
 	})
@@ -108,6 +108,14 @@ func TestReplaceAll_InstallsEverySetMember(t *testing.T) {
 	for _, n := range []string{"orchard", "orchard-shell"} {
 		if got, _ := os.ReadFile(filepath.Join(dir, n)); string(got) != "v2" {
 			t.Errorf("%s = %q; want v2", n, got)
+		}
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d; want 2", len(results))
+	}
+	for _, r := range results {
+		if r.Action != release.ActionUpdated {
+			t.Errorf("%s action = %q; want %q", r.Path, r.Action, release.ActionUpdated)
 		}
 	}
 	assertNoStrayFiles(t, dir, "orchard", "orchard-shell")
@@ -128,17 +136,115 @@ func TestReplaceAll_RollsBackEveryEarlierMemberOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := release.ReplaceAll([]release.ReplaceItem{
+	results, err := release.ReplaceAll([]release.ReplaceItem{
 		{Path: filepath.Join(dir, "orchard-shell"), Data: []byte("v2")},
 		{Path: blocked, Data: []byte("v2")},
 	})
 	if err == nil {
 		t.Fatal("ReplaceAll succeeded despite an uninstallable member")
 	}
+	if results != nil {
+		t.Errorf("results = %v; want nil on a rolled-back failure", results)
+	}
 	if got, _ := os.ReadFile(filepath.Join(dir, "orchard-shell")); string(got) != "v1" {
 		t.Errorf("orchard-shell = %q; want the original v1 restored by the rollback", got)
 	}
 	assertNoStrayFiles(t, dir, "orchard", "orchard-shell")
+}
+
+func TestReplaceAll_ReportsInstalledForANewFile(t *testing.T) {
+	dir := t.TempDir()
+	results, err := release.ReplaceAll([]release.ReplaceItem{
+		{Path: filepath.Join(dir, "orchard-upgrade"), Data: []byte("v1")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceAll: %v", err)
+	}
+	if len(results) != 1 || results[0].Action != release.ActionInstalled {
+		t.Fatalf("results = %+v; want one ActionInstalled", results)
+	}
+}
+
+// The identical-content case is what a real `orchard upgrade` hits every
+// time it's re-run without a new release available: every downloaded binary
+// matches what's already on disk. ReplaceAll must not touch the file at all
+// -- not even a rewrite with the same bytes -- which this proves
+// structurally by chmodding the directory read-only first: any write
+// attempt (temp file, backup, or otherwise) would fail loudly, so a passing
+// test means none was made.
+func TestReplaceAll_SkipsByteIdenticalContentWithoutTouchingDisk(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory permissions do not gate root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orchard")
+	if err := os.WriteFile(path, []byte("same"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+
+	results, err := release.ReplaceAll([]release.ReplaceItem{
+		{Path: path, Data: []byte("same")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceAll: %v", err)
+	}
+	if len(results) != 1 || results[0].Action != release.ActionUnchanged {
+		t.Fatalf("results = %+v; want one ActionUnchanged", results)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("mtime changed from %v to %v; unchanged content must not be rewritten", before.ModTime(), after.ModTime())
+	}
+	if got, _ := os.ReadFile(path); string(got) != "same" {
+		t.Errorf("contents = %q; want same", got)
+	}
+}
+
+// A mixed batch reports each member's own action -- a fresh binary, a
+// changed one, and one already current all land in the same ReplaceAll call
+// during a real upgrade.
+func TestReplaceAll_ReportsPerItemActionsInAMixedBatch(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "changed"), []byte("v1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unchanged"), []byte("same"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := release.ReplaceAll([]release.ReplaceItem{
+		{Path: filepath.Join(dir, "changed"), Data: []byte("v2")},
+		{Path: filepath.Join(dir, "unchanged"), Data: []byte("same")},
+		{Path: filepath.Join(dir, "new"), Data: []byte("v1")},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceAll: %v", err)
+	}
+	want := map[string]release.ReplaceAction{
+		filepath.Join(dir, "changed"):   release.ActionUpdated,
+		filepath.Join(dir, "unchanged"): release.ActionUnchanged,
+		filepath.Join(dir, "new"):       release.ActionInstalled,
+	}
+	if len(results) != len(want) {
+		t.Fatalf("len(results) = %d; want %d", len(results), len(want))
+	}
+	for _, r := range results {
+		if want[r.Path] != r.Action {
+			t.Errorf("%s action = %q; want %q", r.Path, r.Action, want[r.Path])
+		}
+	}
 }
 
 func TestWritable_ReportsTheDirectory(t *testing.T) {
