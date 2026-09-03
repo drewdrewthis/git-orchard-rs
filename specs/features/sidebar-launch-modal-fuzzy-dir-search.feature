@@ -54,11 +54,12 @@ Feature: Launch modal fuzzy directory search over a walked tree (#782)
     And "orsi" still finds the target under them
 
   @unit
-  Scenario: An old single-record last-launch file still loads
+  Scenario: An old single-record last-launch file still seeds recents
     Given a last-launch state file written before recents existed
-    When the modal reads it
-    Then it loads without error and resolves the prior launch dir
-    And a new launch writes the extended shape with a recents list
+    And no separate recents file exists yet
+    When the modal opens
+    Then the last-launch file is read but not modified
+    And its recorded dir seeds the picker's recents list
 
   @unit
   Scenario: Backspace on an empty query widens the roots

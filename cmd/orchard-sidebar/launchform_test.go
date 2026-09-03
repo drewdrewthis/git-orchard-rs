@@ -51,8 +51,8 @@ func TestLaunchModalFlow(t *testing.T) {
 	t.Cleanup(func() { launchSession = prev })
 
 	m := newLaunchModel(root, "claude")
-	m.pick.cfg = walkConfig{roots: []string{root}} // keep the test walk off the real $HOME
-	m.pick.setCands(walkCandidates(m.pick.cfg))    // run the walk synchronously for the test
+	m.pick.cfg = walkConfig{roots: []string{root}}              // keep the test walk off the real $HOME
+	m.pick.setCands(m.pick.walkGen, walkCandidates(m.pick.cfg)) // run the walk synchronously for the test
 	press := func(k tea.KeyMsg) { m.Update(k) }
 	runes := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 	key := func(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }

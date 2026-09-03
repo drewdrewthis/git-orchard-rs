@@ -23,8 +23,13 @@ const searchWidth = 40
 
 // walkDoneMsg carries the finished candidate set back to the update loop, so
 // the walk runs off the main goroutine and typing stays responsive while it
-// does.
-type walkDoneMsg struct{ cands []string }
+// does. gen ties the result to the walk that produced it, so a widen/toggle
+// fired while an older walk is still in flight can tell its now-stale result
+// apart from the one that matches the current roots.
+type walkDoneMsg struct {
+	gen   int
+	cands []string
+}
 
 // picker is the browsing half of the launch modal.
 type picker struct {
@@ -36,6 +41,7 @@ type picker struct {
 	search  textField
 	hidden  bool
 	walking bool
+	walkGen int // bumped each time a new walk is kicked off; see walkDoneMsg
 	spin    spinner.Model
 	cfg     walkConfig
 }
@@ -57,13 +63,22 @@ func newPicker(selected string, known []string) *picker {
 
 // walkCmd runs the filesystem walk off the update loop. The modal keeps
 // painting — the spinner, the recents — until walkDoneMsg replaces the set.
+// It captures the current generation, so a result from a walk superseded by a
+// later widen/toggle can be told apart from the one that matches p.roots now.
 func (p *picker) walkCmd() tea.Cmd {
 	cfg := p.cfg
-	return func() tea.Msg { return walkDoneMsg{walkCandidates(cfg)} }
+	gen := p.walkGen
+	return func() tea.Msg { return walkDoneMsg{gen: gen, cands: walkCandidates(cfg)} }
 }
 
-// setCands installs the walked set and re-derives the visible list.
-func (p *picker) setCands(cands []string) {
+// setCands installs the walked set and re-derives the visible list — unless
+// gen names a walk that a later widen/toggle has since superseded, in which
+// case the stale result is dropped and p.walking is left alone so the
+// in-flight walk's spinner keeps spinning.
+func (p *picker) setCands(gen int, cands []string) {
+	if gen != p.walkGen {
+		return
+	}
 	p.cands = cands
 	p.walking = false
 	p.rebuild()
@@ -141,6 +156,7 @@ func (p *picker) widen() tea.Cmd {
 	p.roots = next
 	p.cfg.roots = next
 	p.walking = true
+	p.walkGen++
 	p.rebuild()
 	return p.walkCmd()
 }
@@ -151,6 +167,7 @@ func (p *picker) toggleHidden() tea.Cmd {
 	p.hidden = !p.hidden
 	p.cfg.showHidden = p.hidden
 	p.walking = true
+	p.walkGen++
 	return p.walkCmd()
 }
 
@@ -221,11 +238,12 @@ func abbrevHome(path string, spans []span) (string, []span) {
 	return short, out
 }
 
-// renderMatch draws one path, its matched runes wearing hi, clipped to width.
-func renderMatch(m dirMatch, hi lipgloss.Style, width int) string {
+// renderMatch draws one path, its matched runes wearing hi and everything else
+// wearing base, clipped to width.
+func renderMatch(m dirMatch, base, hi lipgloss.Style, width int) string {
 	disp, spans := abbrevHome(m.path, m.spans)
 	if len(spans) == 0 {
-		return trunc(disp, width)
+		return base.Render(trunc(disp, width))
 	}
 	r := []rune(disp)
 	var b strings.Builder
@@ -236,13 +254,13 @@ func renderMatch(m dirMatch, hi lipgloss.Style, width int) string {
 		}
 		end := min(s.end, len(r))
 		if s.start > i {
-			b.WriteString(string(r[i:s.start]))
+			b.WriteString(base.Render(string(r[i:s.start])))
 		}
 		b.WriteString(hi.Render(string(r[s.start:end])))
 		i = end
 	}
 	if i < len(r) {
-		b.WriteString(string(r[i:]))
+		b.WriteString(base.Render(string(r[i:])))
 	}
 	return trunc(b.String(), width)
 }

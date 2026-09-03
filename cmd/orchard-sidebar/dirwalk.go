@@ -118,6 +118,9 @@ func commonParent(paths []string) string {
 // (unless asked) hidden directories. Duplicates across overlapping roots — a
 // selected cwd nested under $HOME — are collapsed.
 func walkCandidates(cfg walkConfig) []string {
+	// seen is keyed by path, not inode, so it dedups overlapping roots but
+	// cannot detect a symlink cycle (a link back to an ancestor gets a new
+	// path each hop); maxWalkDepth is the only thing that stops that walk.
 	seen := map[string]bool{}
 	var out []string
 	var visit func(dir string, depth int)
@@ -170,6 +173,23 @@ func readDirNames(dir string) []string {
 		}
 	}
 	return out
+}
+
+// knownCwds asks the inner tmux for every pane's current directory — the walk's
+// "known session cwds", whose shared parent becomes a root. A failure (daemon
+// down) yields nothing, and the walk falls back to $HOME.
+var knownCwds = func() []string {
+	out, err := env.innerCmd("list-panes", "-a", "-F", "#{pane_current_path}").Output()
+	if err != nil {
+		return nil
+	}
+	var cwds []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l != "" {
+			cwds = append(cwds, l)
+		}
+	}
+	return cwds
 }
 
 // dedupPaths preserves order and drops the second and later sighting of a path.

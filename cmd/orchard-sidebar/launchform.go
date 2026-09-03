@@ -49,6 +49,17 @@ func newLaunchModel(dir, cmd string) *launchModel {
 // that animates while it runs.
 func (m *launchModel) Init() tea.Cmd { return tea.Batch(m.pick.walkCmd(), m.pick.spin.Tick) }
 
+// walkAndTick adds a spinner tick to a re-walk command only when the picker
+// was not already walking: the tick loop dies once walking goes false (the
+// spinner.TickMsg case below), so a widen/toggle mid-walk must not start a
+// second tick loop racing the one already alive.
+func (m *launchModel) walkAndTick(cmd tea.Cmd, wasWalking bool) tea.Cmd {
+	if wasWalking {
+		return cmd
+	}
+	return tea.Batch(cmd, m.pick.spin.Tick)
+}
+
 // syncName re-derives the session name from the highlighted directory, until
 // you take the name over by typing in it.
 func (m *launchModel) syncName() {
@@ -71,7 +82,7 @@ func (m *launchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
 	case walkDoneMsg:
-		m.pick.setCands(msg.cands)
+		m.pick.setCands(msg.gen, msg.cands)
 		return m, nil
 	case spinner.TickMsg:
 		if !m.pick.walking {
@@ -129,9 +140,10 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyBackspace:
 		if !m.pick.backspaceSearch() {
+			wasWalking := m.pick.walking
 			if cmd := m.pick.widen(); cmd != nil {
 				m.syncName()
-				return m, tea.Batch(cmd, m.pick.spin.Tick)
+				return m, m.walkAndTick(cmd, wasWalking)
 			}
 		}
 		m.syncName()
@@ -139,7 +151,8 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.Alt {
 		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'h' {
-			return m, tea.Batch(m.pick.toggleHidden(), m.pick.spin.Tick)
+			wasWalking := m.pick.walking
+			return m, m.walkAndTick(m.pick.toggleHidden(), wasWalking)
 		}
 		return m, nil // every other alt key belongs to the outer wrapper
 	}
@@ -153,21 +166,6 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	m.syncName()
 	return m, nil
-}
-
-// typedRunes is the text a key event contributes to a field. A lone space is
-// reported as KeySpace rather than KeyRunes, so reading only KeyRunes silently
-// dropped every space typed into a command line — which is most of them. An
-// alt-modified key is a shortcut that fell through, never text.
-func typedRunes(msg tea.KeyMsg) []rune {
-	if msg.Alt {
-		return nil
-	}
-	switch msg.Type {
-	case tea.KeyRunes, tea.KeySpace:
-		return msg.Runes
-	}
-	return nil
 }
 
 // fieldKey edits the command and name fields, and fires the launch. Enter walks
@@ -236,13 +234,13 @@ func (m *launchModel) View() string {
 	}
 	top := m.pick.top(listH)
 	for i, mt := range m.pick.window(listH) {
-		mark := "  "
+		mark, rowSty := "  ", styModLabel
 		if top+i == m.pick.cursor && m.focus == focusPick {
-			mark = styModSel.Render("▌ ")
+			mark, rowSty = styModSel.Render("▌ "), styModSel
 		} else if top+i == m.pick.cursor {
 			mark = "▌ "
 		}
-		fmt.Fprintln(&b, " "+mark+renderMatch(mt, styModMatch, w-5))
+		fmt.Fprintln(&b, " "+mark+renderMatch(mt, rowSty, styModMatch, w-5))
 	}
 	if m.pick.walking {
 		fmt.Fprintln(&b, " "+m.pick.spin.View()+styModLabel.Render(" scanning directories…"))

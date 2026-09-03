@@ -64,7 +64,7 @@ func TestPickerSearchesWalkedCandidates(t *testing.T) {
 	mkdirs(t, root, "cmd/orchard-sidebar", "docs")
 	p := newPicker(root, nil)
 	p.cfg = walkConfig{roots: []string{root}} // keep the test walk off the real $HOME
-	p.setCands(walkCandidates(p.cfg))
+	p.setCands(p.walkGen, walkCandidates(p.cfg))
 
 	p.searchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("orsi")})
 	if p.cursor != 0 {
@@ -92,6 +92,47 @@ func TestPickerWidenAddsParents(t *testing.T) {
 	}
 	if !hasPath(p.roots, filepath.Join(tmp, "ws")) {
 		t.Errorf("widen did not add the parent: %v", p.roots)
+	}
+}
+
+// A widen/toggle fired while a walk is in flight bumps walkGen, so the older
+// walk's eventual result is a stale walkDoneMsg: setCands must drop it (and
+// leave walking alone) rather than let it clobber the newer walk's state.
+func TestPickerSetCandsDropsStaleGeneration(t *testing.T) {
+	tmp := t.TempDir()
+	mkdirs(t, tmp, "ws/proj")
+	p := &picker{roots: []string{filepath.Join(tmp, "ws", "proj")}}
+	p.search = newTextField("", searchWidth)
+	p.cfg = walkConfig{roots: p.roots}
+
+	staleGen := p.walkGen
+	if cmd := p.widen(); cmd == nil {
+		t.Fatal("widen returned no re-walk command")
+	}
+	if p.walkGen == staleGen {
+		t.Fatal("widen did not bump walkGen")
+	}
+	if !p.walking {
+		t.Fatal("widen did not leave the picker walking")
+	}
+
+	// the superseded walk's result lands late: it must be ignored
+	p.setCands(staleGen, []string{"/should-not-apply"})
+	if !p.walking {
+		t.Error("a stale walkDoneMsg cleared walking")
+	}
+	if hasPath(p.cands, "/should-not-apply") {
+		t.Error("a stale walkDoneMsg's candidates were applied")
+	}
+
+	// the current walk's result lands: it must be applied
+	current := []string{filepath.Join(tmp, "ws", "proj")}
+	p.setCands(p.walkGen, current)
+	if p.walking {
+		t.Error("the current walkDoneMsg left walking true")
+	}
+	if !hasPath(p.cands, current[0]) {
+		t.Error("the current walkDoneMsg's candidates were not applied")
 	}
 }
 
