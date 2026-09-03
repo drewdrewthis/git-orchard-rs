@@ -137,6 +137,15 @@ type model struct {
 	updateCheck     release.Check
 	updateOpen      bool
 	updateLogFailed bool
+	// open-in-split (#777): whether a second work pane exists and, when it
+	// does, the pane Open in split created. The sidebar drives whichever work
+	// pane was focused last (workOverride, split.go).
+	splitOpen bool
+	alt       workPaneRef
+	// status is a transient refusal/notice from a keyboard chord (M-Enter,
+	// M-w) — the footer shows it in place of the key hints until it ages out.
+	status   string
+	statusAt time.Time
 }
 
 // rowAt is a bounds-checked row lookup, and selRow the same for the selection.

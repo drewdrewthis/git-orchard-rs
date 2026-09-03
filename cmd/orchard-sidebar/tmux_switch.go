@@ -16,8 +16,10 @@ import (
 // ok is false: never fall back to an unscoped switch on a foreign socket.
 // Neither set (legacy, unwrapped mode) is unchanged.
 func switchClientArgs(session string) (args []string, ok bool) {
-	if env.client != "" {
-		return []string{"switch-client", "-c", string(env.client), "-t", session}, true
+	// activeClient is env.client until a split retargets the sidebar at the
+	// last-focused work pane (#777, split.go); unchanged in single-pane mode.
+	if c := activeClient(); c != "" {
+		return []string{"switch-client", "-c", string(c), "-t", session}, true
 	}
 	if env.wrapped() {
 		return nil, false
@@ -165,10 +167,13 @@ var runTmuxOutput = func(args ...string) (string, error) {
 // told its outer pane). Split out so the argv is testable without a tmux
 // server — the exec itself is one line.
 func handBackFocusArgs() (args []string, ok bool) {
-	if env.outer == "" {
+	// activeOuter is env.outer until a split retargets it at the last-focused
+	// work pane (#777, split.go); unchanged in single-pane mode.
+	p := activeOuter()
+	if p == "" {
 		return nil, false
 	}
-	return selectPaneArgs(env.outer), true
+	return selectPaneArgs(p), true
 }
 
 // handBackFocus is a var so tests can observe the hand-back without a live

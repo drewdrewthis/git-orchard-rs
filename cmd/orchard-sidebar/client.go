@@ -23,7 +23,8 @@ import (
 // claude state, model, PR/issue join. Tracked with switchClient under #726.
 type clientSessMsg struct {
 	name string
-	gen  int // m.clientGen when the read started; mismatched reads are stale
+	tty  clientTTY // the work client that session belongs to (split focus, #777)
+	gen  int       // m.clientGen when the read started; mismatched reads are stale
 }
 
 const clientEvery = 150 * time.Millisecond
@@ -36,7 +37,7 @@ const clientEvery = 150 * time.Millisecond
 // once. Scoped (wrapped, #747 defect 2) it is instead the one client whose
 // #{client_tty} matches: on a shared inner server "most recent activity" can
 // pick a bystander client the user never touched from this sidebar.
-func fetchClientSession(gen int) tea.Cmd {
+func fetchClientSession(gen int, work []clientTTY) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -47,8 +48,46 @@ func fetchClientSession(gen int) tea.Cmd {
 		if err != nil {
 			return clientSessMsg{gen: gen}
 		}
+		// In split mode the sidebar follows whichever of ITS OWN work clients is
+		// most recently active (pickWork), so the bar tracks the last-focused
+		// pane; otherwise it is the single scoped client, exactly as before.
+		if len(work) > 0 {
+			name, tty := pickWork(string(out), work)
+			return clientSessMsg{name: name, tty: tty, gen: gen}
+		}
 		return clientSessMsg{name: pickClient(string(out), env.client), gen: gen}
 	}
+}
+
+// pickWork chooses the work client the sidebar follows in split mode: the
+// most-recently-active among the wrapper's own work panes (allow), returning
+// its session and tty so the bar, the switch and the hand-back all follow the
+// last-focused pane without a click. A bystander client on a shared inner
+// server is never eligible — the same #747 defect-2 guard pickClient applies.
+func pickWork(out string, allow []clientTTY) (string, clientTTY) {
+	ok := make(map[clientTTY]bool, len(allow))
+	for _, t := range allow {
+		ok[t] = true
+	}
+	best, bestTTY, bestAct := "", clientTTY(""), int64(-1)
+	for _, ln := range strings.Split(strings.TrimSpace(out), "\n") {
+		act, rest, k := strings.Cut(ln, " ")
+		if !k {
+			continue
+		}
+		tty, sess, k := strings.Cut(rest, " ")
+		if !k || sess == "" || !ok[clientTTY(tty)] {
+			continue
+		}
+		n, err := strconv.ParseInt(act, 10, 64)
+		if err != nil {
+			continue
+		}
+		if n > bestAct {
+			best, bestTTY, bestAct = sess, clientTTY(tty), n
+		}
+	}
+	return best, bestTTY
 }
 
 // pickClient selects the client this sidebar should report on from

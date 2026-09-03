@@ -37,7 +37,7 @@ var tickAfter = func(d time.Duration, msg tea.Msg) tea.Cmd {
 // its data message lands, so a slow response can never be overwritten by an
 // older poll that finished later.
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(fetchFast, fetchSlow, fetchHooksWith(nil), fetchClientSession(0),
+	return tea.Batch(fetchFast, fetchSlow, fetchHooksWith(nil), fetchClientSession(0, m.workTTYs()),
 		fetchUpdateCheck, tickAfter(animEvery, animTickMsg{}))
 }
 
@@ -78,9 +78,14 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		if msg.name != "" && msg.name != m.cursorSess {
 			m.followSession(msg.name)
 		}
+		// In split mode the winning client's tty says which work pane is focused
+		// now — retarget the switch and hand-back at it (#777).
+		if msg.tty != "" {
+			m.retargetWork(msg.tty)
+		}
 		return next
 	case clientTickMsg:
-		return fetchClientSession(m.clientGen)
+		return fetchClientSession(m.clientGen, m.workTTYs())
 	case animTickMsg:
 		m.frame++
 		return tickAfter(animEvery, animTickMsg{})

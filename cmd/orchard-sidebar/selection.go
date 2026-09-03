@@ -167,12 +167,24 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		m.closeUpdateOverlay() // any key dismisses it — there is nothing to navigate
 		return nil
 	}
+	if msg.Alt && msg.Type == tea.KeyEnter {
+		// M-Enter opens the selected session in a split (#777). outer.conf
+		// forwards it into this pane the same way it forwards M-1..M-9.
+		m.splitSelected()
+		return nil
+	}
 	if msg.Alt && msg.Type == tea.KeyRunes {
-		// M-1..M-9 is the one alt chord outer.conf forwards INTO this pane
-		// (jump.go); every other M-x is the wrapper's and stops here.
+		// The alt chords outer.conf forwards INTO this pane: M-1..M-9 jump
+		// (jump.go), M-w closes the split (#777). Every other M-x is the
+		// wrapper's and stops here.
 		for _, r := range msg.Runes {
-			if n, ok := jumpDigit(r); ok {
-				m.jumpTo(n)
+			switch {
+			case r == 'w':
+				m.detachSplit()
+			default:
+				if n, ok := jumpDigit(r); ok {
+					m.jumpTo(n)
+				}
 			}
 		}
 		return nil
