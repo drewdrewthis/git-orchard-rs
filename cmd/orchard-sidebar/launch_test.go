@@ -20,6 +20,15 @@ func stubTaken(t *testing.T, names ...string) {
 	t.Cleanup(func() { takenSessions = prev })
 }
 
+// stubKnown replaces the tmux pane-cwd lookup, so building a launch model in a
+// test never shells out to a real tmux server to resolve the walk roots.
+func stubKnown(t *testing.T, cwds ...string) {
+	t.Helper()
+	prev := knownCwds
+	knownCwds = func() []string { return cwds }
+	t.Cleanup(func() { knownCwds = prev })
+}
+
 // tmux refuses a duplicate session name outright, which reads as "the button
 // did nothing". Collisions resolve the way a tmux user expects instead.
 func TestUniqueNameDedupesAndSanitises(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -38,19 +39,21 @@ type launchModel struct {
 const fieldWidth = 48
 
 func newLaunchModel(dir, cmd string) *launchModel {
-	m := &launchModel{pick: newPicker(dir), taken: takenSessions()}
+	m := &launchModel{pick: newPicker(dir, knownCwds()), taken: takenSessions()}
 	m.cmd = newTextField(cmd, fieldWidth)
-	m.name = newTextField(uniqueName(filepath.Base(m.pick.dir), m.taken), fieldWidth)
+	m.name = newTextField(uniqueName(filepath.Base(m.pick.dir()), m.taken), fieldWidth)
 	return m
 }
 
-func (m *launchModel) Init() tea.Cmd { return nil }
+// Init kicks off the candidate walk off the update loop, plus the spinner tick
+// that animates while it runs.
+func (m *launchModel) Init() tea.Cmd { return tea.Batch(m.pick.walkCmd(), m.pick.spin.Tick) }
 
-// syncName re-derives the session name from the directory you are standing in,
-// until you take the name over by typing in it.
+// syncName re-derives the session name from the highlighted directory, until
+// you take the name over by typing in it.
 func (m *launchModel) syncName() {
 	if !m.nameEdited {
-		m.name.set(uniqueName(filepath.Base(m.pick.dir), m.taken))
+		m.name.set(uniqueName(filepath.Base(m.pick.dir()), m.taken))
 	}
 }
 
@@ -67,6 +70,16 @@ func (m *launchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
+	case walkDoneMsg:
+		m.pick.setCands(msg.cands)
+		return m, nil
+	case spinner.TickMsg:
+		if !m.pick.walking {
+			return m, nil // the walk landed; let the tick loop die
+		}
+		var cmd tea.Cmd
+		m.pick.spin, cmd = m.pick.spin.Update(msg)
+		return m, cmd
 	case tea.KeyMsg:
 		return m.key(msg)
 	}
@@ -94,58 +107,51 @@ func (m *launchModel) key(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.fieldKey(msg)
 }
 
-// pickKey drives the directory picker. Plain typing filters, so navigation and
-// the hidden-file toggle take the keys typing cannot: j/k (which therefore
-// never reach the filter), the arrows, and alt+h.
+// pickKey drives the directory picker. Every printable key — j and k included —
+// goes to the fuzzy query, because a directory name can contain any of them;
+// navigation therefore takes the keys typing cannot: the arrows and ^n/^p.
+// Enter picks the highlighted directory, alt+h toggles hidden, and backspace on
+// an empty query widens the roots.
 func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
-	case tea.KeyDown:
+	case tea.KeyDown, tea.KeyCtrlN:
 		m.pick.move(1)
+		m.syncName()
 		return m, nil
-	case tea.KeyUp:
+	case tea.KeyUp, tea.KeyCtrlP:
 		m.pick.move(-1)
+		m.syncName()
 		return m, nil
 	case tea.KeyEnter:
-		m.pick.enter()
+		// pick the highlighted directory and move on to the command
 		m.syncName()
+		m.focus = focusCmd
 		return m, nil
 	case tea.KeyBackspace:
 		if !m.pick.backspaceSearch() {
-			m.pick.parent()
-			m.syncName()
+			if cmd := m.pick.widen(); cmd != nil {
+				m.syncName()
+				return m, tea.Batch(cmd, m.pick.spin.Tick)
+			}
 		}
+		m.syncName()
 		return m, nil
 	}
 	if msg.Alt {
 		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'h' {
-			m.pick.toggleHidden()
+			return m, tea.Batch(m.pick.toggleHidden(), m.pick.spin.Tick)
 		}
 		return m, nil // every other alt key belongs to the outer wrapper
 	}
-	// one rune at a time, so a coalesced "jjk" moves three times instead of
-	// matching nothing (the same rule as the sidebar's own key handler)
-	var typed []rune
-	for _, r := range typedRunes(msg) {
-		switch r {
-		case 'j':
-			m.pick.move(1)
-		case 'k':
-			m.pick.move(-1)
-		case '.':
-			// select the directory you are standing in and move on
-			m.syncName()
-			m.focus = focusCmd
-		default:
-			typed = append(typed, r)
-		}
-	}
-	if len(typed) > 0 {
+	if typed := typedRunes(msg); len(typed) > 0 {
 		m.pick.searchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: typed})
+		m.syncName()
 		return m, nil
 	}
 	if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
 		m.pick.searchKey(msg) // ^U and the rest of the field's editing keys
 	}
+	m.syncName()
 	return m, nil
 }
 
@@ -189,7 +195,7 @@ func (m *launchModel) fieldKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // with the error: the popup closing on a failed launch would look like it had
 // worked.
 func (m *launchModel) launch() tea.Cmd {
-	if err := launchSession(m.pick.dir, m.cmd.value(), m.resolvedName()); err != nil {
+	if err := launchSession(m.pick.dir(), m.cmd.value(), m.resolvedName()); err != nil {
 		m.status = err.Error()
 		return nil
 	}
@@ -204,6 +210,7 @@ var (
 	styModLabel = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	styModFocus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "26", Dark: "45"})
 	styModErr   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9"))
+	styModMatch = lipgloss.NewStyle().Bold(true).Underline(true).Foreground(lipgloss.Color(neonAccent))
 )
 
 func (m *launchModel) View() string {
@@ -216,8 +223,9 @@ func (m *launchModel) View() string {
 		h = 24
 	}
 	var b strings.Builder
+	dispDir, _ := abbrevHome(m.pick.dir(), nil)
 	fmt.Fprintln(&b, styModTitle.Render(" Launch a session"))
-	fmt.Fprintln(&b, " "+styModPath.Render(trunc(m.pick.dir, w-2)))
+	fmt.Fprintln(&b, " "+styModPath.Render(trunc(dispDir, w-2)))
 	fmt.Fprintln(&b, "")
 
 	// the list gets whatever the fixed chrome doesn't need: title, path, blank,
@@ -226,19 +234,18 @@ func (m *launchModel) View() string {
 	if listH < 3 {
 		listH = 3
 	}
-	for i, e := range m.pick.window(listH) {
-		cur := m.pick.cursor - m.pick.top(listH)
-		mark, sty := "  ", styModLabel
-		if i == cur && m.focus == focusPick {
-			mark, sty = "▌ ", styModSel
-		} else if i == cur {
+	top := m.pick.top(listH)
+	for i, mt := range m.pick.window(listH) {
+		mark := "  "
+		if top+i == m.pick.cursor && m.focus == focusPick {
+			mark = styModSel.Render("▌ ")
+		} else if top+i == m.pick.cursor {
 			mark = "▌ "
 		}
-		label := e + "/"
-		if e == parentEntry {
-			label = e
-		}
-		fmt.Fprintln(&b, " "+mark+sty.Render(trunc(label, w-5)))
+		fmt.Fprintln(&b, " "+mark+renderMatch(mt, styModMatch, w-5))
+	}
+	if m.pick.walking {
+		fmt.Fprintln(&b, " "+m.pick.spin.View()+styModLabel.Render(" scanning directories…"))
 	}
 	fmt.Fprintln(&b, "")
 	fmt.Fprintln(&b, " "+styModLabel.Render("search  ")+m.pick.searchView(w-12))
@@ -254,7 +261,7 @@ func (m *launchModel) View() string {
 		fmt.Fprintln(&b, " "+styModErr.Render(trunc(m.status, w-2)))
 	}
 	fmt.Fprint(&b, " "+styModLabel.Render(trunc(
-		"j/k move · ⏎ open · ⌫ up · . pick this dir · ⌥h hidden", w-2)))
+		"type to search · ↑↓ move · ⏎ pick · ⌫ widen · ⌥h hidden", w-2)))
 	return b.String()
 }
 
