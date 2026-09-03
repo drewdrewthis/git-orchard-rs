@@ -82,7 +82,7 @@ func (m *launchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
 	case walkDoneMsg:
-		m.pick.setCands(msg.gen, msg.cands)
+		m.pick.setCands(msg.gen, msg.hidden, msg.cands)
 		return m, nil
 	case spinner.TickMsg:
 		if !m.pick.walking {
@@ -139,14 +139,15 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusCmd
 		return m, nil
 	case tea.KeyBackspace:
-		if !m.pick.backspaceSearch() {
-			wasWalking := m.pick.walking
-			if cmd := m.pick.widen(); cmd != nil {
-				m.syncName()
-				return m, m.walkAndTick(cmd, wasWalking)
-			}
+		wasWalking := m.pick.walking
+		deleted, cmd := m.pick.backspaceSearch()
+		if !deleted {
+			cmd = m.pick.widen() // empty query: backspace widens the roots
 		}
 		m.syncName()
+		if cmd != nil {
+			return m, m.walkAndTick(cmd, wasWalking)
+		}
 		return m, nil
 	}
 	if msg.Alt {
@@ -156,15 +157,17 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil // every other alt key belongs to the outer wrapper
 	}
+	wasWalking := m.pick.walking
+	var cmd tea.Cmd
 	if typed := typedRunes(msg); len(typed) > 0 {
-		m.pick.searchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: typed})
-		m.syncName()
-		return m, nil
-	}
-	if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
-		m.pick.searchKey(msg) // ^U and the rest of the field's editing keys
+		cmd = m.pick.searchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: typed})
+	} else if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
+		cmd = m.pick.searchKey(msg) // ^U and the rest of the field's editing keys
 	}
 	m.syncName()
+	if cmd != nil { // a query crossing the dot-mode boundary re-walks
+		return m, m.walkAndTick(cmd, wasWalking)
+	}
 	return m, nil
 }
 
@@ -259,7 +262,7 @@ func (m *launchModel) View() string {
 		fmt.Fprintln(&b, " "+styModErr.Render(trunc(m.status, w-2)))
 	}
 	fmt.Fprint(&b, " "+styModLabel.Render(trunc(
-		"type to search · ↑↓ move · ⏎ pick · ⌫ widen · ⌥h hidden", w-2)))
+		"type to search · ↑↓ move · ⏎ pick · ⌫ widen · ⌥h hidden: "+m.pick.mode.label(), w-2)))
 	return b.String()
 }
 

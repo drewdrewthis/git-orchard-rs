@@ -39,6 +39,28 @@ Feature: Launch modal fuzzy directory search over a walked tree (#782)
     And the candidate count never exceeds the cap of 5000
 
   @unit
+  Scenario: A query naming a dotdir surfaces hidden dirs without the toggle (#792)
+    Given a tree containing a hidden dir ".hidden" and a visible dir
+    And the hidden toggle is on auto (the default)
+    When I search for ".hidden"
+    Then the walk re-runs with hidden dirs included and ".hidden" is a candidate
+    And an ordinary query like "visible" still leaves hidden dirs out
+
+  @unit
+  Scenario: The hidden toggle overrides the query in both directions (#792)
+    Given the hidden toggle cycles auto, on, off with ⌥h
+    Then "on" includes hidden dirs even for a query with no dot segment
+    And "off" excludes hidden dirs even for a query naming a dotdir
+    And the footer state reads "hidden: auto", "hidden: on", or "hidden: off"
+
+  @unit
+  Scenario: Flipping into dot-mode re-walks without blocking and reuses caches (#792)
+    Given a hidden state that has already been walked and cached
+    When a query or ⌥h flips back to that state
+    Then the cached tree is reused with no re-walk
+    And a flip to an un-walked state re-walks off the update loop, spinner up
+
+  @unit
   Scenario: An empty query lists recent launch dirs first, then the roots
     Given the persisted recent launch dirs are "/w/recent-a" and "/w/recent-b"
     And the roots are "/w/recent-a" and "/home"

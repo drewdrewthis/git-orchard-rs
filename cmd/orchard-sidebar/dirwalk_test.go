@@ -173,3 +173,34 @@ func firstPaths(hits []dirMatch, n int) []string {
 	}
 	return out
 }
+
+// AC4: with hidden dirs walked, a hidden dir that is a symlink back to an
+// ancestor is caught by the same cycle guard — no infinite descent, no dup.
+func TestWalkCandidatesHiddenSymlinkCycle(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "a/b")
+	loop := filepath.Join(root, "a", ".loop")
+	if err := os.Symlink(filepath.Join(root, "a"), loop); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	got := walkCandidates(walkConfig{roots: []string{root}, showHidden: true, maxDepth: 6})
+
+	for _, x := range got {
+		if strings.HasPrefix(x, loop+string(os.PathSeparator)) {
+			t.Errorf("hidden walk descended into the symlink loop: %q", x)
+		}
+	}
+	seen := map[string]bool{}
+	for _, x := range got {
+		if seen[x] {
+			t.Errorf("duplicate path in walk output: %q", x)
+		}
+		seen[x] = true
+	}
+	for _, in := range []string{"a", "a/b"} {
+		if p := filepath.Join(root, filepath.FromSlash(in)); !hasPath(got, p) {
+			t.Errorf("hidden walk missing legitimate dir %q", p)
+		}
+	}
+}
