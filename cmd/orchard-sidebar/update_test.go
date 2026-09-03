@@ -36,6 +36,7 @@ func TestUpdateAvailable(t *testing.T) {
 		{"equal: nothing to show", "1.2.3", "1.2.3", false},
 		{"genuinely newer", "1.2.3", "1.3.0", true},
 		{"dev build: no semver, never upgradable", release.DevVersion, "0.0.1", false},
+		{"git-describe stamp: no semver, never upgradable", "v1.1.0-3-gabc1234-dirty", "1.1.0", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			version = tc.version
@@ -86,6 +87,10 @@ func TestUpdateHint(t *testing.T) {
 		{"versioned equal latest: empty", "1.2.3", "1.2.3", nil, "", true},
 		{"versioned older latest: empty", "1.2.3", "1.1.0", nil, "", true},
 		{"versioned newer latest: glyph", "1.2.3", "1.3.0", nil, updateGlyph + "v1.3.0", false},
+		{"git-describe stamp: no semver, dev ident", "v1.1.0-3-gabc1234-dirty", "1.1.0",
+			buildInfoWith(debug.BuildSetting{Key: "vcs.revision", Value: "abcdef1234567"},
+				debug.BuildSetting{Key: "vcs.modified", Value: "false"}),
+			"dev@abcdef1", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			version = tc.version

@@ -43,7 +43,9 @@ func buildIdent() string {
 	return ident
 }
 
-// isDevBuild is the one home for the rule of what counts as an unreleased binary.
+// isDevBuild is the one home for the rule of what counts as an unreleased
+// binary: no semver stamped, not literally the string "dev" — a git-describe
+// build (e.g. "v1.1.0-3-gabc1234-dirty") is just as unreleased (AC1 of #789).
 func isDevBuild() bool {
-	return version == release.DevVersion
+	return !release.IsSemver(version)
 }
