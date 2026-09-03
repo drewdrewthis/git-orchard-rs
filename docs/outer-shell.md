@@ -810,7 +810,8 @@ the OUTER terminal emulator, not on orchard:
 | VS Code integrated terminal ≥1.90 (local) | accepts |
 | VS Code Remote (SSH/WSL/Containers) | ignores — see https://github.com/microsoft/vscode-remote-release/issues/11475 |
 | Warp | denies by default (`osc52_clipboard_access: deny`) — enable it in Warp's own settings |
-| iTerm2, kitty | accept |
+| iTerm2 | accept |
+| kitty | accept |
 
 The sidebar footer's click-to-copy (`cmd/orchard-sidebar/gitbox.go`) shells
 out to `pbcopy` directly and does not depend on OSC 52 or any of the above —
