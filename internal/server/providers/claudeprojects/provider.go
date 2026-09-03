@@ -283,10 +283,23 @@ func (p *Provider) ToGraphQL(c Conversation) *graphql.Conversation {
 		MessageCount: c.MessageCount,
 		Open:         p.IsOpen(c),
 		Recap:        c.Recap,
+		RecapSource:  toGraphQLRecapSource(c.RecapSource),
 		JsonlPath:    c.Path,
 		CustomTitle:  c.CustomTitle,
 		AgentName:    c.AgentName,
 	}
+}
+
+// toGraphQLRecapSource maps the provider's RecapSource onto the generated
+// GraphQL enum. The string values are identical, so this is a plain
+// conversion that preserves nil (recapSource is null exactly when recap
+// is null).
+func toGraphQLRecapSource(s *RecapSource) *graphql.RecapSource {
+	if s == nil {
+		return nil
+	}
+	g := graphql.RecapSource(*s)
+	return &g
 }
 
 // Refresh forces a full re-walk of the projects root and updates the

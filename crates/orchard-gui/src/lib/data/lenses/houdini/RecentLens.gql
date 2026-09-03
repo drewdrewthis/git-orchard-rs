@@ -13,6 +13,7 @@ query RecentLens {
 		messageCount
 		open
 		recap
+		recapSource
 	}
 	# Live Claude REPLs — enrichment overlay. Match by sessionUuid; when
 	# present, lift the row's state/process/pane/worktree from here.

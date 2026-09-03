@@ -30,10 +30,10 @@ func TestReadLatestRecap_AgainstRealJSONL(t *testing.T) {
 			if got == nil {
 				t.Fatal("expected non-nil recap from real /recap-bearing jsonl")
 			}
-			if len(*got) == 0 {
+			if len(got.Text) == 0 {
 				t.Error("recap is empty string; expected text")
 			}
-			t.Logf("recap (len=%d, first 200 chars): %.200s", len(*got), *got)
+			t.Logf("recap (source=%s, len=%d, first 200 chars): %.200s", got.Source, len(got.Text), got.Text)
 		})
 	}
 }

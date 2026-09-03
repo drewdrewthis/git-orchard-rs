@@ -462,6 +462,12 @@
 						{/if}
 					</div>
 					{#if conversation?.recap}
+						{#if conversation.recapSource === "AWAY_SUMMARY"}
+							<span
+								class="mono dimer mt-1 inline-block rounded px-1 text-[9px] font-semibold uppercase tracking-wide opacity-60"
+								title="Auto-generated away summary (no /recap was run)"
+							>auto</span>
+						{/if}
 						<div
 							class="mono dimer mt-1 text-[11.5px] leading-[1.4] line-clamp-2"
 							title={conversation.recap}

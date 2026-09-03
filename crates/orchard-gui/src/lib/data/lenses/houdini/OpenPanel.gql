@@ -12,6 +12,7 @@ query OpenPanel($paneIds: [String!], $cwd: String) {
 		messageCount
 		open
 		recap
+		recapSource
 		cwd
 		jsonlPath
 		agentName

@@ -28,6 +28,9 @@ type jsonlMeta struct {
 	CustomTitle  *string
 	AgentName    *string
 	Recap        *string
+	// RecapSource names the record kind Recap came from. Nil exactly when
+	// Recap is nil.
+	RecapSource *RecapSource
 }
 
 // jsonlRecord is the parsed shape of a single JSONL line. Fields are
@@ -121,7 +124,11 @@ func readJSONLMeta(path string) (jsonlMeta, error) {
 	if err != nil {
 		return jsonlMeta{}, fmt.Errorf("read latest recap of %s: %w", path, err)
 	}
-	meta.Recap = recap
+	if recap != nil {
+		meta.Recap = &recap.Text
+		src := recap.Source
+		meta.RecapSource = &src
+	}
 
 	// If neither the first nor last record carried cwd, walk the tail
 	// backwards to find the most recent record that does. Many sessions

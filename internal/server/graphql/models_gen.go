@@ -119,10 +119,13 @@ func (this ClaudeInstance) GetID() string { return this.ID }
 // `open` is a heartbeat: true when the JSONL was written within the last
 // N seconds (default 60s, see provider.HeartbeatThreshold).
 //
-// `recap` is the text of the most recent `/recap` slash-command
-// invocation in this session, extracted from the JSONL by the daemon.
-// Null when the session has not invoked `/recap` yet. No plugin
-// required — the fold lives in the claudeprojects provider.
+// `recap` is the text of the most recent recap in this session, extracted
+// from the JSONL by the daemon. Two record kinds qualify: an explicit
+// `/recap` slash-command output and an autonomous `away_summary` system
+// record Claude Code writes on its own. Whichever appears later in the
+// transcript wins, and `recapSource` names which kind it was. Null when
+// the session has produced neither. No plugin required — the fold lives
+// in the claudeprojects provider.
 type Conversation struct {
 	// Stable orchard id — "Conversation:<sessionUuid>".
 	ID string `json:"id"`
@@ -138,8 +141,10 @@ type Conversation struct {
 	MessageCount int64 `json:"messageCount"`
 	// Heartbeat: true when the JSONL was last written within the heartbeat threshold.
 	Open bool `json:"open"`
-	// Daemon-derived recap from the most recent `/recap` slash-command invocation in this session. Null when no `/recap` has been invoked.
+	// Daemon-derived recap from the most recent recap in this session — either a `/recap` output or an autonomous `away_summary`, whichever is later in the transcript. Null when neither exists.
 	Recap *string `json:"recap,omitempty"`
+	// Which record kind produced `recap`. Null exactly when `recap` is null.
+	RecapSource *RecapSource `json:"recapSource,omitempty"`
 	// Absolute path to the JSONL transcript on the daemon's host.
 	// Use `GET /v1/conversations/<sessionUuid>/jsonl` (hosted on the same listener as `/graphql`) to read transcript bodies.
 	JsonlPath string `json:"jsonlPath"`
@@ -1360,6 +1365,64 @@ func (e *PullRequestState) UnmarshalJSON(b []byte) error {
 }
 
 func (e PullRequestState) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	e.MarshalGQL(&buf)
+	return buf.Bytes(), nil
+}
+
+// Which transcript record kind produced a Conversation's `recap`.
+type RecapSource string
+
+const (
+	// An explicit `/recap` slash-command output record.
+	RecapSourceRecapCommand RecapSource = "RECAP_COMMAND"
+	// An autonomous `away_summary` system record Claude Code writes on its own.
+	RecapSourceAwaySummary RecapSource = "AWAY_SUMMARY"
+)
+
+var AllRecapSource = []RecapSource{
+	RecapSourceRecapCommand,
+	RecapSourceAwaySummary,
+}
+
+func (e RecapSource) IsValid() bool {
+	switch e {
+	case RecapSourceRecapCommand, RecapSourceAwaySummary:
+		return true
+	}
+	return false
+}
+
+func (e RecapSource) String() string {
+	return string(e)
+}
+
+func (e *RecapSource) UnmarshalGQL(v any) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("enums must be strings")
+	}
+
+	*e = RecapSource(str)
+	if !e.IsValid() {
+		return fmt.Errorf("%s is not a valid RecapSource", str)
+	}
+	return nil
+}
+
+func (e RecapSource) MarshalGQL(w io.Writer) {
+	fmt.Fprint(w, strconv.Quote(e.String()))
+}
+
+func (e *RecapSource) UnmarshalJSON(b []byte) error {
+	s, err := strconv.Unquote(string(b))
+	if err != nil {
+		return err
+	}
+	return e.UnmarshalGQL(s)
+}
+
+func (e RecapSource) MarshalJSON() ([]byte, error) {
 	var buf bytes.Buffer
 	e.MarshalGQL(&buf)
 	return buf.Bytes(), nil
