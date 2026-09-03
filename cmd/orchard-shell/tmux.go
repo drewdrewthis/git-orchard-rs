@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -12,9 +13,33 @@ import (
 // above it is testable without a tmux server.
 type tmuxExec func(args ...string) (string, error)
 
+// tmuxFallbackPaths are the usual absolute homes of the tmux binary, tried in
+// order when $PATH does not resolve "tmux". A tmux run-shell hook (outer.conf's
+// pane-died and M-r) inherits a minimal environment whose $PATH need not carry
+// Homebrew's bin, so a bare "tmux" LookPath can miss the very binary that is
+// running the hook — which is why M-r worked from a login shell but not under
+// run-shell. Resolving here, at the one place every tmux invocation funnels
+// through, fixes both the hook and the M-r path together.
+var tmuxFallbackPaths = []string{"/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"}
+
+// tmuxBinary resolves the tmux executable: $PATH first, then the known
+// absolute locations. It returns the bare name as a last resort so exec still
+// produces a legible "not found" rather than an empty argv.
+func tmuxBinary() string {
+	if p, err := exec.LookPath("tmux"); err == nil {
+		return p
+	}
+	for _, p := range tmuxFallbackPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "tmux"
+}
+
 // runTmux is the production tmuxExec.
 func runTmux(args ...string) (string, error) {
-	cmd := exec.Command("tmux", args...)
+	cmd := exec.Command(tmuxBinary(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -70,8 +95,28 @@ func shellQuote(s string) string {
 // pane at a dead shell prompt. This is the one place in the wrapper where it
 // matters, because it is the only point where a second tmux client is created
 // inside a pane the first one already owns.
+//
+// `exec` makes the attach the pane's OWN process rather than a child of the
+// pane's default shell. boot() delivers this line through send-keys into a
+// live zsh/bash; without exec, when the inner server dies the attach exits but
+// the shell survives, the pane never dies, and pane-died never fires — so
+// self-heal (AC1) never triggers. exec replaces the shell, so the pane dies
+// with the attach. respawn-pane runs the command directly (its own process
+// already), where exec is a harmless no-op that keeps the pane command uniform
+// across every launch path.
 func innerAttachCommand(socket, session string) string {
-	return fmt.Sprintf("TMUX= tmux -L %s attach -t %s", shellQuote(socket), shellQuote(session))
+	return fmt.Sprintf("TMUX= exec tmux -L %s attach -t %s", shellQuote(socket), shellQuote(session))
+}
+
+// innerNewSessionCommand is pane 0.1's command line when the inner server has
+// no session left to attach: `new-session -A` creates one (or attaches an
+// existing one of that name), so a killed-off inner server heals into a fresh
+// session instead of a dead pane. `TMUX=` is cleared for the same nesting
+// reason as innerAttachCommand, and `exec` for the same self-heal reason: the
+// pane must die with its inner tmux so a later server death re-triggers
+// recovery instead of dropping to a surviving shell.
+func innerNewSessionCommand(socket, session string) string {
+	return fmt.Sprintf("TMUX= exec tmux -L %s new-session -A -s %s", shellQuote(socket), shellQuote(session))
 }
 
 // sidebarCommand is pane 0.0's command line.

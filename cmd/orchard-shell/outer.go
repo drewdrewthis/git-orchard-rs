@@ -213,7 +213,10 @@ func (w *wrapper) resolveSession() (string, error) {
 // split-window targets.
 const bootPane = outerSessionName + ":0"
 
-// boot builds the wrapper from nothing.
+// boot builds the wrapper from nothing. detach-on-destroy is NOT set here:
+// ensureReady() sets it once for every path (boot/respawn/rebuild/attach)
+// after the inner server is confirmed present, so setting it in boot too was a
+// redundant second set-option on the boot path.
 func (w *wrapper) boot(session string) error {
 	cols, rows := termSize()
 	if _, err := w.outer("new-session", "-d", "-s", outerSessionName,
@@ -276,6 +279,15 @@ func (w *wrapper) respawn(session string) error {
 		innerAttachCommand(w.opts.InnerSocket, session)); err != nil {
 		return err
 	}
+	return w.respawnSidebarPane()
+}
+
+// respawnSidebarPane rebuilds pane 0.0 with fresh env. It re-reads 0.1's tty
+// FIRST: a respawn of 0.1 gives it a new pty, and the sidebar's
+// ORCHARD_TMUX_CLIENT must name the tty that is live NOW — the ordering both
+// respawn() (after it respawns 0.1) and recover-pane's sidebar path depend on,
+// which is why the two share this one helper rather than each keeping a copy.
+func (w *wrapper) respawnSidebarPane() error {
 	tty, err := w.outer("display", "-p", "-t", paneInner, "#{pane_tty}")
 	if err != nil {
 		return err
@@ -335,6 +347,19 @@ func (w *wrapper) rebuild(session string) error {
 		return err
 	}
 	return w.respawn(session)
+}
+
+// disarmDetachOnDestroy turns off detach-on-destroy on the INNER server
+// (AC0). tmux's default is to DETACH a client when the session it is viewing
+// is destroyed; on the inner client running in pane 0.1 that would leave the
+// pane a dead shell. Off, tmux switches the client to another session
+// instead, so killing the session the user is looking at never strands the
+// pane. Set here, on the server orchard-shell attaches to, rather than in the
+// user's ~/.tmux.conf, so the guarantee holds regardless of their config.
+// Best-effort: an inner server that is not up yet has nothing to set, and the
+// caller's own attach will surface that.
+func (w *wrapper) disarmDetachOnDestroy() {
+	_, _ = w.inner("set-option", "-g", "detach-on-destroy", "off")
 }
 
 // focusInner moves focus to 0.1, unconditionally, on boot AND on every

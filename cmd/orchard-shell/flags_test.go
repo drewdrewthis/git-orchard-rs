@@ -202,8 +202,8 @@ func TestRun_DoctorJSONIsAlwaysValidJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout.String()), &env); err != nil {
 		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if env.Data == nil || len(env.Data.Checks) != 10 {
-		t.Fatalf("Data.Checks has %d entries; want 10", len(env.Data.Checks))
+	if env.Data == nil || len(env.Data.Checks) != 11 {
+		t.Fatalf("Data.Checks has %d entries; want 11", len(env.Data.Checks))
 	}
 	if env.OK && code != 0 {
 		t.Errorf("ok=true but exit code = %d; want 0", code)

@@ -89,7 +89,11 @@ type doctorEnv struct {
 
 // newDoctorEnv is the production doctorEnv.
 func newDoctorEnv(selfVersion, innerSocket, outerSocket string) doctorEnv {
-	conf, confErr := resolveConf("")
+	// Resolve the outer.conf the way orchard shell itself does — with this
+	// binary's path and the actual socket pair baked into the recovery-hook
+	// placeholders — so the outer-socket check inspects the same materialised
+	// file a real run would load, not a defaults-substituted stand-in.
+	conf, confErr := resolveConfFor("", selfPath(), innerSocket, outerSocket)
 	home, _ := os.UserHomeDir()
 	return doctorEnv{
 		tmux:           runTmux,
@@ -137,6 +141,7 @@ func runDoctor(opts Options, stdout, stderr io.Writer) int {
 
 // runChecks runs every check, in AC8's order.
 func runChecks(ctx context.Context, env doctorEnv) []checkResult {
+	logPath, _ := recoveryLogPath()
 	return []checkResult{
 		checkTmuxVersion(env),
 		checkTmuxNesting(),
@@ -145,6 +150,7 @@ func runChecks(ctx context.Context, env doctorEnv) []checkResult {
 		checkRevisions(ctx, env),
 		checkInnerSocket(env),
 		checkOuterSocket(env),
+		checkRecoveryStatus(env, logPath),
 		checkSystemd(ctx, env),
 		checkPath(env),
 		checkPlugin(env),

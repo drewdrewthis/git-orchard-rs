@@ -241,7 +241,7 @@ func TestRunChecks_ReturnsAllNineInDocumentedOrder(t *testing.T) {
 	}
 
 	got := runChecks(context.Background(), env)
-	want := []string{"tmux", "tmux-nesting", "daemon", "suite-versions", "suite-revisions", "inner-socket", "outer-socket", "systemd", "path", "plugin"}
+	want := []string{"tmux", "tmux-nesting", "daemon", "suite-versions", "suite-revisions", "inner-socket", "outer-socket", "recovery", "systemd", "path", "plugin"}
 	if len(got) != len(want) {
 		t.Fatalf("runChecks returned %d results; want %d", len(got), len(want))
 	}

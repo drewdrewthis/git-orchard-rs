@@ -35,6 +35,13 @@ func TestEveryOuterInvocationDuringBootPassesDashF(t *testing.T) {
 		t.Fatalf("focusInner: %v", err)
 	}
 	for _, c := range f.calls {
+		// Inner-server calls (e.g. AC0's detach-on-destroy set-option) target
+		// the user's own socket and deliberately carry no -f — see
+		// TestInnerArgs_NeverCarriesAConfig. Only OUTER invocations are held
+		// to the -f invariant.
+		if strings.HasPrefix(c, "-L inner-test ") {
+			continue
+		}
 		if !strings.HasPrefix(c, "-L outer-test -f /conf/outer.conf ") {
 			t.Errorf("outer invocation without -f: %q", c)
 		}
@@ -125,12 +132,15 @@ func TestBoot_SizesTheSessionAndPinsTheSidebarWidth(t *testing.T) {
 // @scenario The inner attach clears TMUX before connecting
 //
 // Without TMUX= tmux hard-refuses to nest and the pane sits at a dead prompt.
-func TestInnerAttachCommand_ClearsTMUX(t *testing.T) {
+// `exec` makes the attach the pane's own process so it dies with the inner
+// server (AC1 self-heal); without it, send-keys leaves the pane's shell alive
+// and pane-died never fires.
+func TestInnerAttachCommand_ClearsTMUXAndExecs(t *testing.T) {
 	got := innerAttachCommand("inner", "work")
-	if !strings.HasPrefix(got, "TMUX= ") {
-		t.Errorf("innerAttachCommand = %q; want a literal TMUX= prefix", got)
+	if !strings.HasPrefix(got, "TMUX= exec ") {
+		t.Errorf("innerAttachCommand = %q; want a literal TMUX= exec prefix", got)
 	}
-	if got != "TMUX= tmux -L inner attach -t work" {
+	if got != "TMUX= exec tmux -L inner attach -t work" {
 		t.Errorf("innerAttachCommand = %q", got)
 	}
 }
@@ -172,7 +182,7 @@ func TestShellQuote_LeavesOrdinaryNamesAloneAndQuotesTheRest(t *testing.T) {
 // A session name with a space must survive the round trip through send-keys.
 func TestInnerAttachCommand_QuotesAwkwardSessionNames(t *testing.T) {
 	got := innerAttachCommand("inner", "my session")
-	if got != "TMUX= tmux -L inner attach -t 'my session'" {
+	if got != "TMUX= exec tmux -L inner attach -t 'my session'" {
 		t.Errorf("innerAttachCommand = %q", got)
 	}
 }
