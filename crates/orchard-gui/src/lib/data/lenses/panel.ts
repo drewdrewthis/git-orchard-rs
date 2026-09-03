@@ -26,6 +26,7 @@ export interface PanelData {
 		messageCount: number;
 		open: boolean;
 		recap: string | null;
+		recapSource: string | null;
 		cwd: string | null;
 		jsonlPath: string | null;
 		agentName: string | null;
@@ -100,6 +101,7 @@ export function buildPanelData(
 				messageCount: convRaw.messageCount,
 				open: convRaw.open,
 				recap: convRaw.recap,
+				recapSource: convRaw.recapSource ?? null,
 				cwd: convRaw.cwd,
 				jsonlPath: convRaw.jsonlPath,
 				agentName: convRaw.agentName ?? null,

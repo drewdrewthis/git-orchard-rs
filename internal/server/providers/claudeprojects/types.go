@@ -67,11 +67,14 @@ type Conversation struct {
 	CustomTitle *string
 	// AgentName is the sub-agent name from the JSONL `type: "agent-name"` record. Nil when not yet recorded.
 	AgentName *string
-	// Recap is the latest `<local-command-stdout>...</local-command-stdout>`
-	// content produced by a `/recap` slash command invocation in this
-	// session. Derived directly from the JSONL — no plugin involvement.
-	// Nil when the session has not invoked `/recap` yet.
+	// Recap is the latest recap in this session — either a `/recap`
+	// slash-command output or an autonomous `away_summary` system record,
+	// whichever is later in the JSONL. Derived directly from the JSONL —
+	// no plugin involvement. Nil when the session has produced neither.
 	Recap *string
+	// RecapSource names which record kind Recap came from. Nil exactly
+	// when Recap is nil.
+	RecapSource *RecapSource
 }
 
 // GraphQLID returns the stable orchard id for a Conversation node. The

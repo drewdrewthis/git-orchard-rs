@@ -144,6 +144,15 @@ type ClaudeInstance implements Node {
   worktree: Worktree
 }
 
+"""Which transcript record kind produced a Conversation's `recap`."""
+enum RecapSource {
+  """An explicit `/recap` slash-command output record."""
+  RECAP_COMMAND
+
+  """An autonomous `away_summary` system record Claude Code writes on its own."""
+  AWAY_SUMMARY
+}
+
 """
 A Claude Code conversation, backed by the JSONL transcript that the
 Claude Code CLI writes under `~/.claude/projects/<project-slug>/<session-uuid>.jsonl`.
@@ -201,9 +210,12 @@ type Conversation implements Node {
   open: Boolean!
 
   """
-  Daemon-derived recap from the most recent `/recap` slash-command invocation in this session. Null when no `/recap` has been invoked.
+  Daemon-derived recap from the most recent recap in this session — either a `/recap` output or an autonomous `away_summary`, whichever is later in the transcript. Null when neither exists.
   """
   recap: String
+
+  """Which record kind produced `recap`. Null exactly when `recap` is null."""
+  recapSource: RecapSource
 
   """
   The session UUID embedded in the JSONL filename — globally unique across Claude Code.

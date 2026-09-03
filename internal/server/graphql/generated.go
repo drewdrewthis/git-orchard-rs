@@ -88,6 +88,7 @@ type ComplexityRoot struct {
 		MessageCount func(childComplexity int) int
 		Open         func(childComplexity int) int
 		Recap        func(childComplexity int) int
+		RecapSource  func(childComplexity int) int
 		SessionUUID  func(childComplexity int) int
 	}
 
@@ -792,6 +793,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.ComplexityRoot.Conversation.Recap(childComplexity), true
+	case "Conversation.recapSource":
+		if e.ComplexityRoot.Conversation.RecapSource == nil {
+			break
+		}
+
+		return e.ComplexityRoot.Conversation.RecapSource(childComplexity), true
 	case "Conversation.sessionUuid":
 		if e.ComplexityRoot.Conversation.SessionUUID == nil {
 			break
@@ -3583,6 +3590,14 @@ input TmuxPaneFilter {
   command: String
 }
 
+"Which transcript record kind produced a Conversation's ` + "`" + `recap` + "`" + `."
+enum RecapSource {
+  "An explicit ` + "`" + `/recap` + "`" + ` slash-command output record."
+  RECAP_COMMAND
+  "An autonomous ` + "`" + `away_summary` + "`" + ` system record Claude Code writes on its own."
+  AWAY_SUMMARY
+}
+
 """
 A Claude Code conversation, backed by the JSONL transcript that the
 Claude Code CLI writes under ` + "`" + `~/.claude/projects/<project-slug>/<session-uuid>.jsonl` + "`" + `.
@@ -3595,10 +3610,13 @@ single live signal (` + "`" + `open` + "`" + `) and a daemon-derived ` + "`" + `
 ` + "`" + `open` + "`" + ` is a heartbeat: true when the JSONL was written within the last
 N seconds (default 60s, see provider.HeartbeatThreshold).
 
-` + "`" + `recap` + "`" + ` is the text of the most recent ` + "`" + `/recap` + "`" + ` slash-command
-invocation in this session, extracted from the JSONL by the daemon.
-Null when the session has not invoked ` + "`" + `/recap` + "`" + ` yet. No plugin
-required — the fold lives in the claudeprojects provider.
+` + "`" + `recap` + "`" + ` is the text of the most recent recap in this session, extracted
+from the JSONL by the daemon. Two record kinds qualify: an explicit
+` + "`" + `/recap` + "`" + ` slash-command output and an autonomous ` + "`" + `away_summary` + "`" + ` system
+record Claude Code writes on its own. Whichever appears later in the
+transcript wins, and ` + "`" + `recapSource` + "`" + ` names which kind it was. Null when
+the session has produced neither. No plugin required — the fold lives
+in the claudeprojects provider.
 """
 type Conversation implements Node {
   "Stable orchard id — \"Conversation:<sessionUuid>\"."
@@ -3622,8 +3640,11 @@ type Conversation implements Node {
   "Heartbeat: true when the JSONL was last written within the heartbeat threshold."
   open: Boolean!
 
-  "Daemon-derived recap from the most recent ` + "`" + `/recap` + "`" + ` slash-command invocation in this session. Null when no ` + "`" + `/recap` + "`" + ` has been invoked."
+  "Daemon-derived recap from the most recent recap in this session — either a ` + "`" + `/recap` + "`" + ` output or an autonomous ` + "`" + `away_summary` + "`" + `, whichever is later in the transcript. Null when neither exists."
   recap: String
+
+  "Which record kind produced ` + "`" + `recap` + "`" + `. Null exactly when ` + "`" + `recap` + "`" + ` is null."
+  recapSource: RecapSource
 
   """
   Absolute path to the JSONL transcript on the daemon's host.
@@ -4265,6 +4286,8 @@ func (ec *executionContext) childFields_Conversation(ctx context.Context, field 
 		return ec.fieldContext_Conversation_open(ctx, field)
 	case "recap":
 		return ec.fieldContext_Conversation_recap(ctx, field)
+	case "recapSource":
+		return ec.fieldContext_Conversation_recapSource(ctx, field)
 	case "jsonlPath":
 		return ec.fieldContext_Conversation_jsonlPath(ctx, field)
 	case "customTitle":
@@ -6290,6 +6313,29 @@ func (ec *executionContext) _Conversation_recap(ctx context.Context, field graph
 }
 func (ec *executionContext) fieldContext_Conversation_recap(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	return graphql.NewScalarFieldContext("Conversation", field, false, false, errors.New("field of type String does not have child fields"))
+}
+
+func (ec *executionContext) _Conversation_recapSource(ctx context.Context, field graphql.CollectedField, obj *Conversation) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return ec.fieldContext_Conversation_recapSource(ctx, field)
+		},
+		func(ctx context.Context) (any, error) {
+			return obj.RecapSource, nil
+		},
+		nil,
+		func(ctx context.Context, selections ast.SelectionSet, v *RecapSource) graphql.Marshaler {
+			return ec.marshalORecapSource2ᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐRecapSource(ctx, selections, v)
+		},
+		true,
+		false,
+	)
+}
+func (ec *executionContext) fieldContext_Conversation_recapSource(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	return graphql.NewScalarFieldContext("Conversation", field, false, false, errors.New("field of type RecapSource does not have child fields"))
 }
 
 func (ec *executionContext) _Conversation_jsonlPath(ctx context.Context, field graphql.CollectedField, obj *Conversation) (ret graphql.Marshaler) {
@@ -15193,6 +15239,8 @@ func (ec *executionContext) _Conversation(ctx context.Context, sel ast.Selection
 			}
 		case "recap":
 			out.Values[i] = ec._Conversation_recap(ctx, field, obj)
+		case "recapSource":
+			out.Values[i] = ec._Conversation_recapSource(ctx, field, obj)
 		case "jsonlPath":
 			out.Values[i] = ec._Conversation_jsonlPath(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
@@ -21570,6 +21618,22 @@ func (ec *executionContext) unmarshalOPullRequestState2ᚖgithubᚗcomᚋdrewdre
 }
 
 func (ec *executionContext) marshalOPullRequestState2ᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐPullRequestState(ctx context.Context, sel ast.SelectionSet, v *PullRequestState) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return v
+}
+
+func (ec *executionContext) unmarshalORecapSource2ᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐRecapSource(ctx context.Context, v any) (*RecapSource, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var res = new(RecapSource)
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalORecapSource2ᚖgithubᚗcomᚋdrewdrewthisᚋorchardistᚋinternalᚋserverᚋgraphqlᚐRecapSource(ctx context.Context, sel ast.SelectionSet, v *RecapSource) graphql.Marshaler {
 	if v == nil {
 		return graphql.Null
 	}

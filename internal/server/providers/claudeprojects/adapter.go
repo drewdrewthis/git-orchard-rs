@@ -187,5 +187,6 @@ func (a *FSAdapter) fromFile(path string) (Conversation, error) {
 		CustomTitle:  meta.CustomTitle,
 		AgentName:    meta.AgentName,
 		Recap:        meta.Recap,
+		RecapSource:  meta.RecapSource,
 	}, nil
 }
