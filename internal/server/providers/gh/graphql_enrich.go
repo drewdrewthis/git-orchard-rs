@@ -169,6 +169,7 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	// windows + transient network blips.
 	serveStale := func(reason error) (PullRequest, error) {
 		if ok && hasEnriched && p.clock().Sub(enrichedAt) < staleEnrichmentTTL {
+			p.logServingStale(key, reason)
 			return entry.value, nil
 		}
 		return PullRequest{}, reason
@@ -221,9 +222,7 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 			// short enough to recover quickly if the user invoked a one-off
 			// burst, long enough to avoid waste if we're truly throttled.
 			if strings.Contains(strings.ToLower(joined), "rate limit") {
-				p.prMu.Lock()
-				p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-				p.prMu.Unlock()
+				p.enterRateLimitCooldown("EnrichPullRequest", joined)
 			}
 			return serveStale(fmt.Errorf("EnrichPullRequest graphql errors: %s", joined))
 		}
@@ -231,9 +230,7 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 
 	if len(envelope.Errors) == 0 {
 		// Successful fetch — clear the cooldown.
-		p.prMu.Lock()
-		p.rateLimitedUntil = time.Time{}
-		p.prMu.Unlock()
+		p.clearRateLimitCooldown()
 	}
 
 	wire := envelope.Data.Repository.PullRequest
@@ -451,19 +448,29 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 		return PullRequest{}
 	}
 
+	// serveStaleAll fills every outstanding key from cache and reports the
+	// fallback once for the whole batch (#749).
+	serveStaleAll := func(reason error) {
+		served := 0
+		for _, k := range toFetch {
+			v := serveStaleForKey(k)
+			if v.Number != 0 {
+				served++
+			}
+			result[k] = v
+		}
+		p.logServingStaleBatch(served, len(toFetch), reason)
+	}
+
 	// Rate-limit cooldown: skip network, serve stale for all keys.
 	if !rateLimitedUntil.IsZero() && p.clock().Before(rateLimitedUntil) {
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests: rate limit cooldown until %s", rateLimitedUntil.Format(time.RFC3339)))
 		return result, nil
 	}
 
 	c, err := p.httpClient(ctx)
 	if err != nil {
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(err)
 		return result, err
 	}
 
@@ -504,13 +511,9 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 	if err != nil {
 		// Rate-limit HTTP error: set cooldown, serve stale.
 		if IsRateLimited(err) {
-			p.prMu.Lock()
-			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-			p.prMu.Unlock()
+			p.enterRateLimitCooldown("BatchEnrichPullRequests", err.Error())
 		}
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(err)
 		return result, err
 	}
 
@@ -523,9 +526,7 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 		} `json:"errors,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		for _, k := range toFetch {
-			result[k] = serveStaleForKey(k)
-		}
+		serveStaleAll(fmt.Errorf("BatchEnrichPullRequests decode: %w", err))
 		return result, fmt.Errorf("BatchEnrichPullRequests decode: %w", err)
 	}
 
@@ -536,25 +537,19 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 		}
 		joined := strings.Join(msgs, "; ")
 		if strings.Contains(strings.ToLower(joined), "rate limit") {
-			p.prMu.Lock()
-			p.rateLimitedUntil = p.clock().Add(5 * time.Minute)
-			p.prMu.Unlock()
+			p.enterRateLimitCooldown("BatchEnrichPullRequests", joined)
 		}
 		// Partial success: aliases that resolved are real; only a response
 		// with no usable data discards them all.
 		if len(envelope.Data) == 0 {
-			for _, k := range toFetch {
-				result[k] = serveStaleForKey(k)
-			}
+			serveStaleAll(fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined))
 			return result, fmt.Errorf("BatchEnrichPullRequests graphql errors: %s", joined)
 		}
 	}
 
 	if len(envelope.Errors) == 0 {
 		// Successful response — clear the cooldown.
-		p.prMu.Lock()
-		p.rateLimitedUntil = time.Time{}
-		p.prMu.Unlock()
+		p.clearRateLimitCooldown()
 	}
 
 	// For each aliased repo block, decode each aliased PR block.

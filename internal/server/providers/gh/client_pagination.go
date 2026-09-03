@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MaxPages is the safety cap on paginated list endpoints. With
@@ -85,7 +86,11 @@ func walkPaginated(ctx context.Context, c *Client, nextURL, relPath string, deco
 		}
 		applyRESTHeaders(c, req)
 
+		start := time.Now()
 		resp, err := c.httpClient().Do(req)
+		// One line per page: every page is a separate request against the same
+		// rate-limit budget, so collapsing them would under-report volume (#749).
+		c.logCall(callKindRESTPage, relPath, repoFromRESTPath(relPath), page, start, resp, err)
 		if err != nil {
 			return fmt.Errorf("github GET %s: %w", relPath, err)
 		}

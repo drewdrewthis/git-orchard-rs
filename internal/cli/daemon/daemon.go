@@ -59,14 +59,19 @@ func Command(version string) *cobra.Command {
 
 func startCmd(version string) *cobra.Command {
 	var addr string
+	var logLevel string
 	c := &cobra.Command{
 		Use:   "start",
 		Short: "Run the orchard daemon in the foreground",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runStart(cmd.Context(), addr, version)
+			return runStart(cmd.Context(), addr, version, logLevel)
 		},
 	}
 	c.Flags().StringVar(&addr, "addr", server.DefaultAddr, "host:port to bind")
+	// Default is deliberately "" rather than "info": resolveLogLevel must be
+	// able to tell "operator said nothing" (consult ORCHARD_LOG_LEVEL) from
+	// "operator asked for info" (which must win over the env var).
+	c.Flags().StringVar(&logLevel, "log-level", "", logLevelUsage)
 	return c
 }
 
@@ -93,7 +98,16 @@ func statusCmd() *cobra.Command {
 // runStart is the foreground daemon entry point. It honours SIGINT and
 // SIGTERM by cancelling the server context for a clean shutdown.
 // version is the binary version injected via -ldflags; defaults to "dev".
-func runStart(parentCtx context.Context, addr string, version string) error {
+// logLevel is the raw --log-level flag value ("" when unset, in which case
+// ORCHARD_LOG_LEVEL is consulted).
+func runStart(parentCtx context.Context, addr string, version string, logLevel string) error {
+	// Resolve the level before anything else can log, and fail fast on a bad
+	// value rather than starting a daemon at a verbosity nobody asked for.
+	level, err := resolveLogLevel(logLevel, os.Getenv(EnvLogLevel))
+	if err != nil {
+		return err
+	}
+
 	pidPath, err := orchpaths.PidFile()
 	if err != nil {
 		return fmt.Errorf("resolve pidfile: %w", err)
@@ -124,7 +138,11 @@ func runStart(parentCtx context.Context, addr string, version string) error {
 	ctx, cancel := signal.NotifyContext(parentCtx, syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	logger := slog.Default()
+	// Install the leveled logger as slog's default too: provider code that
+	// reaches for slog.Default() must see the same level, otherwise
+	// --log-level would only reach the call sites handed this logger.
+	logger := newDaemonLogger(os.Stderr, level)
+	slog.SetDefault(logger)
 
 	cfgPath, err := orchpaths.ConfigFile()
 	if err != nil {

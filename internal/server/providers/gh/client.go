@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -50,6 +51,11 @@ type Client struct {
 	// requires a non-empty UA; defaults to "orchard/v1" via
 	// NewClient.
 	UserAgent string
+
+	// Logger receives the one Info line per outbound call (issue #749).
+	// The Provider wires its own logger here; a nil Logger falls back to
+	// slog.Default() rather than dropping the audit trail silently.
+	Logger *slog.Logger
 
 	// MaxPagesOverride caps pagination at a lower-than-default value.
 	// Zero (default) means use the package-level MaxPages constant.
@@ -105,7 +111,11 @@ func (c *Client) do(ctx context.Context, path string, q url.Values, out any) err
 		req.Header.Set("User-Agent", ua)
 	}
 
+	start := time.Now()
 	resp, err := c.httpClient().Do(req)
+	// Logged before any status branching so a 403/404/rate-limited response
+	// counts exactly like a 200 — each consumed one attempt (#749).
+	c.logCall(callKindREST, path, repoFromRESTPath(path), 0, start, resp, err)
 	if err != nil {
 		return fmt.Errorf("github GET %s: %w", path, err)
 	}
