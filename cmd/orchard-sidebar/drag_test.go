@@ -80,10 +80,11 @@ func TestDragPinsAndUnpins(t *testing.T) {
 	}
 	dragged := m.rows[m.pane.lineToRow[flatY]].session
 
-	// press an unpinned card, move up, release above the separator: pin.
+	// press an unpinned card, move up, release above the separator and at least
+	// the drag threshold away from the press: pin.
 	press(m, flatY)
 	motion(m, sep)
-	mrelease(m, sep-1)
+	mrelease(m, flatY-dragThreshold)
 	if !m.isPinned(dragged) {
 		t.Fatalf("dragging %q into the block did not pin it: %v", dragged, m.pinned)
 	}
@@ -97,10 +98,79 @@ func TestDragPinsAndUnpins(t *testing.T) {
 	}
 	pinned := m.rows[m.pane.lineToRow[pinY]].session
 	press(m, pinY)
-	below := sep + 1
+	below := sep + dragThreshold
 	motion(m, below)
 	mrelease(m, below)
 	if m.isPinned(pinned) {
 		t.Errorf("dragging %q below the separator did not unpin it: %v", pinned, m.pinned)
+	}
+}
+
+// A press promotes the attached card toward the top (selectRow re-sorts), so a
+// release a line or two off the press must read as that click, not a silent pin.
+// Only travel of at least the threshold, across the boundary, changes a pin.
+// Regression for issue #775 (a near-click left a stray pin).
+func TestNearClickDoesNotPin(t *testing.T) {
+	captureSaves(t)
+	prev := switchClient
+	switchClient = func(string, bool) {}
+	t.Cleanup(func() { switchClient = prev })
+
+	// first rendered card line at or below minY, with its session name.
+	cardLine := func(m *model, minY int) (int, string) {
+		for y, r := range m.pane.lineToRow {
+			if r >= 0 && y >= minY {
+				return y, m.rows[r].session
+			}
+		}
+		return -1, ""
+	}
+
+	// pin direction — flat list, no separator yet.
+	m := pinModel("a", "b", "c")
+	viewOf(m)
+	fc := m.pane.firstCardLine()
+	pressY, _ := cardLine(m, fc+dragThreshold)
+	if pressY < 0 {
+		t.Fatal("no card line far enough below the top to drag up")
+	}
+	// single motion + release one line above the press: sub-threshold click.
+	press(m, pressY)
+	motion(m, pressY-1)
+	mrelease(m, pressY-1)
+	if len(m.pinned) != 0 {
+		t.Fatalf("a near-click pinned a card: %v", m.pinned)
+	}
+	// the same card dragged all the way up to the top of the list does pin.
+	m = pinModel("a", "b", "c")
+	viewOf(m)
+	fc = m.pane.firstCardLine()
+	pressY, sess := cardLine(m, fc+dragThreshold)
+	press(m, pressY)
+	motion(m, fc)
+	mrelease(m, fc)
+	if !m.isPinned(sess) {
+		t.Fatalf("a real drag up did not pin %q: %v", sess, m.pinned)
+	}
+
+	// unpin direction — a pinned card with the separator on screen.
+	m = pinModel("a", "b", "c")
+	m.togglePin("a")
+	viewOf(m)
+	pinY, pinnedSess := cardLine(m, 0)
+	// near-click one line below the press stays pinned.
+	press(m, pinY)
+	motion(m, pinY+1)
+	mrelease(m, pinY+1)
+	if !m.isPinned(pinnedSess) {
+		t.Fatalf("a near-click unpinned %q: %v", pinnedSess, m.pinned)
+	}
+	// a real drag below the separator unpins.
+	sep := m.pane.pinSep
+	press(m, pinY)
+	motion(m, sep+dragThreshold)
+	mrelease(m, sep+dragThreshold)
+	if m.isPinned(pinnedSess) {
+		t.Fatalf("a real drag below the separator did not unpin %q: %v", pinnedSess, m.pinned)
 	}
 }

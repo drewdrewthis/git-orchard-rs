@@ -85,7 +85,11 @@ func (m *model) mouse(msg tea.MouseMsg) {
 		// release with motion pins/unpins it. See drag.go.
 		r, _ := m.rowAt(ri)
 		m.selectRow(ri, true)
-		m.dragStart(r.session, msg.Y)
+		if !r.fake {
+			// synthetic fake-* rows are never attachable, so they must never be
+			// pinnable either
+			m.dragStart(r.session, msg.Y)
+		}
 	}
 }
 

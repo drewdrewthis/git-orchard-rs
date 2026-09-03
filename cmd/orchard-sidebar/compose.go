@@ -35,6 +35,18 @@ func (f paneFrame) rowAtLine(y int) (int, bool) {
 	return i, i >= 0
 }
 
+// firstCardLine is the screen line of the topmost card, or -1 when none is
+// drawn. It is the drop target for pinning the very first card, before any
+// separator exists to divide the list.
+func (f paneFrame) firstCardLine() int {
+	for y, i := range f.lineToRow {
+		if i >= 0 {
+			return y
+		}
+	}
+	return -1
+}
+
 // copyAtLine is the same for the git box's click-to-copy payloads.
 func (f paneFrame) copyAtLine(y int) (string, bool) {
 	if y < 0 || y >= len(f.lineToCopy) {

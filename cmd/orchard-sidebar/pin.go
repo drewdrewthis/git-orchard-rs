@@ -37,7 +37,7 @@ func (m *model) togglePin(name string) {
 		return
 	}
 	if m.isPinned(name) {
-		kept := m.pinned[:0]
+		kept := make([]string, 0, len(m.pinned))
 		for _, n := range m.pinned {
 			if n != name {
 				kept = append(kept, n)
@@ -84,7 +84,7 @@ func (m *model) pruneStalePins(live map[string]bool) {
 	if len(m.pinned) == 0 {
 		return
 	}
-	kept := m.pinned[:0]
+	kept := make([]string, 0, len(m.pinned))
 	changed := false
 	for _, name := range m.pinned {
 		if live[name] {

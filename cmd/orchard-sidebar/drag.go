@@ -50,16 +50,23 @@ func (m *model) dragMove(msg tea.MouseMsg) {
 	}
 }
 
+// dragThreshold is the minimum vertical travel, in lines, before a release
+// counts as a drag rather than a click. A press promotes the attached card
+// toward the top (selectRow re-sorts), so a near-click can land a line or two
+// off the press without the user meaning to drag; below this it is a plain
+// click and never changes a pin.
+const dragThreshold = 3
+
 // dragRelease resolves the gesture and clears the drag. A release without
-// motion is an ordinary click, already handled by the attach on press, so it
-// does nothing here.
+// motion — or with sub-threshold travel — is an ordinary click, already handled
+// by the attach on press, so it changes no pin.
 func (m *model) dragRelease(y int) {
 	d := m.drag
 	m.drag = dragState{}
-	if !d.active || !d.moved {
+	if !d.active || !d.moved || abs(y-d.startY) < dragThreshold {
 		return
 	}
-	over := m.releaseOverPinned(d.startY, y)
+	over := m.releaseOverPinned(y)
 	switch {
 	case over && !d.wasPinned:
 		m.togglePin(d.session) // dragged into the block
@@ -68,13 +75,21 @@ func (m *model) dragRelease(y int) {
 	}
 }
 
-// releaseOverPinned reports whether a release line lands in the pinned block.
-// With a block on screen the separator is the divider; before the first pin
-// there is no separator, so an upward drag (toward the top, where the block
-// forms) is what pins the first card.
-func (m *model) releaseOverPinned(startY, y int) bool {
+// releaseOverPinned reports whether a release line lands at or above the
+// pinned/flat boundary. With a block on screen the separator is the divider (at
+// or above it pins); before the first pin there is no separator, so the drop
+// target is the first card line — a release at or above the top of the list is
+// what pins the first card.
+func (m *model) releaseOverPinned(y int) bool {
 	if m.pane.pinSep >= 0 {
-		return y < m.pane.pinSep
+		return y <= m.pane.pinSep
 	}
-	return y < startY
+	return y <= m.pane.firstCardLine()
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
