@@ -581,6 +581,7 @@ func TestDragWritesWidthBack(t *testing.T) {
 		t.Fatalf("startup size published: %v", wrote)
 	}
 	m.desiredWidth = 42
+	m.clients = 1 // an attached client is what makes a resize a drag (#736)
 	gen := m.clientGen
 	m.Update(tea.WindowSizeMsg{Width: 45, Height: 50}) // drag
 	if len(wrote) != 1 || wrote[0] != 45 || m.desiredWidth != 45 {
@@ -719,5 +720,42 @@ func TestRebuildKeepsBarParkedWhileRowUnserved(t *testing.T) {
 	}})
 	if m.cursor < 0 || m.rows[m.cursor].session != "brand-new" {
 		t.Fatalf("cursor = %d (%v), want the brand-new row", m.cursor, m.cursorSess)
+	}
+}
+
+// A resize while NO client is attached is mechanical -- proportional
+// redistribution after an attach/detach churns window sizes (#736). It must
+// be reasserted away, not adopted as a drag: this is the detached-fleet case
+// where sidebars silently inflated from 42 to half the window.
+func TestDetachedResizeReassertsDesired(t *testing.T) {
+	var wrote []int
+	var resized []int
+	origSet := setWidthOption
+	setWidthOption = func(w int) { wrote = append(wrote, w) }
+	origRes := resizePane
+	resizePane = func(w int) { resized = append(resized, w) }
+	defer func() { setWidthOption = origSet; resizePane = origRes }()
+
+	m := &model{width: 42, desiredWidth: 42} // armed; nothing attached
+	m.Update(tea.WindowSizeMsg{Width: 86, Height: 50})
+	if m.width != 86 {
+		t.Errorf("width not recorded: %d", m.width)
+	}
+	if len(wrote) != 0 {
+		t.Errorf("detached resize published: %v", wrote)
+	}
+	if len(resized) != 1 || resized[0] != 42 {
+		t.Fatalf("detached redistribution not reasserted: %v", resized)
+	}
+
+	// The same resize with an attached client IS a drag and must adopt.
+	m.clients = 1
+	gen := m.clientGen
+	m.Update(tea.WindowSizeMsg{Width: 60, Height: 50})
+	if m.desiredWidth != 60 || len(wrote) != 1 || wrote[0] != 60 {
+		t.Errorf("attached drag: desired=%d wrote=%v, want 60/[60]", m.desiredWidth, wrote)
+	}
+	if m.clientGen == gen {
+		t.Error("drag did not bump clientGen")
 	}
 }

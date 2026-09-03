@@ -198,6 +198,7 @@ type model struct {
 	attachedBySess map[string]bool // from the push lane; outranks the poll's copy
 	fastAt         time.Time
 	width          int
+	clients        int // attached clients per latest clientSessMsg
 	desiredWidth   int // shared @orchard_sidebar_width; 0 until first read
 	clientGen      int // bumped on switch/resize; older in-flight reads are stale
 }
@@ -592,6 +593,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// user dragged this pane (or the layout shoved it): last write wins,
 		// publish it and every other session follows on its next tick. A size
 		// matching desiredWidth is just our own enforcement echoing back.
+		// Detached resizes are mechanical (proportional redistribution on
+		// attach/detach churn, #736), not a human dragging: reassert the shared
+		// width instead of adopting whatever the layout shoved us to. Only an
+		// attached client's drag is authoritative.
+		if m.desiredWidth != 0 && msg.Width != m.desiredWidth && m.clients == 0 {
+			m.width = msg.Width
+			resizePane(m.desiredWidth)
+			return m, nil
+		}
 		if m.desiredWidth != 0 && msg.Width != m.desiredWidth {
 			w := msg.Width
 			if w < minWidth {
@@ -613,11 +623,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.clientGen {
 			return m, next
 		}
+		m.clients = msg.clients
 		if msg.width >= minWidth && msg.width != m.desiredWidth {
 			m.desiredWidth = msg.width
 			if msg.width != m.width {
 				resizePane(msg.width)
 			}
+		} else if msg.width == 0 && m.desiredWidth == 0 && m.width >= minWidth {
+			// Bootstrap (#742): the shared option is written only by us, so an
+			// empty read on a machine where nothing seeded it keeps desiredWidth
+			// zero forever and the WindowSizeMsg enforcement never arms. This
+			// pane got its width from the split that created it, so it IS the
+			// intended value: adopt it and publish once for every other session.
+			m.desiredWidth = m.width
+			setWidthOption(m.width)
 		}
 		// tmux is the authority here — no grace window, no daemon reconciliation.
 		// If the name is empty the read failed; keep the last known good value
@@ -795,9 +814,10 @@ func (m *model) selectRow(i int) {
 // slow to use. The daemon still owns everything else: session inventory,
 // claude state, model, PR/issue join. Tracked with switchClient under #726.
 type clientSessMsg struct {
-	name  string
-	width int // @orchard_sidebar_width at read time; 0 = unset or unreadable
-	gen   int // m.clientGen when the read started; mismatched reads are stale
+	name    string
+	clients int // attached clients across all sessions; 0 = detached
+	width   int // @orchard_sidebar_width at read time; 0 = unset or unreadable
+	gen     int // m.clientGen when the read started; mismatched reads are stale
 }
 
 const clientEvery = 150 * time.Millisecond
@@ -818,28 +838,8 @@ func fetchClientSession(gen int) tea.Cmd {
 		if err != nil {
 			return clientSessMsg{gen: gen}
 		}
-		best, bestAct, width := "", int64(-1), 0
-		for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			act, rest, ok := strings.Cut(ln, " ")
-			if !ok {
-				continue
-			}
-			ws, name, ok := strings.Cut(rest, " ")
-			if !ok || name == "" {
-				continue
-			}
-			n, err := strconv.ParseInt(act, 10, 64)
-			if err != nil {
-				continue
-			}
-			if w, err := strconv.Atoi(ws); err == nil && w > 0 {
-				width = w
-			}
-			if n > bestAct {
-				best, bestAct = name, n
-			}
-		}
-		return clientSessMsg{name: best, width: width, gen: gen}
+		clients, best, width := parseListClients(out)
+		return clientSessMsg{name: best, clients: clients, width: width, gen: gen}
 	}
 }
 
