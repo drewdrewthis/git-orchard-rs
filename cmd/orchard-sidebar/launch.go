@@ -210,8 +210,11 @@ func popupArgs(exe, dir string) []string {
 	if env.inner != "" {
 		args = append(args, "-e", "ORCHARD_TMUX_SOCKET="+string(env.inner))
 	}
-	if env.client != "" {
-		args = append(args, "-e", "ORCHARD_TMUX_CLIENT="+string(env.client))
+	// The modal targets the CURRENT client (activeClientTTY), so a popup opened
+	// after the resolver fell back from a stale launcher tty talks to the live
+	// inner client, not the dead one the launcher handed (#787).
+	if c := activeClientTTY(); c != "" {
+		args = append(args, "-e", "ORCHARD_TMUX_CLIENT="+string(c))
 	}
 	// -d on a directory that no longer exists (a removed worktree is a normal
 	// thing to inherit from a session) can fail the whole popup, so only pass

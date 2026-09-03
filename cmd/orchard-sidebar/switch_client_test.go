@@ -61,11 +61,35 @@ func TestSwitchClientArgs(t *testing.T) {
 
 // The refusal must reach the CALLER on the launch path, not just the log: a
 // launch that created the session and quietly skipped the switch reported
-// success while leaving the user where they were (review finding 3).
+// success while leaving the user where they were (review finding 3). Like the
+// click path, switchClientTo now resolves the client at call time, so an
+// unresolvable one comes back as the same footer signal the click shows.
 func TestLaunchSurfacesTheSwitchRefusal(t *testing.T) {
-	setTmuxEnv(t, tmuxEnv{inner: "inner"}) // wrapped, no client tty
+	setTmuxEnv(t, tmuxEnv{inner: "inner", client: "/dev/ttysDEAD"}) // wrapped, stale client
+	swapTmuxReaders(t, "", &tmuxReadErr{}, "", nil)                 // list-clients errors -> no client
 	if err := switchClientTo("work"); err == nil {
 		t.Fatal("switchClientTo returned nil on a refusal")
+	}
+}
+
+// switchClientTo resolves env.client against the live inner clients at call
+// time rather than trusting it verbatim (#787): a stale wrapper tty falls back
+// to outer pane 0.1's live tty, and the switch is scoped to the resolved one.
+func TestSwitchClientToResolvesStaleClient(t *testing.T) {
+	setTmuxEnv(t, tmuxEnv{inner: "inner", client: "/dev/ttysDEAD"})
+	swapTmuxReaders(t, "/dev/ttys009\n", nil, "0 %0 /dev/ttys000\n1 %1 /dev/ttys009\n", nil)
+
+	var got []string
+	prev := runTmux
+	runTmux = func(args ...string) error { got = args; return nil }
+	t.Cleanup(func() { runTmux = prev })
+
+	if err := switchClientTo("work"); err != nil {
+		t.Fatalf("switchClientTo returned %v, want nil after resolving pane 0.1", err)
+	}
+	want := []string{"switch-client", "-c", "/dev/ttys009", "-t", "work"}
+	if !equalStrings(got, want) {
+		t.Errorf("switch args = %v, want %v (scoped to the resolved tty)", got, want)
 	}
 }
 

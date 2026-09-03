@@ -77,6 +77,7 @@ type doctorEnv struct {
 	goos           string
 	self           string // selfPath(); "" if it could not be resolved
 	selfVersion    string // orchard-shell's own in-process version
+	selfRevision   string // orchard-shell's own in-process VCS revision (#787)
 	pathEnv        string // $PATH
 	conf           string // outer.conf path, for the outer-socket check
 	confErr        error  // set when conf could not be resolved
@@ -98,6 +99,7 @@ func newDoctorEnv(selfVersion, innerSocket, outerSocket string) doctorEnv {
 		goos:           runtime.GOOS,
 		self:           selfPath(),
 		selfVersion:    selfVersion,
+		selfRevision:   release.Revision(),
 		pathEnv:        os.Getenv("PATH"),
 		conf:           conf,
 		confErr:        confErr,
@@ -140,6 +142,7 @@ func runChecks(ctx context.Context, env doctorEnv) []checkResult {
 		checkTmuxNesting(),
 		checkDaemon(ctx, env.daemonURL),
 		checkSuiteVersions(ctx, env),
+		checkRevisions(ctx, env),
 		checkInnerSocket(env),
 		checkOuterSocket(env),
 		checkSystemd(ctx, env),

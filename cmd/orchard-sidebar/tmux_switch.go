@@ -35,16 +35,24 @@ var errUnscopedSwitch = errors.New(
 	"ORCHARD_TMUX_SOCKET set without ORCHARD_TMUX_CLIENT: refusing an unscoped switch-client")
 
 // switchClientTo runs the switch SYNCHRONOUSLY and returns tmux's own error —
-// the launch modal's path, where a failure has a screen to land on. The
-// refusal comes back as an error rather than a silent skip: a launch that
+// the launch/break-pane modal path, where a failure has a screen to land on.
+// The refusal comes back as an error rather than a silent skip: a launch that
 // created the session and quietly failed to move you to it looks like the
 // session never launched.
 // A var so the break-pane flow's test can observe the switch without a live
 // tmux, the same reason switchClient is a var.
 var switchClientTo = func(session string) error {
-	// The launch modal runs in the sidebar's own (primary) work pane, so the
-	// switch scopes to env.client — a split's focus-follow never applies here.
-	args, ok := switchClientArgs(session, env.client)
+	// The modal runs in the sidebar's own (primary) work pane, so a split's
+	// focus-follow never applies — but the current target can still be the stale
+	// tty a prototype launcher handed (#787), so resolve it against the live inner
+	// clients exactly as the click path does rather than trusting it verbatim.
+	// Unresolvable surfaces the same signal as the footer, here as an error the
+	// modal shows.
+	client, ok := resolveClientTTY(activeClientTTY())
+	if !ok {
+		return errors.New(clientNotFoundStatus)
+	}
+	args, ok := switchClientArgs(session, client)
 	if !ok {
 		return errUnscopedSwitch
 	}
@@ -61,7 +69,7 @@ var switchClientTo = func(session string) error {
 // mutation exists yet — sendTextToPane is the only tmux mutation in the
 // schema. Replace this exec with the mutation when #726 lands.
 var switchClient = func(session string, handBack bool) {
-	switchClientExec(session, handBack, env.client, env.outer)
+	switchClientExec(session, handBack, activeClientTTY(), env.outer)
 }
 
 // switchClientBound is the runtime switch: it snapshots the client and outer
@@ -70,7 +78,25 @@ var switchClient = func(session string, handBack bool) {
 // them in its closure. Snapshotting here is what keeps the exec goroutine off
 // the shared focus state the UI goroutine is concurrently updating.
 func (m *model) switchClientBound(session string, handBack bool) {
-	switchClientExec(session, handBack, m.activeClient(), m.activeOuter())
+	client := m.activeClient()
+	// Click/Enter (handBack) is the deliberate "go there" action, and the one
+	// #787's silent failure struck: validate the wrapper's client tty against the
+	// live inner clients now, falling back to our own inner attach (outer pane
+	// 0.1) when the launcher handed a stale one, and showing a footer error when
+	// nothing can be resolved. j/k browsing (handBack=false) keeps the exec-light
+	// snapshot path — a held key must not fire a tmux read every frame.
+	if handBack {
+		resolved, ok := resolveClientTTY(client)
+		if !ok {
+			resolveFailGuard.do(func() {
+				logf("switch: no live inner client for tty %q — stale outer-shell launcher (#787)", string(client))
+			})
+			m.setStatus(clientNotFoundStatus)
+			return
+		}
+		client = resolved
+	}
+	switchClientExec(session, handBack, client, m.activeOuter())
 }
 
 // switchClientExec runs the switch for the snapshotted client/outer targets.
@@ -191,7 +217,10 @@ var runTmuxOutput = func(args ...string) (string, error) {
 func handBackFocusArgs(outer outerPane) (args []string, ok bool) {
 	// outer is env.outer until a split retargets it at the last-focused work
 	// pane (#777); threaded in so the caller snapshots it, never a global.
-	if outer == "" {
+	// Rejected unless it is a %N pane id that is not the sidebar's own pane: a
+	// stale launcher can hand a tty, a window address, or pane 0.0 itself (#787
+	// AC2), any of which would focus the wrong thing or nothing.
+	if !validOuterPane(outer, env.self) {
 		return nil, false
 	}
 	return selectPaneArgs(outer), true
@@ -205,9 +234,22 @@ func handBackFocusArgs(outer outerPane) (args []string, ok bool) {
 // never fatal: a stuck outer pane is recoverable by hand (M-Left/M-Right), a
 // crashed sidebar is not.
 var handBackFocus = func(outer outerPane) {
-	args, ok := handBackFocusArgs(outer)
+	if args, ok := handBackFocusArgs(outer); ok {
+		runOuter(args...)
+		return
+	}
+	// The wrapper handed a bad ORCHARD_OUTER_PANE (#787 AC2). Fall back to our
+	// own inner attach pane (outer 0.1). Logged once per process: a per-click
+	// line on every switch would bury the log. Runs off the UI goroutine
+	// (switchClientExec's own goroutine), so the extra read never stalls a paint.
+	id, _, ok := outerInnerPane()
+	outerPaneGuard.do(func() {
+		logf("hand-back: ORCHARD_OUTER_PANE %q is not a usable pane id; falling back to outer pane 0.1 (#787)", string(outer))
+	})
 	if !ok {
 		return
 	}
-	runOuter(args...)
+	if args, ok := handBackFocusArgs(id); ok {
+		runOuter(args...)
+	}
 }

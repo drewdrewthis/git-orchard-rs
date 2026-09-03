@@ -55,7 +55,10 @@ func fetchClientSession(gen int, work []clientTTY) tea.Cmd {
 			name, tty := pickWork(string(out), work)
 			return clientSessMsg{name: name, tty: tty, gen: gen}
 		}
-		return clientSessMsg{name: pickClient(string(out), env.client), gen: gen}
+		// activeClientTTY() is atomic, so this closure (on tea's Cmd goroutine) can
+		// read the current target directly — no UI-goroutine snapshot — and it
+		// tracks resolveClientTTY's memoized fallback (#787).
+		return clientSessMsg{name: pickClient(string(out), activeClientTTY()), gen: gen}
 	}
 }
 

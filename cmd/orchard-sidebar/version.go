@@ -8,6 +8,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
 )
 
 // version is overridden via -ldflags at release time.
@@ -17,9 +19,17 @@ var version = "dev"
 // --version or -v; otherwise it returns and the caller continues normal
 // startup. Call this as the first line of main(), before the "launch"
 // subcommand check (#747 Step 5).
+//
+// --revision prints the bare VCS revision instead: `orchard-shell doctor` execs
+// it to compare against its own, catching a stale build that reports the same
+// --version but comes from a different commit (#787 AC3).
 func handleVersionFlag() {
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v") {
 		fmt.Println("orchard-sidebar " + version)
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--revision" {
+		fmt.Println(release.Revision())
 		os.Exit(0)
 	}
 }
