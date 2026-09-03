@@ -14,6 +14,10 @@
 //	              graphql-transport-ws subprotocol for subscriptions
 //	              and POSTs JSON for one-shot queries. HTTPS/WSS
 //	              enabled per-peer via `tls: true` in config.
+//	keepalive.go — read-deadline policy for the peer websocket: the
+//	              silence budget and the control-frame handlers that
+//	              re-arm it, so a half-open socket errors out into the
+//	              reconnect path instead of parking a read forever.
 //	config.go   — loads peer addresses from
 //	              ~/.orchard/config.json. Read-only.
 //
