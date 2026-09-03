@@ -194,6 +194,73 @@ func TestDecideRecovery_RetryBypassesHaltDebounceAndBound(t *testing.T) {
 	}
 }
 
+// --- M-r target resolution (the live-proof bug) ----------------------------
+
+// resolveRetryTarget is the pure half of recoverTarget: given the outer
+// state and the recovery log, which pane does M-r (--retry, no explicit arg)
+// act on? The live-proof FAIL: M-r reported "no dead pane to recover" on a
+// crash-loop-halted pane, because the halt holder keeps that pane ALIVE, so
+// probe() sees nothing dead. The halted pane must be recovered from the log.
+func TestResolveRetryTarget(t *testing.T) {
+	halt := func(pane string, sec int) recoveryEvent {
+		return recoveryEvent{Pane: pane, Action: actCrashLoopHalt, At: at(sec)}
+	}
+
+	cases := []struct {
+		name     string
+		state    outerState
+		events   []recoveryEvent
+		wantPane string
+		wantOK   bool
+	}{
+		{
+			name:     "held-alive halted inner pane — recover it from the log",
+			state:    outerState{}, // nothing dead: the holder keeps 0.1 alive
+			events:   []recoveryEvent{halt("inner", 100)},
+			wantPane: "inner", wantOK: true,
+		},
+		{
+			name:     "a currently-dead pane wins over the halt log",
+			state:    outerState{pane0Dead: true},
+			events:   []recoveryEvent{halt("inner", 100)},
+			wantPane: "sidebar", wantOK: true,
+		},
+		{
+			name:   "nothing dead and nothing halted — no target",
+			state:  outerState{},
+			events: nil,
+			wantOK: false,
+		},
+		{
+			name:  "a later successful recovery clears the halt — no target",
+			state: outerState{},
+			events: []recoveryEvent{
+				halt("inner", 100),
+				{Pane: "inner", Action: actReattachInner, At: at(200)},
+			},
+			wantOK: false,
+		},
+		{
+			name:     "two halted panes — the most recently halted one wins",
+			state:    outerState{},
+			events:   []recoveryEvent{halt("sidebar", 100), halt("inner", 200)},
+			wantPane: "inner", wantOK: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gotPane, gotOK := resolveRetryTarget(c.state, c.events)
+			if gotOK != c.wantOK {
+				t.Fatalf("resolveRetryTarget ok = %v; want %v", gotOK, c.wantOK)
+			}
+			if c.wantOK && gotPane != c.wantPane {
+				t.Errorf("resolveRetryTarget pane = %q; want %q", gotPane, c.wantPane)
+			}
+		})
+	}
+}
+
 // --- outer.conf: the pane-died hook and the M-r bind -----------------------
 
 // AC4: recovery hooks live in outer.conf and call back into orchard-shell —
@@ -325,6 +392,38 @@ func TestCheckRecoveryStatus_ReportsDeadPanesAndLastEvent(t *testing.T) {
 	}
 	if !strings.Contains(got.Detail, "sidebar exited (status 1) — respawned") {
 		t.Errorf("checkRecoveryStatus detail %q does not surface the last recovery event", got.Detail)
+	}
+}
+
+// A crash-loop-halted pane is ALIVE (its hold command keeps it up), so the
+// dead-pane probe reports nothing dead — but the pane is parked and only M-r
+// revives it. doctor must surface it as "halted panes: 0.0 (press M-r)" and
+// warn, not report "no dead panes" and pass.
+func TestCheckRecoveryStatus_ReportsHeldAliveHaltedPane(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/recovery.log"
+	if err := appendRecoveryLog(path, recoveryEvent{Pane: "sidebar", Action: actCrashLoopHalt, Message: "sidebar keeps crashing — see sidebar.log; press M-r to retry", At: at(5)}); err != nil {
+		t.Fatalf("appendRecoveryLog: %v", err)
+	}
+
+	// A healthy two-pane wrapper: nothing dead, inner client attached.
+	f := newFakeTmux().
+		reply(outerCall("has-session", "-t", outerSessionName), "").
+		reply(panesCall(), "0 0 /dev/ttys013\n1 0 /dev/ttys004").
+		reply(innerCall("list-clients", "-F", "#{client_tty}"), "/dev/ttys004")
+	env := doctorEnv{
+		tmux:        f.exec,
+		conf:        "/conf/outer.conf",
+		innerSocket: "inner-test",
+		outerSocket: "outer-test",
+	}
+
+	got := checkRecoveryStatus(env, path)
+	if got.Status != statusWarn {
+		t.Errorf("Status = %v; want warn for a halted-but-alive pane", got.Status)
+	}
+	if !strings.Contains(got.Detail, "halted panes: 0.0 (press M-r)") {
+		t.Errorf("checkRecoveryStatus detail %q does not surface the halted pane 0.0", got.Detail)
 	}
 }
 

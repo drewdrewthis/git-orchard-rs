@@ -123,51 +123,6 @@ func checkOuterSocket(env doctorEnv) checkResult {
 	}
 }
 
-// --- recovery status -------------------------------------------------------
-
-// checkRecoveryStatus reports any dead panes in the outer wrapper and the
-// last self-heal recover-pane performed (AC4). It reuses the wrapper's own
-// probe so "which pane is dead" is read exactly as orchard-shell reads it.
-// Dead panes warn (the pane-died hook should have healed them, so a lingering
-// corpse is worth surfacing); a healthy wrapper with no recovery history
-// passes.
-func checkRecoveryStatus(env doctorEnv, logPath string) checkResult {
-	w := &wrapper{
-		opts: Options{
-			OuterSocket: cmp.Or(env.outerSocket, defaultOuterSocket),
-			InnerSocket: cmp.Or(env.innerSocket, defaultInnerSocket),
-		},
-		conf: env.conf, tmux: env.tmux, log: io.Discard,
-	}
-	s := w.probe()
-	var dead []string
-	if s.pane0Dead {
-		dead = append(dead, "0.0")
-	}
-	if s.pane1Dead {
-		dead = append(dead, "0.1")
-	}
-	last, haveEvent := readLastRecoveryEvent(logPath)
-
-	detail := "no dead panes"
-	if len(dead) > 0 {
-		detail = "dead panes: " + strings.Join(dead, ", ")
-	}
-	if haveEvent {
-		detail += "; last recovery: " + last.Message
-	} else {
-		detail += "; no recovery events recorded"
-	}
-
-	status := statusPass
-	remedy := ""
-	if len(dead) > 0 {
-		status = statusWarn
-		remedy = "orchard shell   (reattaches), or press M-r inside the wrapper to retry"
-	}
-	return checkResult{ID: "recovery", Status: status, Detail: detail, Remedy: remedy}
-}
-
 // --- systemd ---------------------------------------------------------------
 
 // systemdUnits mirrors scripts/install.sh's SERVICE_UNITS priority order:

@@ -60,7 +60,8 @@ func runRecoverPane(argv []string, stderr io.Writer) int {
 }
 
 // recoverTarget resolves which pane to act on. An explicit index/name wins;
-// with --retry and no argument, it probes for whichever pane is dead.
+// with --retry and no argument, it reads the outer state and the recovery log
+// and hands both to resolveRetryTarget.
 func recoverTarget(w *wrapper, arg string, retry bool) (string, bool) {
 	if name := paneNameFromArg(arg); name != "" {
 		return name, true
@@ -68,15 +69,25 @@ func recoverTarget(w *wrapper, arg string, retry bool) (string, bool) {
 	if !retry {
 		return "", false
 	}
-	s := w.probe()
+	logPath, _ := recoveryLogPath()
+	return resolveRetryTarget(w.probe(), readRecoveryEvents(logPath))
+}
+
+// resolveRetryTarget is the pure M-r target decision, split out so it is
+// exercised without a live tmux server. A currently-dead pane wins (the
+// pane-died hook would normally have caught it). Otherwise it falls back to
+// the most recently halted pane from the recovery log: the crash-loop halt
+// keeps that pane ALIVE showing its hold message, so probe() reports nothing
+// dead even though M-r is exactly the key meant to revive it (the live-proof
+// bug — M-r reported "no dead pane to recover" on a halted-but-alive pane).
+func resolveRetryTarget(s outerState, events []recoveryEvent) (string, bool) {
 	switch {
 	case s.pane0Dead:
 		return "sidebar", true
 	case s.pane1Dead:
 		return "inner", true
-	default:
-		return "", false
 	}
+	return mostRecentlyHaltedPane(events)
 }
 
 // paneNameFromArg maps outer.conf's #{pane_index} (0/1) or an explicit

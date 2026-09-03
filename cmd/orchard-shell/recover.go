@@ -1,23 +1,19 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
-
-	"github.com/drewdrewthis/orchardist/internal/orchpaths"
 )
 
-// recover.go — issue #796: the pure decision and the recovery log.
+// recover.go — issue #796: the pure recovery decision.
 //
 // A pane that dies (an inner client whose session was killed, a crashed
 // sidebar, an inner server that exited) should self-heal rather than sit
 // there as a dead pane. decideRecovery is the whole policy, kept pure so the
 // table test owns it; recover_pane.go is the imperative shell that reads pane
-// state, calls this, and acts on the answer.
+// state, calls this, and acts on the answer. The recovery log's own I/O lives
+// in recover_log.go — this file stays free of the filesystem so its decisions
+// are exercised entirely in-memory.
 
 // recoverAction is what orchard-shell does about a dead pane.
 type recoverAction int
@@ -41,6 +37,16 @@ type recoverInput struct {
 	Retry            bool      // M-r: ignore both the crash-loop bound and the halt debounce
 	LastHalt         time.Time // when this pane was last halted (zero if never)
 	Now              time.Time
+}
+
+// recoveryEvent is one line of the recovery log: what recover-pane did, when,
+// and the status message it showed. The pure decision helpers below read a
+// slice of these; recover_log.go owns reading and writing them to disk.
+type recoveryEvent struct {
+	Pane    string        `json:"pane"`
+	Action  recoverAction `json:"action"`
+	Message string        `json:"message"`
+	At      time.Time     `json:"at"`
 }
 
 // crashLoopWindow / crashLoopBound bound automatic recovery: more than
@@ -107,98 +113,49 @@ func restartsWithin(history []time.Time, now time.Time, window time.Duration) in
 	return n
 }
 
-// recoveryEvent is one line of the recovery log: what recover-pane did, when,
-// and the status message it showed. doctor reads the most recent one back.
-type recoveryEvent struct {
-	Pane    string        `json:"pane"`
-	Action  recoverAction `json:"action"`
-	Message string        `json:"message"`
-	At      time.Time     `json:"at"`
+// lastActionByPane reduces the log to each pane's MOST RECENT recovery action,
+// in log order. A pane whose newest event is actCrashLoopHalt is still parked:
+// a later successful recovery (reattach/respawn/new-session) would have
+// overwritten it here.
+func lastActionByPane(events []recoveryEvent) map[string]recoverAction {
+	last := make(map[string]recoverAction, 2)
+	for _, ev := range events {
+		last[ev.Pane] = ev.Action
+	}
+	return last
 }
 
-// recoveryLogPath is the recovery log, alongside the sidebar's own log under
-// the orchard state dir.
-func recoveryLogPath() (string, error) {
-	dir, err := orchpaths.StateDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "recovery.log"), nil
-}
-
-// appendRecoveryLog appends ev as one JSON line, creating the file and its
-// directory on first write.
-func appendRecoveryLog(path string, ev recoveryEvent) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	line, err := json.Marshal(ev)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(append(line, '\n'))
-	return err
-}
-
-// readRecoveryEvents reads every event in the log, oldest first. A missing
-// log is not an error: there is simply no history yet.
-func readRecoveryEvents(path string) []recoveryEvent {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	var events []recoveryEvent
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var ev recoveryEvent
-		if json.Unmarshal(line, &ev) == nil {
-			events = append(events, ev)
-		}
-	}
-	return events
-}
-
-// readLastRecoveryEvent returns the most recently appended event, or ok=false
-// when the log has never been written.
-func readLastRecoveryEvent(path string) (recoveryEvent, bool) {
-	events := readRecoveryEvents(path)
-	if len(events) == 0 {
-		return recoveryEvent{}, false
-	}
-	return events[len(events)-1], true
-}
-
-// recoveryHistory returns the restart timestamps recorded for one pane, for
-// the crash-loop bound.
-func recoveryHistory(path, pane string) []time.Time {
-	var out []time.Time
-	for _, ev := range readRecoveryEvents(path) {
-		if ev.Pane == pane {
-			out = append(out, ev.At)
+// haltedPanes returns every pane whose most recent event is a crash-loop halt
+// — the panes still parked by the bound, in "sidebar", "inner" order. doctor
+// surfaces these: the crash-loop holder keeps such a pane ALIVE, so a probe
+// for #{pane_dead} never sees them.
+func haltedPanes(events []recoveryEvent) []string {
+	last := lastActionByPane(events)
+	var out []string
+	for _, pane := range []string{"sidebar", "inner"} {
+		if last[pane] == actCrashLoopHalt {
+			out = append(out, pane)
 		}
 	}
 	return out
 }
 
-// lastHaltAt returns when this pane was most recently halted, or the zero time
-// if it never was — feeding decideRecovery's halt debounce.
-func lastHaltAt(path, pane string) time.Time {
-	var t time.Time
-	for _, ev := range readRecoveryEvents(path) {
-		if ev.Pane == pane && ev.Action == actCrashLoopHalt {
-			t = ev.At
+// mostRecentlyHaltedPane returns the pane whose most recent event is a
+// crash-loop halt and whose halt is the newest of any such pane — the pane M-r
+// should revive when no pane is currently dead (the holder keeps the halted
+// pane alive, so probe() reports nothing dead). ok is false when no pane is
+// parked.
+func mostRecentlyHaltedPane(events []recoveryEvent) (string, bool) {
+	last := lastActionByPane(events)
+	best, ok := "", false
+	var bestAt time.Time
+	for _, ev := range events {
+		if ev.Action != actCrashLoopHalt || last[ev.Pane] != actCrashLoopHalt {
+			continue
+		}
+		if !ok || ev.At.After(bestAt) {
+			best, bestAt, ok = ev.Pane, ev.At, true
 		}
 	}
-	return t
+	return best, ok
 }
