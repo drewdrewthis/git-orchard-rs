@@ -22,20 +22,26 @@ import (
 type menuMode int
 
 const (
-	menuClosed  menuMode = iota
-	menuActions          // Rename / Close
-	menuRename           // text input, prefilled with the current name
-	menuConfirm          // Close <name>? y/N
+	menuClosed    menuMode = iota
+	menuActions            // Rename / Close
+	menuRename             // text input, prefilled with the current name
+	menuConfirm            // Close <name>? y/N
+	menuBreakPane          // text input, name for the pane's new session
 )
 
 // The actions in draw order; the index is what rowMenu.item holds and what a
 // click on the nth body row selects. The pin item's LABEL flips with the row's
 // pinned state, so the list is built per-open (menuActionLabels) rather than
 // held as a static slice.
+// itemBreakPane is LAST so Rename/Close/Pin keep indices 0/1/2 whether or not
+// the break item is present — several callers address those three by index.
+// The break item is appended to menuActionLabels only when canBreakPane holds,
+// which puts it exactly at index 3 = itemBreakPane. See menuActionLabels.
 const (
 	itemRename = iota
 	itemClose
 	itemPin
+	itemBreakPane
 )
 
 // menuActionLabels is the current menu's items. Pin/Unpin depends on whether
@@ -45,7 +51,13 @@ func (m *model) menuActionLabels() []string {
 	if m.isPinned(m.menu.sess) {
 		pin = "Unpin"
 	}
-	return []string{"Rename", "Close", pin}
+	labels := []string{"Rename", "Close", pin}
+	// Appended last so the three above keep indices 0/1/2; present only on the
+	// attached session's multi-pane active window (see openRowMenu).
+	if m.menu.canBreakPane {
+		labels = append(labels, breakPaneLabel)
+	}
+	return labels
 }
 
 type rowMenu struct {
@@ -56,6 +68,11 @@ type rowMenu struct {
 	item   int
 	input  textField // rename buffer
 	notice string    // why the last action did nothing
+
+	// Break-pane state, cached when the menu opens on the attached session so
+	// the item's presence is stable while the menu is up (see openRowMenu):
+	canBreakPane bool   // active window has ≥2 panes → offer Pane → own session
+	activePane   string // the pane id that gets broken out
 }
 
 func (m *model) menuOpen() bool { return m.menu.mode != menuClosed }
@@ -75,6 +92,16 @@ func (m *model) openRowMenu(rowIdx, y int) {
 		return
 	}
 	m.menu = rowMenu{mode: menuActions, sess: r.session, fake: r.fake, anchor: y}
+	// Offer Pane → own session only on the ATTACHED session (the one whose
+	// active pane this wrapper's client actually sits in) and only when that
+	// active window has a pane to spare. Fetched once, here, so the item does
+	// not blink in and out as panes come and go under an open menu.
+	if !r.fake && m.attachedBySess[r.session] {
+		if pane, n := paneInfo(r.session); n >= 2 {
+			m.menu.canBreakPane = true
+			m.menu.activePane = pane
+		}
+	}
 }
 
 // rightClick opens the menu on the card under the pointer, and closes it
@@ -110,6 +137,8 @@ func (m *model) menuKey(msg tea.KeyMsg) tea.Cmd {
 	switch m.menu.mode {
 	case menuRename:
 		return m.renameKey(msg)
+	case menuBreakPane:
+		return m.breakPaneKey(msg)
 	case menuConfirm:
 		return m.confirmKey(msg)
 	}
@@ -167,6 +196,11 @@ func (m *model) activate() {
 		}
 		m.togglePin(m.menu.sess)
 		m.closeMenu()
+	case itemBreakPane:
+		// Same prefilled-name field the rename uses, so a break-out is a
+		// suffix edit rather than a retype. commitBreakPane runs on Enter.
+		m.menu.mode = menuBreakPane
+		m.menu.input = newTextField(m.menu.sess, boxInner(m.paneWidth()-3)-1)
 	}
 }
 

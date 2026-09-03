@@ -36,7 +36,9 @@ var errUnscopedSwitch = errors.New(
 // refusal comes back as an error rather than a silent skip: a launch that
 // created the session and quietly failed to move you to it looks like the
 // session never launched.
-func switchClientTo(session string) error {
+// A var so the break-pane flow's test can observe the switch without a live
+// tmux, the same reason switchClient is a var.
+var switchClientTo = func(session string) error {
 	args, ok := switchClientArgs(session)
 	if !ok {
 		return errUnscopedSwitch
@@ -116,7 +118,9 @@ const tmuxOpTimeout = 2 * time.Second
 // wrapped) and returns tmux's own message as the error — that text is what the
 // menu shows, and tmux says "can't find session: x" far better than any
 // wrapper could.
-func runTmux(args ...string) error {
+// A var so the break-pane flow's test can record the exact argv of each step
+// and inject a mid-sequence failure without a live tmux server.
+var runTmux = func(args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxOpTimeout)
 	defer cancel()
 	out, err := env.innerCmdContext(ctx, args...).CombinedOutput()

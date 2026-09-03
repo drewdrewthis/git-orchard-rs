@@ -17,6 +17,12 @@ type menuSpy struct{ calls []string }
 func newMenuSpy(t *testing.T) *menuSpy {
 	t.Helper()
 	s := &menuSpy{}
+	// Default to a single-pane active window so the break-pane item stays
+	// absent and the existing action list is Rename/Close/Pin; break-pane
+	// tests override paneInfo to offer it.
+	pi := paneInfo
+	paneInfo = func(string) (string, int) { return "", 1 }
+	t.Cleanup(func() { paneInfo = pi })
 	rn, kl, sw, hb := renameSession, killSession, switchClient, handBackFocus
 	renameSession = func(old, name string) error {
 		s.calls = append(s.calls, "rename "+old+" "+name)
