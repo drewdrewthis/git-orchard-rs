@@ -26,6 +26,13 @@ Feature: outer shell pane recovery
     And the pane shows a status line explaining "inner tmux exited (status 0) — reattached"
 
   @integration
+  Scenario: After reattach, sidebar clicks resolve the client at click time (relies on #787)
+    Given pane 0.1 has been reattached to the inner server, giving that pane a new pty
+    When I click a card in the sidebar
+    Then the sidebar resolves the inner client at click time (#787) rather than from a tty captured when it launched
+    And "sidebar.log" shows no "can't find client" error
+
+  @integration
   Scenario: Inner server killed creates a new session instead of leaving a dead pane
     Given the inner tmux server itself has exited, so pane 0.1's attach process has exited too
     And the inner server currently has no sessions

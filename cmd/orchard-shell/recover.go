@@ -27,6 +27,7 @@ const (
 	actNewInnerSession                      // the inner server is gone — start a fresh session
 	actRespawnSidebar                       // 0.0's sidebar exited — relaunch it
 	actCrashLoopHalt                        // too many restarts too fast — stop and wait for M-r
+	actNoop                                 // already halted a moment ago — leave the pane parked
 )
 
 // recoverInput is everything decideRecovery needs: which pane died, its exit
@@ -37,6 +38,8 @@ type recoverInput struct {
 	ExitStatus       int
 	InnerHasSessions bool // only meaningful when Pane == "inner"
 	History          []time.Time
+	Retry            bool      // M-r: ignore both the crash-loop bound and the halt debounce
+	LastHalt         time.Time // when this pane was last halted (zero if never)
 	Now              time.Time
 }
 
@@ -49,15 +52,34 @@ const (
 	crashLoopBound  = 5
 )
 
+// haltDebounce guards against a halted pane's own churn re-triggering
+// recovery. Once a pane is halted, its hold command should keep it alive; a
+// pane-died that arrives within this window of the last halt is that command
+// misbehaving (e.g. a non-portable hold that exits at once), not a fresh
+// crash, so recovery does nothing and logs nothing rather than re-halting in a
+// tight loop. M-r (Retry) bypasses this, since the user is deliberately asking
+// to try again.
+const haltDebounce = 5 * time.Second
+
 // decideRecovery is the pure recovery policy.
 //
-// The crash-loop check comes first and applies to BOTH panes (the AC
+// The halt debounce comes first: a pane-died within haltDebounce of the last
+// halt is the parked pane churning, not a fresh failure, so it is a silent
+// no-op. Then the crash-loop check, which applies to BOTH panes (the AC
 // amendment): a pane that keeps dying is a symptom the user has to look at,
-// not something to respawn into an infinite loop. Below the bound, the
-// sidebar always respawns; an inner pane reattaches when the server still has
-// sessions and starts a fresh one when it does not.
+// not something to respawn into an infinite loop. Below the bound, the sidebar
+// always respawns; an inner pane reattaches when the server still has sessions
+// and starts a fresh one when it does not. Retry (M-r) skips both guards — the
+// user is deliberately asking to try again.
 func decideRecovery(in recoverInput) (recoverAction, string) {
-	if restartsWithin(in.History, in.Now, crashLoopWindow) > crashLoopBound {
+	// Defense-in-depth against a halt re-firing itself: unless the user asked
+	// (M-r), a pane-died within haltDebounce of the last halt is the parked
+	// pane churning, not a new failure — leave it parked, silently.
+	if !in.Retry && !in.LastHalt.IsZero() && in.Now.Sub(in.LastHalt) <= haltDebounce {
+		return actNoop, ""
+	}
+
+	if !in.Retry && restartsWithin(in.History, in.Now, crashLoopWindow) > crashLoopBound {
 		if in.Pane == "sidebar" {
 			return actCrashLoopHalt, "sidebar keeps crashing — see sidebar.log; press M-r to retry"
 		}
@@ -167,4 +189,16 @@ func recoveryHistory(path, pane string) []time.Time {
 		}
 	}
 	return out
+}
+
+// lastHaltAt returns when this pane was most recently halted, or the zero time
+// if it never was — feeding decideRecovery's halt debounce.
+func lastHaltAt(path, pane string) time.Time {
+	var t time.Time
+	for _, ev := range readRecoveryEvents(path) {
+		if ev.Pane == pane && ev.Action == actCrashLoopHalt {
+			t = ev.At
+		}
+	}
+	return t
 }

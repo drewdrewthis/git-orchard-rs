@@ -154,6 +154,46 @@ func TestDecideRecovery_CrashLoopHaltAppliesToBothPanes(t *testing.T) {
 	}
 }
 
+// A pane-died that arrives within haltDebounce of the last halt is the parked
+// pane's own hold command churning, not a fresh crash: decideRecovery returns
+// actNoop so recover-pane does nothing and logs nothing (the AC3 runaway: a
+// non-portable hold exited at once and grew 1442 halt entries in ~8s).
+func TestDecideRecovery_HaltDebounceReturnsNoop(t *testing.T) {
+	now := at(3000)
+	in := recoverInput{
+		Pane:     "inner",
+		LastHalt: now.Add(-2 * time.Second), // within the 5s debounce
+		Now:      now,
+	}
+	if action, msg := decideRecovery(in); action != actNoop || msg != "" {
+		t.Errorf("decideRecovery = (%v, %q); want (actNoop, \"\") for a halt %s ago", action, msg, "2s")
+	}
+
+	// Older than the debounce window: recovery resumes normally.
+	stale := recoverInput{Pane: "inner", InnerHasSessions: true, LastHalt: now.Add(-10 * time.Second), Now: now}
+	if action, _ := decideRecovery(stale); action != actReattachInner {
+		t.Errorf("decideRecovery with a stale halt = %v; want actReattachInner (debounce expired)", action)
+	}
+}
+
+// M-r (Retry) bypasses both the crash-loop bound and the halt debounce: a
+// recent halt AND a tripped history still lead to a real recovery action, not
+// actNoop or actCrashLoopHalt, because the user is deliberately retrying.
+func TestDecideRecovery_RetryBypassesHaltDebounceAndBound(t *testing.T) {
+	now := at(4000)
+	in := recoverInput{
+		Pane:             "inner",
+		InnerHasSessions: true,
+		History:          historyWithin(6, 60, now), // over the bound
+		Retry:            true,
+		LastHalt:         now.Add(-1 * time.Second), // inside the debounce
+		Now:              now,
+	}
+	if action, _ := decideRecovery(in); action != actReattachInner {
+		t.Errorf("decideRecovery with Retry = %v; want actReattachInner (M-r ignores both guards)", action)
+	}
+}
+
 // --- outer.conf: the pane-died hook and the M-r bind -----------------------
 
 // AC4: recovery hooks live in outer.conf and call back into orchard-shell —
@@ -189,22 +229,12 @@ func TestEmbeddedConf_HasRootTableRetryBind(t *testing.T) {
 
 // --- detach-on-destroy off on the inner server (AC0) ------------------------
 
-// AC0: orchard-shell itself sets detach-on-destroy off on the INNER server
-// it attaches to, not the user's ~/.tmux.conf — so that killing the client's
-// current session switches the client to another session instead of
-// detaching it and leaving pane 0.1 a corpse.
-func TestBoot_SetsDetachOnDestroyOffOnInnerServer(t *testing.T) {
-	f := newFakeTmux()
-	w := testWrapper(f)
-
-	if err := w.boot("work"); err != nil {
-		t.Fatalf("boot: %v", err)
-	}
-	want := innerCall("set-option", "-g", "detach-on-destroy", "off")
-	if !f.called(want) {
-		t.Errorf("boot did not set detach-on-destroy off on the inner server; calls: %v", f.calls)
-	}
-}
+// AC0: orchard-shell itself sets detach-on-destroy off on the INNER server it
+// attaches to, not the user's ~/.tmux.conf — so that killing the client's
+// current session switches the client to another session instead of detaching
+// it and leaving pane 0.1 a corpse. ensureReady() owns this one set-option for
+// every path (boot included), which TestEnsureReady_SetsDetachOnDestroyOff...
+// below covers; boot() no longer sets it a second time.
 
 // ensureReady() also reattaches on a plain rerun against a live wrapper —
 // AC0 must hold on that path too, not only on a fresh boot.

@@ -101,19 +101,27 @@ func (w *wrapper) recoverPane(pane string, retry bool, stderr io.Writer) {
 	exitStatus := w.paneExitStatus(target)
 
 	logPath, _ := recoveryLogPath()
-	history := recoveryHistory(logPath, pane)
-	if retry {
-		history = nil // M-r deliberately ignores the crash-loop bound
-	}
 
+	// Retry (M-r) is passed through to decideRecovery, which is the single
+	// place that decides to ignore the crash-loop bound and the halt debounce;
+	// the history and last-halt are read unconditionally so both paths see the
+	// same facts.
 	in := recoverInput{
 		Pane:             pane,
 		ExitStatus:       exitStatus,
 		InnerHasSessions: pane == "inner" && w.innerSessionCount() > 0,
-		History:          history,
+		History:          recoveryHistory(logPath, pane),
+		Retry:            retry,
+		LastHalt:         lastHaltAt(logPath, pane),
 		Now:              time.Now(),
 	}
 	action, msg := decideRecovery(in)
+
+	// A halted pane churning within the debounce: do nothing and log nothing,
+	// so recovery.log does not balloon and the pane stays parked.
+	if action == actNoop {
+		return
+	}
 
 	if err := w.applyRecovery(action, target, msg, stderr); err != nil {
 		fmt.Fprintf(stderr, "recover-pane: %v\n", err)
@@ -137,7 +145,7 @@ func (w *wrapper) applyRecovery(action recoverAction, target, msg string, stderr
 		return err
 	case actRespawnSidebar:
 		appendSidebarLog(msg)
-		return w.respawnSidebar()
+		return w.respawnSidebarPane()
 	case actCrashLoopHalt:
 		_, err := w.outer("respawn-pane", "-k", "-t", target, haltCommand(msg))
 		return err
@@ -156,27 +164,6 @@ func (w *wrapper) reattachInner() error {
 	}
 	_, err = w.outer("respawn-pane", "-k", "-t", paneInner,
 		innerAttachCommand(w.opts.InnerSocket, sessions[0]))
-	return err
-}
-
-// respawnSidebar rebuilds pane 0.0 with fresh env. The inner client's tty is
-// re-read from pane 0.1 first: a respawn there gives 0.1 a new pty, and the
-// sidebar's ORCHARD_TMUX_CLIENT must name the tty that is live NOW (the same
-// ordering respawn() keeps, outer.go).
-func (w *wrapper) respawnSidebar() error {
-	tty, err := w.outer("display", "-p", "-t", paneInner, "#{pane_tty}")
-	if err != nil {
-		return err
-	}
-	paneID, err := w.outer("display", "-p", "-t", paneInner, "#{pane_id}")
-	if err != nil {
-		return err
-	}
-	cmd := placeholderCommand(w.opts.InnerSocket)
-	if bin := resolveSidebarWith(w.lookPath); bin != "" {
-		cmd = sidebarCommand(bin, w.opts.InnerSocket, tty, paneID)
-	}
-	_, err = w.outer("respawn-pane", "-k", "-t", paneSidebar, cmd)
 	return err
 }
 
@@ -211,8 +198,14 @@ func (w *wrapper) innerSessionCount() int {
 
 // haltCommand keeps the pane alive showing msg after the crash-loop bound
 // trips, so the wrapper explains itself instead of leaving a dead pane.
+//
+// A bare `sleep infinity` is NOT portable: macOS's BSD sleep rejects
+// "infinity" and exits immediately, which under remain-on-exit re-fires
+// pane-died and turns the halt into the very crash loop it exists to stop (a
+// live run grew 1442 halt entries in ~8s). A finite sleep in an unbounded loop
+// holds the pane forever on both BSD and GNU sleep.
 func haltCommand(msg string) string {
-	return fmt.Sprintf("printf '%%s\\n' %s; sleep infinity", shellQuote(msg))
+	return fmt.Sprintf("printf '%%s\\n' %s; while :; do sleep 3600; done", shellQuote(msg))
 }
 
 // appendSidebarLog records a sidebar exit line in the sidebar's own log,

@@ -213,9 +213,11 @@ func (w *wrapper) resolveSession() (string, error) {
 // split-window targets.
 const bootPane = outerSessionName + ":0"
 
-// boot builds the wrapper from nothing.
+// boot builds the wrapper from nothing. detach-on-destroy is NOT set here:
+// ensureReady() sets it once for every path (boot/respawn/rebuild/attach)
+// after the inner server is confirmed present, so setting it in boot too was a
+// redundant second set-option on the boot path.
 func (w *wrapper) boot(session string) error {
-	w.disarmDetachOnDestroy()
 	cols, rows := termSize()
 	if _, err := w.outer("new-session", "-d", "-s", outerSessionName,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)); err != nil {
@@ -277,6 +279,15 @@ func (w *wrapper) respawn(session string) error {
 		innerAttachCommand(w.opts.InnerSocket, session)); err != nil {
 		return err
 	}
+	return w.respawnSidebarPane()
+}
+
+// respawnSidebarPane rebuilds pane 0.0 with fresh env. It re-reads 0.1's tty
+// FIRST: a respawn of 0.1 gives it a new pty, and the sidebar's
+// ORCHARD_TMUX_CLIENT must name the tty that is live NOW — the ordering both
+// respawn() (after it respawns 0.1) and recover-pane's sidebar path depend on,
+// which is why the two share this one helper rather than each keeping a copy.
+func (w *wrapper) respawnSidebarPane() error {
 	tty, err := w.outer("display", "-p", "-t", paneInner, "#{pane_tty}")
 	if err != nil {
 		return err

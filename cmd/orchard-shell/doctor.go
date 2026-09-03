@@ -89,7 +89,11 @@ type doctorEnv struct {
 
 // newDoctorEnv is the production doctorEnv.
 func newDoctorEnv(selfVersion, innerSocket, outerSocket string) doctorEnv {
-	conf, confErr := resolveConf("")
+	// Resolve the outer.conf the way orchard shell itself does — with this
+	// binary's path and the actual socket pair baked into the recovery-hook
+	// placeholders — so the outer-socket check inspects the same materialised
+	// file a real run would load, not a defaults-substituted stand-in.
+	conf, confErr := resolveConfFor("", selfPath(), innerSocket, outerSocket)
 	home, _ := os.UserHomeDir()
 	return doctorEnv{
 		tmux:           runTmux,
