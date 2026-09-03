@@ -45,7 +45,7 @@ Feature: break a pane out into its own session from the row menu
     Given the active pane of the attached session
     When I choose "Pane → own session…", enter a name, and confirm
     Then a new detached session is created
-    And the active pane is broken into "<name>:" and the placeholder window "<name>:0" is killed
+    And the active pane is broken into "<name>:" and the placeholder window is killed by the window id "new-session -P -F '#{window_id}'" printed, so it works under base-index 1
     And the inner client is switched to it via a scoped switch-client
     And the new session's card lands at row 0, because the switch makes it the most-recently-attached session
 
@@ -63,3 +63,11 @@ Feature: break a pane out into its own session from the row menu
     Then the empty session created by "new-session" is killed
     And the status line shows "pane → session failed: break-pane: <stderr>"
     And no session is switched to and nothing is pinned
+
+  @integration
+  Scenario: A kill-window failure is soft — the break already worked
+    Given "new-session" and "break-pane" succeeded but "kill-window" fails
+    When the break-out is attempted
+    Then the inner client is still switched to the new session
+    And the empty session is NOT killed, because the pane already moved out
+    And the menu stays open showing "pane → session: kill-window <id> failed: <stderr>"

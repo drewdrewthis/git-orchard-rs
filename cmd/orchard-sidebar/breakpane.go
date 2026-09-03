@@ -43,22 +43,30 @@ var paneInfo = func(sess string) (active string, count int) {
 
 // breakPaneToSession moves paneID into a brand-new session called name. A var
 // so the flow's test can record the exact three-step argv and inject a
-// mid-sequence failure. Each step's error is wrapped with the step that failed
-// so the sidebar's status line names it. On a break-pane failure the empty
-// session created by step one is killed, so a failure never leaves a stray
-// windowless session behind.
-var breakPaneToSession = func(paneID, name string) error {
-	if err := runTmux("new-session", "-d", "-s", name); err != nil {
-		return fmt.Errorf("pane → session failed: new-session: %w", err)
+// mid-sequence failure. Hard errors (new-session, break-pane) come back in err
+// with the step that failed named, so the status line names it; on a break-pane
+// failure the empty session created by step one is killed, so a failure never
+// leaves a stray windowless session behind.
+//
+// The placeholder window new-session leaves behind is killed by the window id
+// it PRINTS (`-P -F '#{window_id}'`), never a hardcoded `name:0` — the inner
+// server loads the user's tmux.conf, so with `base-index 1` the first window is
+// `name:1` and a `name:0` kill would miss it. kill-window failure is SOFT: the
+// pane already moved, so it comes back in warn (not err) and the caller still
+// switches to the new session.
+var breakPaneToSession = func(paneID, name string) (warn string, err error) {
+	winID, err := runTmuxOutput("new-session", "-d", "-s", name, "-P", "-F", "#{window_id}")
+	if err != nil {
+		return "", fmt.Errorf("pane → session failed: new-session: %w", err)
 	}
 	if err := runTmux("break-pane", "-d", "-s", paneID, "-t", name+":"); err != nil {
 		_ = runTmux("kill-session", "-t", name) // undo the empty session
-		return fmt.Errorf("pane → session failed: break-pane: %w", err)
+		return "", fmt.Errorf("pane → session failed: break-pane: %w", err)
 	}
-	if err := runTmux("kill-window", "-t", name+":0"); err != nil {
-		return fmt.Errorf("pane → session failed: kill-window: %w", err)
+	if err := runTmux("kill-window", "-t", winID); err != nil {
+		return fmt.Sprintf("pane → session: kill-window %s failed: %s", winID, err), nil
 	}
-	return nil
+	return "", nil
 }
 
 // breakPaneKey drives the name field, mirroring renameKey: Esc and Enter are
@@ -80,20 +88,30 @@ func (m *model) breakPaneKey(msg tea.KeyMsg) tea.Cmd {
 }
 
 // commitBreakPane runs the break-out on Enter. The name is made collision-free
-// the same way a launch is; a tmux failure stays on the menu with the failing
-// step named, so no half-state is silent. On success the inner client is
-// switched onto the new session — sortRows (model.go) already puts the
-// most-recently-attached session at row 0, so the switch alone is what lands
-// the new card at the top; a switch failure surfaces the same way, keeping
-// the menu open with the notice, since the break itself already succeeded.
+// the same way a launch is; a HARD tmux failure (new-session, break-pane) stays
+// on the menu with the failing step named, so no half-state is silent. On
+// success the inner client is switched onto the new session — sortRows
+// (model.go) already puts the most-recently-attached session at row 0, so the
+// switch alone is what lands the new card at the top; a switch failure surfaces
+// the same way, keeping the menu open with the notice, since the break itself
+// already succeeded.
+//
+// A kill-window warning is SOFT: the pane already moved, so the switch still
+// runs and then the warning is set on the still-open menu — the break worked,
+// only the placeholder window survived.
 func (m *model) commitBreakPane() {
 	name := uniqueName(m.menu.input.value(), takenSessions())
-	if err := breakPaneToSession(m.menu.activePane, name); err != nil {
+	warn, err := breakPaneToSession(m.menu.activePane, name)
+	if err != nil {
 		m.menu.notice = err.Error()
 		return
 	}
 	if err := switchClientTo(name); err != nil {
 		m.menu.notice = err.Error()
+		return
+	}
+	if warn != "" {
+		m.menu.notice = warn
 		return
 	}
 	m.closeMenu()

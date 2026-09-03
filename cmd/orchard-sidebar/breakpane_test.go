@@ -9,18 +9,24 @@ import (
 )
 
 // breakSpy stands in for every tmux surface the break-pane flow reaches, and
-// records the argv of each command in order — the undo guard is an ORDERING
-// property (kill the empty session AFTER break-pane fails), which a per-call
-// flag cannot express. failOn injects a failure on the named tmux verb.
+// records the argv of each command in order (new-session goes through
+// runTmuxOutput, the rest through runTmux; both append to the one tmux slice so
+// ordering is preserved) — the undo guard is an ORDERING property (kill the
+// empty session AFTER break-pane fails), which a per-call flag cannot express.
+// failOn injects a failure on the named tmux verb. winID is the window id
+// new-session prints, which kill-window must target — defaults to a base-index
+// 1 id so a hardcoded name:0 kill would be visibly wrong.
 type breakSpy struct {
 	tmux     []string
 	switched []string
+	winID    string
 }
 
 func newBreakSpy(t *testing.T, failOn string) *breakSpy {
 	t.Helper()
-	s := &breakSpy{}
-	rt, sc, ts, ss, pi := runTmux, switchClientTo, takenSessions, saveSidebarState, paneInfo
+	s := &breakSpy{winID: "@1"}
+	rt, rto := runTmux, runTmuxOutput
+	sc, ts, ss, pi := switchClientTo, takenSessions, saveSidebarState, paneInfo
 	runTmux = func(args ...string) error {
 		s.tmux = append(s.tmux, strings.Join(args, " "))
 		if failOn != "" && args[0] == failOn {
@@ -28,12 +34,20 @@ func newBreakSpy(t *testing.T, failOn string) *breakSpy {
 		}
 		return nil
 	}
+	runTmuxOutput = func(args ...string) (string, error) {
+		s.tmux = append(s.tmux, strings.Join(args, " "))
+		if failOn != "" && args[0] == failOn {
+			return "", errors.New(failOn + " boom")
+		}
+		return s.winID, nil
+	}
 	switchClientTo = func(name string) error { s.switched = append(s.switched, name); return nil }
 	takenSessions = func() map[string]bool { return map[string]bool{} }
 	saveSidebarState = func(sidebarState) error { return nil }
 	paneInfo = func(string) (string, int) { return "%9", 2 }
 	t.Cleanup(func() {
-		runTmux, switchClientTo, takenSessions, saveSidebarState, paneInfo = rt, sc, ts, ss, pi
+		runTmux, runTmuxOutput = rt, rto
+		switchClientTo, takenSessions, saveSidebarState, paneInfo = sc, ts, ss, pi
 	})
 	return s
 }
@@ -121,9 +135,9 @@ func TestBreakPaneConfirmRunsSequenceAndPromotes(t *testing.T) {
 	m.key(tea.KeyMsg{Type: tea.KeyEnter})
 
 	want := []string{
-		"new-session -d -s alpha",
+		"new-session -d -s alpha -P -F #{window_id}",
 		"break-pane -d -s %9 -t alpha:",
-		"kill-window -t alpha:0",
+		"kill-window -t @1",
 	}
 	if strings.Join(spy.tmux, " | ") != strings.Join(want, " | ") {
 		t.Fatalf("tmux calls were %v, want %v", spy.tmux, want)
@@ -152,7 +166,7 @@ func TestBreakPaneCollidingNameIsMadeUnique(t *testing.T) {
 	if len(spy.switched) == 0 || spy.switched[0] != "alpha-2" {
 		t.Fatalf("collision not resolved: switched=%v", spy.switched)
 	}
-	if spy.tmux[0] != "new-session -d -s alpha-2" ||
+	if spy.tmux[0] != "new-session -d -s alpha-2 -P -F #{window_id}" ||
 		spy.tmux[1] != "break-pane -d -s %9 -t alpha-2:" {
 		t.Errorf("tmux steps did not use the unique name: %v", spy.tmux)
 	}
@@ -168,7 +182,7 @@ func TestBreakPaneFailureUndoesEmptySession(t *testing.T) {
 	m.key(tea.KeyMsg{Type: tea.KeyEnter})
 
 	want := []string{
-		"new-session -d -s alpha",
+		"new-session -d -s alpha -P -F #{window_id}",
 		"break-pane -d -s %9 -t alpha:",
 		"kill-session -t alpha",
 	}
@@ -186,5 +200,54 @@ func TestBreakPaneFailureUndoesEmptySession(t *testing.T) {
 	}
 	if len(m.pinned) != 0 {
 		t.Errorf("a failed break-out still pinned: %v", m.pinned)
+	}
+}
+
+// The inner server loads the user's tmux.conf, so with base-index 1 the
+// placeholder window is name:1, not name:0. kill-window must target the id
+// new-session PRINTED (@7 here), never a hardcoded name:0 that would miss it.
+// AC: kill-window aims at the printed id under base-index 1.
+func TestBreakPaneKillsPrintedWindowIDUnderBaseIndex1(t *testing.T) {
+	spy := newBreakSpy(t, "")
+	spy.winID = "@7" // not @0: a base-index 1 server's first window
+	m := realModel()
+	openBreak(m, 0)
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if got := spy.tmux[2]; got != "kill-window -t @7" {
+		t.Fatalf("kill-window did not target the printed id: %q", got)
+	}
+	for _, c := range spy.tmux {
+		if strings.Contains(c, "alpha:0") {
+			t.Errorf("a hardcoded name:0 target leaked in: %q", c)
+		}
+	}
+	if len(spy.switched) != 1 || spy.switched[0] != "alpha" {
+		t.Errorf("switch-client not aimed at the new session: %v", spy.switched)
+	}
+}
+
+// kill-window failure is SOFT: the pane already moved out, so the switch still
+// happens, the menu stays open carrying the warning, and NO kill-session undo
+// runs — nothing needs undoing. AC: switch called, warning notice, no undo.
+func TestBreakPaneKillWindowFailureIsSoft(t *testing.T) {
+	spy := newBreakSpy(t, "kill-window")
+	m := realModel()
+	openBreak(m, 0)
+	m.key(tea.KeyMsg{Type: tea.KeyEnter})
+
+	if len(spy.switched) != 1 || spy.switched[0] != "alpha" {
+		t.Fatalf("soft kill-window failure skipped the switch: %v", spy.switched)
+	}
+	if !strings.HasPrefix(m.menu.notice, "pane → session: kill-window @1 failed:") {
+		t.Errorf("notice = %q, want the kill-window warning", m.menu.notice)
+	}
+	for _, c := range spy.tmux {
+		if strings.HasPrefix(c, "kill-session") {
+			t.Errorf("a soft kill-window failure ran an undo: %v", spy.tmux)
+		}
+	}
+	if m.menu.mode != menuBreakPane {
+		t.Errorf("the warning closed the menu: mode %v", m.menu.mode)
 	}
 }

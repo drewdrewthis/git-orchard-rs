@@ -135,6 +135,31 @@ var runTmux = func(args ...string) error {
 	return errors.New(msg)
 }
 
+// runTmuxOutput is runTmux's read-back sibling: it runs one command against
+// the sessions' server and returns tmux's trimmed stdout on success, so a step
+// that must consume what tmux printed (a window id from new-session -P) can.
+// On error it returns tmux's own stderr message as the error, exactly like
+// runTmux, so a failure reads the same in the status line.
+// A var for the same reason runTmux is: the break-pane flow's test injects the
+// printed id and a mid-sequence failure without a live tmux server.
+var runTmuxOutput = func(args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxOpTimeout)
+	defer cancel()
+	cmd := env.innerCmdContext(ctx, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		logf("%s: %s", strings.Join(args, " "), msg)
+		return "", errors.New(msg)
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
 // handBackFocusArgs is the select-pane argv, or ok=false when there is no
 // outer pane to hand focus to (legacy unwrapped mode, or wrapped but not yet
 // told its outer pane). Split out so the argv is testable without a tmux
