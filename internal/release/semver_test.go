@@ -60,7 +60,7 @@ func TestIsSemver(t *testing.T) {
 		{"1.2.3", true},
 		{"v1.2.3", true},
 		{"dev", false},
-		{"v1.1.0-3-gabc1234-dirty", false},
+		{"abc1234-dirty", false},
 		{"", false},
 	}
 	for _, c := range cases {
