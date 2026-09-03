@@ -7,9 +7,12 @@
 #
 # Resolves the host's rust target triple, downloads that release's suite
 # tarball (orchard-suite-<triple>.tar.gz) + SHA256SUMS, verifies the
-# checksum, and installs each binary atomically to --prefix. Idempotent --
-# safe to re-run; re-installs overwrite atomically, and the service file
-# rewrite+copy is a plain overwrite too.
+# checksum, and installs each binary atomically to --prefix (backing up any
+# existing file first as NAME.bak-<UTC timestamp>, keeping the 3 newest
+# backups per binary). Idempotent -- safe to re-run. If orchard-daemon.service
+# or orchard.service is already an active systemd --user unit, it's restarted
+# after install; otherwise orchard.service is (re)installed from the
+# template.
 #
 # Flags:
 #   --version TAG|X.Y.Z   Install this release instead of latest. Accepts a
@@ -18,11 +21,14 @@
 #   --prefix PATH         Install location. Default: /usr/local/bin if
 #                         writable, else ~/.local/bin.
 #   --system              Prefer /usr/local/bin; fail if it isn't writable
-#                         (rather than silently falling back).
+#                         (rather than silently falling back). Elevates
+#                         filesystem operations via `sudo -n` when needed; if
+#                         passwordless sudo isn't available, re-run the whole
+#                         command yourself under sudo.
 #   --from-source         Build locally (requires go + cargo) instead of
 #                         downloading a release. Uses the current checkout if
 #                         run from one; otherwise clones ORCHARD_RELEASE_REPO.
-#   --no-service          Skip installing the systemd user unit.
+#   --no-service          Skip restarting/installing the systemd user unit.
 #   --json                Emit one JSON line -- {"ok":..,"data":..,"error":..}
 #                         -- instead of human-readable text.
 #   -h, --help             Show this help.
@@ -48,6 +54,11 @@ SUMS_ASSET="SHA256SUMS"
 # Mirrors internal/release/assets.go's SuiteBinaries -- the Go upgrade
 # client's ground truth for what a release/install directory may hold.
 SUITE_BINARIES=(orchard-daemon orchard-sidebar orchard-shell orchard-upgrade orchard-tui orchard)
+# Priority order: orchard-daemon.service is the unit this repo actually
+# ships as active today; orchard.service is install_service's own template
+# name, checked second so an older install using it is still recognized.
+SERVICE_UNITS=(orchard-daemon.service orchard.service)
+BACKUP_KEEP=3
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
 
@@ -67,6 +78,8 @@ SUMS_DOWNLOAD_URL=""
 STAGED_DIR=""
 FROM_SOURCE_DIR=""
 CLEANUP_PATHS=()
+INSTALL_SUDO=()
+SERVICE_ACTION=""
 
 usage() {
   sed -n '2,41p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -189,6 +202,58 @@ resolve_prefix() {
   printf '%s/.local/bin' "$HOME"
 }
 
+# file_owner_uid FILE -- prints FILE's owning UID. Tries GNU stat (Linux,
+# the real target) then BSD stat (macOS, local dev/testing only) --
+# mirrors this file's existing shasum/sha256sum dual-tool-support pattern.
+file_owner_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null
+}
+
+# root_owned_suite_binary DIR -- prints the first SUITE_BINARIES member in
+# DIR that's owned by uid 0; fails (empty stdout) if none are.
+root_owned_suite_binary() {
+  local dir=$1 name
+  for name in "${SUITE_BINARIES[@]}"; do
+    [ -e "$dir/$name" ] || continue
+    [ "$(file_owner_uid "$dir/$name")" = "0" ] && { printf '%s' "$name"; return 0; }
+  done
+  return 1
+}
+
+# check_root_owned_conflict PREFIX -- refuses to silently fight a
+# root-owned install. Checks both PREFIX and (when different) the canonical
+# /usr/local/bin -- the latter catches resolve_prefix's own silent fallback
+# to ~/.local/bin when /usr/local/bin already holds root-owned binaries and
+# isn't writable, which would otherwise "succeed" by installing somewhere
+# not on PATH. Only relevant when we're not already root and --system
+# wasn't given (that's the acknowledged opt-in to elevate, see
+# resolve_install_sudo).
+check_root_owned_conflict() {
+  local prefix=$1 hit dir
+  [ "$SYSTEM" -eq 1 ] && return 0
+  [ "$(id -u)" -eq 0 ] && return 0
+  for dir in "$prefix" /usr/local/bin; do
+    if hit=$(root_owned_suite_binary "$dir"); then
+      fail "$dir/$hit is root-owned; re-run with sudo (sudo $0 --system), or choose a --prefix you own"
+    fi
+  done
+}
+
+# resolve_install_sudo -- when --system needs elevation (prefix operations
+# as a non-root user), sets INSTALL_SUDO to a `sudo -n` prefix if
+# passwordless sudo works; otherwise fails with instructions to re-run
+# under sudo manually. Never applied to systemctl --user (a per-user-uid
+# concept sudo would corrupt) -- only to $prefix filesystem operations.
+resolve_install_sudo() {
+  [ "$SYSTEM" -eq 1 ] || return 0
+  [ "$(id -u)" -eq 0 ] && return 0
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    INSTALL_SUDO=(sudo -n)
+    return 0
+  fi
+  fail "--system needs root; re-run with sudo: sudo $0 --system (or drop --system to install under \$HOME)"
+}
+
 # resolve_repo_target -- mirrors internal/release.resolveTarget exactly:
 # ORCHARD_RELEASE_REPO is either an owner/repo slug (resolved against
 # GitHub's API) or an absolute URL (a fixture/enterprise API root, repo slug
@@ -298,17 +363,42 @@ verify_and_stage() {
   STAGED_DIR="$work/extracted"
 }
 
+# rotate_backups DEST_DIR NAME -- keeps only the BACKUP_KEEP newest
+# NAME.bak-* in DEST_DIR, deleting older ones. Lexical sort matches time
+# order for the fixed-width UTC timestamp backups use (YYYYMMDDTHHMMSSZ).
+rotate_backups() {
+  local dest_dir=$1 name=$2
+  local backups=() f
+  for f in "$dest_dir/$name".bak-*; do
+    [ -e "$f" ] || continue
+    backups+=("$f")
+  done
+  local count=${#backups[@]}
+  [ "$count" -le "$BACKUP_KEEP" ] && return 0
+  local excess=$((count - BACKUP_KEEP)) old
+  while IFS= read -r old; do
+    [ -n "$old" ] && "${INSTALL_SUDO[@]}" rm -f "$old"
+  done < <(printf '%s\n' "${backups[@]}" | sort | head -n "$excess")
+}
+
 # atomic_install SRC DESTDIR NAME -- copies SRC into DESTDIR/NAME via a
 # same-directory temp file + rename, so DESTDIR/NAME is never observed
-# truncated or half-written.
+# truncated or half-written. An existing DESTDIR/NAME is backed up first as
+# NAME.bak-<UTC timestamp> rather than silently overwritten (rotate_backups
+# then prunes to the newest BACKUP_KEEP). Filesystem operations run through
+# INSTALL_SUDO (empty unless --system needed elevation).
 atomic_install() {
   local src=$1 dest_dir=$2 name=$3
   local tmp
-  mkdir -p "$dest_dir"
+  "${INSTALL_SUDO[@]}" mkdir -p "$dest_dir"
   tmp="$dest_dir/.orchard-install-tmp-$name-$$"
-  cp "$src" "$tmp"
-  chmod 755 "$tmp"
-  mv -f "$tmp" "$dest_dir/$name"
+  "${INSTALL_SUDO[@]}" cp "$src" "$tmp"
+  "${INSTALL_SUDO[@]}" chmod 755 "$tmp"
+  if [ -e "$dest_dir/$name" ]; then
+    "${INSTALL_SUDO[@]}" mv -f "$dest_dir/$name" "$dest_dir/$name.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+    rotate_backups "$dest_dir" "$name"
+  fi
+  "${INSTALL_SUDO[@]}" mv -f "$tmp" "$dest_dir/$name"
 }
 
 # find_local_checkout -- prints a repo root if the cwd or this script's own
@@ -392,10 +482,60 @@ install_service() {
   return 0
 }
 
+# detect_active_service -- prints the first SERVICE_UNITS member that's an
+# active systemd --user unit (priority order); fails (empty stdout) if
+# systemctl is missing or none are active. Always run as the invoking user,
+# never through sudo -- systemd --user is per-uid, and root's session isn't
+# the real user's.
+detect_active_service() {
+  command -v systemctl >/dev/null 2>&1 || return 1
+  local unit
+  for unit in "${SERVICE_UNITS[@]}"; do
+    if systemctl --user is-active "$unit" >/dev/null 2>&1; then
+      printf '%s' "$unit"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# handle_service PREFIX -- restarts whichever SERVICE_UNITS member is
+# already active; if none are, falls back to install_service's template
+# install. Sets SERVICE_ACTION to "restarted:<unit>" or "installed" on
+# success. Returns 1 (SERVICE_ACTION left "") if neither applies.
+handle_service() {
+  local prefix=$1 active
+  if active=$(detect_active_service); then
+    systemctl --user restart "$active"
+    SERVICE_ACTION="restarted:$active"
+    return 0
+  fi
+  if install_service "$prefix"; then
+    SERVICE_ACTION="installed"
+    return 0
+  fi
+  return 1
+}
+
+# compute_path_warning PREFIX -- prints a remedy message when PREFIX isn't
+# on $PATH; prints nothing otherwise.
+compute_path_warning() {
+  local prefix=$1
+  case ":$PATH:" in
+    *":$prefix:"*) return 0 ;;
+  esac
+  # shellcheck disable=SC2016  # literal $PATH shown to the user, not expanded here
+  printf 'add %s to your $PATH (e.g. echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.profile)' "$prefix" "$prefix"
+}
+
 emit_success() {
-  local triple=$1 prefix=$2 tag=$3 service_installed=$4
-  shift 4
+  local triple=$1 prefix=$2 tag=$3
+  shift 3
   local names=("$@")
+  local path_warning
+  path_warning=$(compute_path_warning "$prefix")
+  local service_installed=0
+  [ -n "$SERVICE_ACTION" ] && service_installed=1
 
   if [ "$JSON_MODE" -eq 1 ]; then
     local bins_json="" n
@@ -404,19 +544,22 @@ emit_success() {
       [ -n "$bins_json" ] && bins_json="$bins_json,"
       bins_json="$bins_json\"$(json_escape "$n")\""
     done
-    printf '{"ok":true,"data":{"version":"%s","prefix":"%s","triple":"%s","binaries":[%s],"from_source":%s,"service_installed":%s},"error":null}\n' \
+    local path_warning_json="null"
+    [ -n "$path_warning" ] && path_warning_json="\"$(json_escape "$path_warning")\""
+    printf '{"ok":true,"data":{"version":"%s","prefix":"%s","triple":"%s","binaries":[%s],"from_source":%s,"service_installed":%s,"path_warning":%s},"error":null}\n' \
       "$(json_escape "$tag")" "$(json_escape "$prefix")" "$(json_escape "$triple")" "$bins_json" \
       "$([ "$FROM_SOURCE" -eq 1 ] && echo true || echo false)" \
-      "$([ "$service_installed" -eq 1 ] && echo true || echo false)"
+      "$([ "$service_installed" -eq 1 ] && echo true || echo false)" \
+      "$path_warning_json"
     JSON_EMITTED=1
   else
     echo "installed orchard $tag to $prefix ($triple)"
     echo "binaries: ${names[*]}"
-    [ "$service_installed" -eq 1 ] && echo "systemd user unit installed: ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/orchard.service"
-    case ":$PATH:" in
-      *":$prefix:"*) : ;;
-      *) echo "note: $prefix is not on your \$PATH" ;;
+    case "$SERVICE_ACTION" in
+      restarted:*) echo "systemd user unit restarted: ${SERVICE_ACTION#restarted:}" ;;
+      installed) echo "systemd user unit installed: ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/orchard.service" ;;
     esac
+    [ -n "$path_warning" ] && echo "note: $path_warning"
   fi
 }
 
@@ -469,9 +612,11 @@ parse_args() {
 main() {
   parse_args "$@"
 
-  local triple prefix staged_dir service_installed=0
+  local triple prefix staged_dir
   triple=$(detect_triple)
   prefix=$(resolve_prefix)
+  check_root_owned_conflict "$prefix"
+  resolve_install_sudo
 
   if [ "$FROM_SOURCE" -eq 1 ]; then
     build_from_source
@@ -505,12 +650,10 @@ main() {
   [ "${#installed_names[@]}" -gt 0 ] || fail "no suite binaries found to install"
 
   if [ "$NO_SERVICE" -eq 0 ]; then
-    if install_service "$prefix"; then
-      service_installed=1
-    fi
+    handle_service "$prefix" || true
   fi
 
-  emit_success "$triple" "$prefix" "$RESOLVED_TAG" "$service_installed" "${installed_names[@]}"
+  emit_success "$triple" "$prefix" "$RESOLVED_TAG" "${installed_names[@]}"
 }
 
 main "$@"

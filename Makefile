@@ -124,11 +124,12 @@ clean:
 
 # Cross-platform release assembly: per-binary tarballs, per-triple
 # orchard-suite-<triple>.tar.gz, and an aggregate SHA256SUMS under dist/.
-# Go binaries always cross-compile; Rust binaries only for locally
-# installed `rustup target`s (a platform missing one is skipped with a
-# warning, not a failure — see scripts/dist.sh).
+# Go binaries always cross-compile; Rust binaries via scripts/dist.sh's
+# native -> cargo-zigbuild -> cross -> docker fallback chain (a triple with
+# no working method is skipped with a warning, not a failure).
+# Single-target build: make dist TRIPLE=aarch64-unknown-linux-gnu
 dist:
-	bash scripts/dist.sh $(VERSION)
+	bash scripts/dist.sh $(VERSION) $(if $(TRIPLE),--only $(TRIPLE),)
 
 test: test-go test-rust
 

@@ -4,13 +4,13 @@
 # `make dist` (#747 Step 6).
 #
 # Go binaries cross-compile unconditionally (CGO_ENABLED=0, no toolchain
-# dependency). Rust binaries build only for `rustup target`s already
-# installed locally -- unlike CI (.github/workflows/release-please.yml),
-# which builds every triple on dedicated runners. A triple's suite tarball
-# is assembled only when every binary in SUITE_BINS built for it; otherwise
-# that triple is skipped with a warning (per-binary tarballs for whichever
-# binaries DID build are still written, so a partial local run still
-# produces something usable).
+# dependency). Rust binaries use build_rust_pair's fallback chain: native
+# direct build (host triple, or an already-installed rustup target) ->
+# cargo-zigbuild -> cross -> docker. A triple's suite tarball is assembled
+# only when every binary in SUITE_BINS built for it; otherwise that triple
+# is skipped with a warning (per-binary tarballs for whichever binaries DID
+# build are still written, so a partial local run still produces something
+# usable).
 #
 # GOOS/GOARCH<->triple pairs and the six-binary suite roster mirror
 # internal/release/assets.go (`triples`, `SuiteBinaries`) -- the Go upgrade
@@ -18,10 +18,31 @@
 # tarball name/contents (orchard-<triple>.tar.gz, containing one file named
 # `orchard`) is unchanged: npm/install.js hardcodes it (plan AC12).
 #
-# Usage: scripts/dist.sh [VERSION]   (VERSION defaults to "dev")
+# Usage: scripts/dist.sh [VERSION] [--only TRIPLE]
+#   VERSION   defaults to "dev"
+#   --only    limit the run to one PLATFORMS triple, e.g.
+#             --only aarch64-unknown-linux-gnu (also: make dist TRIPLE=...)
 set -euo pipefail
 
-VERSION="${1:-dev}"
+VERSION="dev"
+ONLY_TRIPLE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --only)
+      ONLY_TRIPLE=$2
+      shift 2
+      ;;
+    --only=*)
+      ONLY_TRIPLE="${1#*=}"
+      shift
+      ;;
+    *)
+      VERSION="$1"
+      shift
+      ;;
+  esac
+done
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST="$ROOT/dist"
 
@@ -37,9 +58,134 @@ PLATFORMS=(
   "darwin arm64 aarch64-apple-darwin"
 )
 
+if [ -n "$ONLY_TRIPLE" ]; then
+  filtered=()
+  for entry in "${PLATFORMS[@]}"; do
+    read -r _ _ t <<<"$entry"
+    [ "$t" = "$ONLY_TRIPLE" ] && filtered+=("$entry")
+  done
+  if [ "${#filtered[@]}" -eq 0 ]; then
+    echo "error: --only $ONLY_TRIPLE is not a known triple (see PLATFORMS in scripts/dist.sh)" >&2
+    exit 1
+  fi
+  PLATFORMS=("${filtered[@]}")
+fi
+
 GO_BINS=(orchard-daemon orchard-sidebar orchard-shell orchard-upgrade)
 
 installed_rust_targets="$(rustup target list --installed 2>/dev/null || true)"
+host_triple="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+
+# build_rust_native TRIPLE PLATFORM_DIR -- plain `cargo build --target`,
+# valid when TRIPLE needs no cross linker: it's the host triple, or its
+# rustup target is already installed with a working linker for it.
+build_rust_native() {
+  local triple=$1 platform_dir=$2
+  rustup target add "$triple" >/dev/null 2>&1 || true
+  ( cd "$ROOT" && cargo build --release --target "$triple" -p orchard-dispatcher -p orchard ) || return 1
+  cp "$ROOT/target/$triple/release/orchard" "$platform_dir/orchard" || return 1
+  cp "$ROOT/target/$triple/release/orchard-tui" "$platform_dir/orchard-tui" || return 1
+}
+
+# build_via_zigbuild TRIPLE PLATFORM_DIR -- cargo-zigbuild, using zig as a
+# cross-capable linker. Only attempted if cargo-zigbuild is already
+# installed, or zig is present (in which case `cargo install cargo-zigbuild`
+# is allowed -- zig itself is never installed by this script).
+build_via_zigbuild() {
+  local triple=$1 platform_dir=$2
+  if ! command -v cargo-zigbuild >/dev/null 2>&1; then
+    command -v zig >/dev/null 2>&1 || return 1
+    cargo install cargo-zigbuild >/dev/null 2>&1 || return 1
+  fi
+  rustup target add "$triple" >/dev/null 2>&1 || return 1
+  ( cd "$ROOT" && cargo zigbuild --release --target "$triple" -p orchard-dispatcher -p orchard ) || return 1
+  cp "$ROOT/target/$triple/release/orchard" "$platform_dir/orchard" || return 1
+  cp "$ROOT/target/$triple/release/orchard-tui" "$platform_dir/orchard-tui" || return 1
+}
+
+# build_via_cross TRIPLE PLATFORM_DIR -- the `cross` cargo subcommand, which
+# manages its own build containers. Only attempted if already installed.
+build_via_cross() {
+  local triple=$1 platform_dir=$2
+  command -v cross >/dev/null 2>&1 || return 1
+  ( cd "$ROOT" && cross build --release --target "$triple" -p orchard-dispatcher -p orchard ) || return 1
+  cp "$ROOT/target/$triple/release/orchard" "$platform_dir/orchard" || return 1
+  cp "$ROOT/target/$triple/release/orchard-tui" "$platform_dir/orchard-tui" || return 1
+}
+
+# build_via_docker TRIPLE PLATFORM_DIR -- last resort: build inside the
+# official rust:1-bookworm image for TRIPLE's OS/arch, via a running docker
+# daemon (e.g. colima). The image's --platform variant makes the container
+# arch match the target, so this is a NATIVE build inside the container, not
+# a cross one -- no extra linker setup needed. Source is bind-mounted
+# read-only; only the target/ cache dir is writable, so the build cannot
+# touch anything outside its own output.
+build_via_docker() {
+  local triple=$1 platform_dir=$2
+  local docker_platform
+  case "$triple" in
+    x86_64-unknown-linux-gnu) docker_platform="linux/amd64" ;;
+    aarch64-unknown-linux-gnu) docker_platform="linux/arm64" ;;
+    *) return 1 ;; # no Linux container image mapping (e.g. a darwin triple)
+  esac
+  command -v docker >/dev/null 2>&1 || return 1
+  docker info >/dev/null 2>&1 || return 1
+
+  local cache="$ROOT/target/docker-cross/$triple"
+  mkdir -p "$cache/.cargo-home"
+
+  docker run --rm --platform "$docker_platform" \
+    -u "$(id -u):$(id -g)" \
+    -e HOME=/tmp \
+    -e CARGO_HOME=/repo/target/.cargo-home \
+    -v "$ROOT:/repo:ro" \
+    -v "$cache:/repo/target" \
+    -w /repo \
+    rust:1-bookworm \
+    cargo build --release --target "$triple" -p orchard-dispatcher -p orchard || return 1
+
+  cp "$cache/$triple/release/orchard" "$platform_dir/orchard" || return 1
+  cp "$cache/$triple/release/orchard-tui" "$platform_dir/orchard-tui" || return 1
+}
+
+# build_rust_pair TRIPLE PLATFORM_DIR -- builds orchard + orchard-tui for
+# TRIPLE into PLATFORM_DIR via the first working method: native (host triple
+# or already-installed rustup target) -> cargo-zigbuild -> cross -> docker.
+# Prints which method won; returns 1 with no output files if every
+# applicable method failed or none applied.
+build_rust_pair() {
+  local triple=$1 platform_dir=$2
+
+  if [ "$triple" = "$host_triple" ] && build_rust_native "$triple" "$platform_dir"; then
+    echo "  rust: built natively for $triple (host triple)"
+    return 0
+  fi
+
+  if [ "$triple" != "$host_triple" ] && grep -qx "$triple" <<<"$installed_rust_targets" \
+      && build_rust_native "$triple" "$platform_dir"; then
+    echo "  rust: built via already-installed rustup target for $triple"
+    return 0
+  fi
+
+  if build_via_zigbuild "$triple" "$platform_dir"; then
+    echo "  rust: built via cargo-zigbuild for $triple"
+    return 0
+  fi
+
+  if build_via_cross "$triple" "$platform_dir"; then
+    echo "  rust: built via cross for $triple"
+    return 0
+  fi
+
+  if build_via_docker "$triple" "$platform_dir"; then
+    echo "  rust: built via docker (rust:1-bookworm) for $triple"
+    return 0
+  fi
+
+  echo "  rust: no working build method for $triple (tried: native/rustup-installed-target, cargo-zigbuild, cross, docker)"
+  echo "  rust:   to enable: rustup target add $triple; or install zig (we'll cargo install cargo-zigbuild); or install cross; or start docker (e.g. colima start)"
+  return 1
+}
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -73,30 +219,15 @@ for entry in "${PLATFORMS[@]}"; do
     echo "  wrote $(basename "$tarball")"
   done
 
-  # --- Rust binaries: only for locally installed rustup targets. ---
-  if ! grep -qx "$triple" <<<"$installed_rust_targets"; then
-    echo "  skip Rust binaries: rustup target $triple not installed (rustup target add $triple)"
-    have_rust=0
+  # --- Rust binaries: build_rust_pair's native -> zigbuild -> cross ->
+  # docker fallback chain. ---
+  if build_rust_pair "$triple" "$platform_dir"; then
+    tar czf "$DIST/orchard-$triple.tar.gz" -C "$platform_dir" orchard
+    echo "  wrote orchard-$triple.tar.gz"
+    tar czf "$DIST/orchard-tui-$triple.tar.gz" -C "$platform_dir" orchard-tui
+    echo "  wrote orchard-tui-$triple.tar.gz"
   else
-    # orchard-dispatcher package -> `orchard` binary. Tarball name and the
-    # single member inside it (`orchard`) are unchanged from today.
-    if (cd "$ROOT" && cargo build --release --target "$triple" -p orchard-dispatcher) \
-        && cp "$ROOT/target/$triple/release/orchard" "$platform_dir/orchard"; then
-      tar czf "$DIST/orchard-$triple.tar.gz" -C "$platform_dir" orchard
-      echo "  wrote orchard-$triple.tar.gz"
-    else
-      echo "  FAILED building orchard-dispatcher for $triple"
-      have_rust=0
-    fi
-    # orchard package -> `orchard-tui` binary.
-    if (cd "$ROOT" && cargo build --release --target "$triple" -p orchard) \
-        && cp "$ROOT/target/$triple/release/orchard-tui" "$platform_dir/orchard-tui"; then
-      tar czf "$DIST/orchard-tui-$triple.tar.gz" -C "$platform_dir" orchard-tui
-      echo "  wrote orchard-tui-$triple.tar.gz"
-    else
-      echo "  FAILED building orchard for $triple"
-      have_rust=0
-    fi
+    have_rust=0
   fi
 
   # --- Suite tarball: only when every binary built for this triple. ---
