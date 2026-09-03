@@ -38,6 +38,14 @@ derive_version() {
 
 VERSION="${VERSION:-$(derive_version)}"
 VERSION="${VERSION:-dev}"
+
+# REVISION is the VCS commit baked into every Go binary so doctor's
+# suite-revisions check can compare builds (orchardist#803). Empty when the
+# source tree is not a git checkout (a downloaded tarball); the compiler's own
+# vcs.revision stamp then fills in where it can.
+REVISION="${REVISION:-$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null || true)}"
+GO_LDFLAGS="-X main.version=$VERSION -X github.com/drewdrewthis/orchardist/internal/release.revision=$REVISION"
+
 ONLY_TRIPLE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -219,7 +227,7 @@ for entry in "${PLATFORMS[@]}"; do
     fi
     out="$platform_dir/$bin"
     if ! (cd "$ROOT" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-        go build -ldflags "-X main.version=$VERSION" -o "$out" "./$src" 2>&1); then
+        go build -ldflags "$GO_LDFLAGS" -o "$out" "./$src" 2>&1); then
       echo "  FAILED building $bin for $triple"
       have_go=0
       continue

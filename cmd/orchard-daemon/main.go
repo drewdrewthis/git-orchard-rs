@@ -21,12 +21,19 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/cli/config"
 	"github.com/drewdrewthis/orchardist/internal/cli/daemon"
 	"github.com/drewdrewthis/orchardist/internal/cli/query"
+	"github.com/drewdrewthis/orchardist/internal/release"
 )
 
 // version is overridden via -ldflags at release time.
 var version = "dev"
 
 func main() {
+	// --revision answers before cobra parses: it is not a cobra flag, and the
+	// shared helper keeps every suite binary's output identical (orchardist#787).
+	if release.HandleRevisionFlag(os.Args[1:], os.Stdout) {
+		os.Exit(0)
+	}
+
 	root := &cobra.Command{
 		Use:           "orchard-daemon",
 		Short:         "orchard-daemon — query and cache layer over local developer state",

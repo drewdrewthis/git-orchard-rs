@@ -99,6 +99,20 @@ Feature: orchard install, upgrade, and doctor
     Then the version-parity check fails
 
   @unit
+  Scenario: doctor passes suite-revisions on a single-checkout install
+    Given every Go suite binary reports the same VCS revision
+    When I run "orchard shell doctor"
+    Then the suite-revisions check passes
+    And its detail names "orchard" and "orchard-tui" as excluded because they are Rust
+
+  @unit
+  Scenario: doctor warns, not fails, when a suite binary lacks --revision
+    Given "orchard-upgrade" predates --revision and every other Go suite binary reports the same revision
+    When I run "orchard shell doctor"
+    Then the suite-revisions check warns and names "orchard-upgrade"
+    And its remedy says to rebuild the binary, not to reinstall
+
+  @unit
   Scenario: doctor's socket flags and $ORCHARD_TMUX_SOCKET default match orchard shell
     Given $ORCHARD_TMUX_SOCKET is set to "from-env"
     When I run "orchard shell doctor" with no socket flags
