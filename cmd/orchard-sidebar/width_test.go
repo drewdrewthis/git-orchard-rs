@@ -148,8 +148,8 @@ func TestSidebarStateFileRoundTrip(t *testing.T) {
 }
 
 // What a remembered layout tells tmux, before bubbletea ever reads the pane
-// size. Nothing remembered writes nothing: an unset @orchard_sidebar_width is
-// what makes outer.conf fall back to its own default.
+// size. Nothing remembered writes nothing: an unset main-pane-width is what
+// makes outer.conf fall back to its own default.
 func TestRestorePane(t *testing.T) {
 	cases := []struct {
 		name      string

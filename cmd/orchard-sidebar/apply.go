@@ -33,7 +33,13 @@ func (m *model) applyFast(msg fastDataMsg) {
 	}
 	m.rows = msg.rows
 	m.fastAt = time.Now()
-	m.paneToSess = msg.paneToSess
+	// The pane->session map is the push lane's while it's live (subscribe.go)
+	// — a poll in flight across a switch carries a pre-switch map, and letting
+	// it through would revert fetchHooks' pane lookups to stale sessions for
+	// as long as the poll straggled.
+	if !m.subLive() {
+		m.paneToSess = msg.paneToSess
+	}
 	// The poll's attach flags were true up to a daemon poll ago and the
 	// request itself took a moment, so a poll in flight across a switch lands
 	// *after* the pushed snapshot carrying pre-switch attachment. Letting it

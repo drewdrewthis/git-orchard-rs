@@ -25,10 +25,10 @@ func stateFile(name string) string {
 // of the sidebar, of the wrapper, and of the machine — a sidebar that reopens
 // at 40 columns every morning is a sidebar the user re-drags every morning.
 //
-// The width is ALSO published to the outer server as @orchard_sidebar_width
-// (setWidthOption), which is what the wrapper's resize hooks read while the
-// sidebar is running. This file is the same fact made durable, and the only
-// copy that outlives the tmux server.
+// The width is ALSO published to the outer server as its own main-pane-width
+// (setWidthOption, widthOption in tmux.go), which is what the wrapper's
+// resize hooks read while the sidebar is running. This file is the same fact
+// made durable, and the only copy that outlives the tmux server.
 type sidebarState struct {
 	Width     int  `json:"width"`
 	Collapsed bool `json:"collapsed"`
@@ -80,8 +80,8 @@ var saveSidebarState = func(st sidebarState) error {
 // it for the wrapper's own split, and publish it back over the width it was
 // restoring.
 //
-// Nothing remembered is not an error — an unset @orchard_sidebar_width is
-// exactly what makes outer.conf fall back to its own default width.
+// Nothing remembered is not an error — an unset main-pane-width is exactly
+// what makes outer.conf fall back to its own default width.
 func restoreLayout(st sidebarState) {
 	w, collapsed, ok := restorePane(st)
 	if !ok || env.self == "" {

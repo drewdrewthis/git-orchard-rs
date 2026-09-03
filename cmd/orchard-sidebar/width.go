@@ -2,11 +2,13 @@ package main
 
 // The width contract, in one place.
 //
-// The OUTER server owns the sidebar's width. It holds @orchard_sidebar_width,
-// its M-s binding reads it, and its client-resized / window-resized hooks
-// re-pin the pane to it after every terminal resize (scripts/outer-shell/
-// outer.conf). The sidebar's job is to notice the ONE event the outer server
-// cannot see — the user dragging the pane border — and publish it.
+// The OUTER server owns the sidebar's width. It holds main-pane-width (tmux's
+// own option, widthOption in tmux.go — not a custom @orchard one, see the
+// comment above that const), its M-s binding reads it, and its
+// client-resized / window-resized hooks re-pin the pane to it after every
+// terminal resize (scripts/outer-shell/outer.conf). The sidebar's job is to
+// notice the ONE event the outer server cannot see — the user dragging the
+// pane border — and publish it.
 //
 // Two owners is what this replaces: the sidebar published a width inwards
 // while the outer hooks re-pinned to a hard-coded 40, so a drag to 60 survived

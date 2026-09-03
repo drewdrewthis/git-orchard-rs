@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -79,5 +80,25 @@ func TestPopupArgsCarryTheServerEnv(t *testing.T) {
 	// fail the popup instead of opening it on a fallback
 	if got := strings.Join(popupArgs("/opt/x", "/w/gone-away"), " "); strings.Contains(got, "-d ") {
 		t.Errorf("popupArgs passed -d for a missing dir: %s", got)
+	}
+}
+
+// TestShellQuoteRoundTrips checks the quoted string survives the shell tmux
+// actually runs it through — `sh -c 'printf %s ...'`, the same shape
+// popupArgs feeds the popup — for the two path shapes that break naive
+// quoting: an embedded single quote and embedded spaces.
+func TestShellQuoteRoundTrips(t *testing.T) {
+	for _, path := range []string{
+		"/Users/o'brien/worktree",
+		"/home/dev/my project/worktree",
+	} {
+		quoted := shellQuote(path)
+		out, err := exec.Command("sh", "-c", "printf %s "+quoted).Output()
+		if err != nil {
+			t.Fatalf("shellQuote(%q) = %s: sh rejected it: %v", path, quoted, err)
+		}
+		if got := string(out); got != path {
+			t.Errorf("shellQuote(%q) = %s, round-tripped to %q, want %q", path, quoted, got, path)
+		}
 	}
 }
