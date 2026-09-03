@@ -1,7 +1,14 @@
 {
   "packages": {
     "crates/orchard": {
-      "release-type": "rust"
+      "release-type": "rust",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/crates/orchard-dispatcher/Cargo.toml",
+          "jsonpath": "$.package.version"
+        }
+      ]
     }
   }
 }

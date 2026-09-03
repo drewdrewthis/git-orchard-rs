@@ -1,6 +1,6 @@
 [package]
 name = "orchard-dispatcher"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2024"
 description = "Thin dispatcher for the orchard CLI ecosystem (routes to orchard-tui, orchard-daemon, orchard-worktree, etc.)"
 license = "MIT"
