@@ -95,6 +95,25 @@ func TestPickerWidenAddsParents(t *testing.T) {
 	}
 }
 
+// In auto mode, cfg.showHidden can go stale relative to the query (syncHidden
+// returns early once the wanted cache is populated, without touching
+// cfg.showHidden). widen must re-derive it from the current query before
+// re-walking, or it re-walks under the wrong hidden state.
+func TestPickerWidenResyncsStaleShowHidden(t *testing.T) {
+	tmp := t.TempDir()
+	mkdirs(t, tmp, "ws/proj")
+	p := &picker{roots: []string{filepath.Join(tmp, "ws", "proj")}}
+	p.search = newTextField("plain", searchWidth) // non-dot query: effectiveHidden is false
+	p.cfg = walkConfig{roots: p.roots, showHidden: true}
+
+	if cmd := p.widen(); cmd == nil {
+		t.Fatal("widen returned no re-walk command")
+	}
+	if p.cfg.showHidden {
+		t.Error("widen left cfg.showHidden stale; want false for a non-dot query")
+	}
+}
+
 // A widen/toggle fired while a walk is in flight bumps walkGen, so the older
 // walk's eventual result is a stale walkDoneMsg: setCands must drop it (and
 // leave walking alone) rather than let it clobber the newer walk's state.

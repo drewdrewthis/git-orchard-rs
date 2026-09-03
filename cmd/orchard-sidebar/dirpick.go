@@ -166,7 +166,8 @@ func (p *picker) widen() tea.Cmd {
 	}
 	p.roots = next
 	p.cfg.roots = next
-	p.plainCands, p.hiddenCands = nil, nil // the roots moved; both caches are stale
+	p.cfg.showHidden = effectiveHidden(p.mode, p.search.value()) // cfg.showHidden can be stale in auto mode; re-derive before the re-walk
+	p.plainCands, p.hiddenCands = nil, nil                       // the roots moved; both caches are stale
 	p.walking = true
 	p.walkGen++
 	p.rebuild()
