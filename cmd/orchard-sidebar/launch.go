@@ -186,6 +186,7 @@ var launchSession = func(dir, cmd, name string) error {
 	if err := switchClientTo(name); err != nil {
 		return fmt.Errorf("switch-client: %w", err)
 	}
+	rememberRecent(dir) // best-effort; recents power the picker's empty-query list
 	return saveLastLaunch(lastLaunch{Cmd: cmd, Dir: dir, Name: name})
 }
 

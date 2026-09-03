@@ -64,3 +64,18 @@ func (f *textField) placeholder(s string) {
 	f.ti.Placeholder = s
 	f.ti.PlaceholderStyle = styDim
 }
+
+// typedRunes is the text a key event contributes to a field. A lone space is
+// reported as KeySpace rather than KeyRunes, so reading only KeyRunes silently
+// dropped every space typed into a command line — which is most of them. An
+// alt-modified key is a shortcut that fell through, never text.
+func typedRunes(msg tea.KeyMsg) []rune {
+	if msg.Alt {
+		return nil
+	}
+	switch msg.Type {
+	case tea.KeyRunes, tea.KeySpace:
+		return msg.Runes
+	}
+	return nil
+}

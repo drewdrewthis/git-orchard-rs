@@ -10,9 +10,10 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The launch modal as the user drives it: browsing to a directory, typing a
-// command, and seeing the name it will really launch under before it does.
-// The picker itself (search, scrolling) is covered in dirpick_test.go.
+// The launch modal as the user drives it: fuzzy-searching to a directory,
+// typing a command, and seeing the name it will really launch under before it
+// does. The picker itself (search, ordering, scrolling) is covered in
+// dirpick_test.go.
 
 // A lone space arrives as KeySpace, not KeyRunes. Reading only KeyRunes dropped
 // every space typed into the command field — "sleep 300" became "sleep300".
@@ -31,11 +32,14 @@ func TestTypedRunesKeepsSpaces(t *testing.T) {
 	}
 }
 
-// The whole modal in one pass: search, descend, edit the command, launch.
+// The whole modal in one pass: fuzzy-search to a deep dir, pick it, edit the
+// command, launch.
 func TestLaunchModalFlow(t *testing.T) {
-	stubTaken(t, "cmd")
+	stubTaken(t, "orchard-sidebar")
+	stubKnown(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir()) // no leaked recents
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "cmd"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "orchard-sidebar"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var gotDir, gotCmd, gotName string
@@ -47,20 +51,26 @@ func TestLaunchModalFlow(t *testing.T) {
 	t.Cleanup(func() { launchSession = prev })
 
 	m := newLaunchModel(root, "claude")
+	m.pick.cfg = walkConfig{roots: []string{root}}              // keep the test walk off the real $HOME
+	m.pick.setCands(m.pick.walkGen, walkCandidates(m.pick.cfg)) // run the walk synchronously for the test
 	press := func(k tea.KeyMsg) { m.Update(k) }
 	runes := func(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
 	key := func(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
 
-	press(runes("cmd"))
-	press(key(tea.KeyEnter)) // descend into cmd/
-	if m.pick.dir != filepath.Join(root, "cmd") {
-		t.Fatalf("picker at %q", m.pick.dir)
+	target := filepath.Join(root, "cmd", "orchard-sidebar")
+	press(runes("orsi")) // fuzzy-match to the deep dir
+	if m.pick.dir() != target {
+		t.Fatalf("picker highlighted %q, want %q", m.pick.dir(), target)
 	}
-	// the name follows the directory until you type in it, and "cmd" is taken
-	if m.name.value() != "cmd-2" {
-		t.Fatalf("name = %q, want cmd-2", m.name.value())
+	press(key(tea.KeyEnter)) // pick it, advancing to the command field
+	if m.focus != focusCmd {
+		t.Fatalf("focus = %d after picking, want %d", m.focus, focusCmd)
 	}
-	press(key(tea.KeyTab))
+	// the name follows the picked directory until you type in it, and the base
+	// "orchard-sidebar" is taken
+	if m.name.value() != "orchard-sidebar-2" {
+		t.Fatalf("name = %q, want orchard-sidebar-2", m.name.value())
+	}
 	press(key(tea.KeyCtrlU))
 	press(runes("sleep"))
 	press(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
@@ -74,7 +84,7 @@ func TestLaunchModalFlow(t *testing.T) {
 	if !m.launched {
 		t.Fatalf("enter on the button did not launch (status %q)", m.status)
 	}
-	if gotDir != filepath.Join(root, "cmd") || gotCmd != "sleep 300" || gotName != "cmd-2" {
+	if gotDir != target || gotCmd != "sleep 300" || gotName != "orchard-sidebar-2" {
 		t.Errorf("launched (%q, %q, %q)", gotDir, gotCmd, gotName)
 	}
 }
@@ -83,6 +93,7 @@ func TestLaunchModalFlow(t *testing.T) {
 // on failure looks exactly like a launch that worked.
 func TestFailedLaunchKeepsTheModalOpen(t *testing.T) {
 	stubTaken(t)
+	stubKnown(t)
 	prev := launchSession
 	launchSession = func(dir, cmd, name string) error { return os.ErrPermission }
 	t.Cleanup(func() { launchSession = prev })
@@ -103,6 +114,7 @@ func TestFailedLaunchKeepsTheModalOpen(t *testing.T) {
 // launches exactly what it showed.
 func TestTheFormShowsTheNameItWillLaunch(t *testing.T) {
 	stubTaken(t, "taken", "taken-2")
+	stubKnown(t)
 	var got string
 	prev := launchSession
 	launchSession = func(_, _, name string) error { got = name; return nil }
@@ -133,11 +145,13 @@ func TestTheFormShowsTheNameItWillLaunch(t *testing.T) {
 	}
 }
 
-// A burst of keystrokes arrives as ONE KeyRunes message. Routing on
-// msg.String() matched "cla" against nothing and the field stayed empty —
-// exactly when the user was typing fastest.
+// A burst of keystrokes arrives as ONE KeyRunes message. Routing on msg.String()
+// matched "cla" against nothing and the field stayed empty — exactly when the
+// user was typing fastest. Both the command field and the picker's query take a
+// coalesced burst whole.
 func TestFieldTakesACoalescedBurst(t *testing.T) {
 	stubTaken(t)
+	stubKnown(t)
 	m := newLaunchModel(t.TempDir(), "")
 	m.focus = focusCmd
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("claude --resume")})
@@ -146,11 +160,10 @@ func TestFieldTakesACoalescedBurst(t *testing.T) {
 	if got, want := m.cmd.value(), "claude --resume abc"; got != want {
 		t.Errorf("command = %q, want %q", got, want)
 	}
-	// and the same burst rule in the picker: three j's move three rows
+	// the same burst rule in the picker: the whole query lands, not one rune
 	m.focus = focusPick
-	m.pick.entries = []string{"..", "a", "b", "c", "d"}
-	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("jjj")})
-	if m.pick.cursor != 3 {
-		t.Errorf("cursor = %d after a 3-rune burst, want 3", m.pick.cursor)
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("orsi")})
+	if got := m.pick.search.value(); got != "orsi" {
+		t.Errorf("picker query = %q, want orsi", got)
 	}
 }

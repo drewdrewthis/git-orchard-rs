@@ -3,144 +3,118 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/reinhrst/fzf-lib/algo"
-	"github.com/reinhrst/fzf-lib/util"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// The launch modal's directory picker. Everything here is a pure function of a
-// directory listing plus the keys pressed, so the navigation rules can be
-// tested without a filesystem walk in the test.
+// The launch modal's directory picker. It is no longer a level-by-level
+// browser: a background walk (dirwalk.go) gathers every candidate directory
+// under a few roots once, and each keystroke fuzzy-searches the whole set
+// (dirsearch.go). Enter picks the highlighted match as the launch directory —
+// there is no descend/ascend, only a query. Backspace on an empty query widens
+// the roots as the escape hatch.
 
-const parentEntry = ".."
+// searchWidth is the visible width of the search field; a longer query scrolls
+// under the cursor.
+const searchWidth = 40
 
-// searchDirs hides entries and orders the rest. Hidden entries are out unless
-// asked for. Everything else is sorted case-insensitive alphabetically first
-// — so score ties keep that order — then, with a query, re-ranked by fzf's
-// real match score (best first): a contiguous or prefix match outranks a
-// scattered one, so "ocs" puts "ocs-tools" above "orchard-codex-scripts". The
-// parent entry is prepended by the caller so it is never searched away: you
-// can always go back up, whatever you have typed.
-func searchDirs(names []string, showHidden bool, query string) []string {
-	visible := make([]string, 0, len(names))
-	for _, n := range names {
-		if !showHidden && strings.HasPrefix(n, ".") {
-			continue
-		}
-		visible = append(visible, n)
-	}
-	sort.Slice(visible, func(i, j int) bool {
-		return strings.ToLower(visible[i]) < strings.ToLower(visible[j])
-	})
-	if query == "" {
-		return visible
-	}
-
-	// FuzzyMatchV2's caseSensitive=false still expects a lowercased pattern —
-	// it lowercases the haystack but not the needle, so "DOC" would otherwise
-	// match nothing.
-	pat := []rune(strings.ToLower(query))
-	type hit struct {
-		name  string
-		score int
-	}
-	hits := make([]hit, 0, len(visible))
-	for _, n := range visible {
-		chars := util.ToChars([]byte(n))
-		res, _ := algo.FuzzyMatchV2(false, true, true, &chars, pat, false, nil)
-		if res.Start >= 0 {
-			hits = append(hits, hit{n, res.Score})
-		}
-	}
-	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
-	out := make([]string, len(hits))
-	for i, h := range hits {
-		out[i] = h.name
-	}
-	return out
-}
-
-// readDirNames returns the sub-directory names of dir (symlinked directories
-// included — a worktree tree is full of them). An unreadable directory yields
-// nothing rather than an error: the picker still has ".." to escape with.
-func readDirNames(dir string) []string {
-	ents, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	out := make([]string, 0, len(ents))
-	for _, e := range ents {
-		if e.IsDir() {
-			out = append(out, e.Name())
-			continue
-		}
-		if e.Type()&os.ModeSymlink != 0 {
-			if fi, err := os.Stat(filepath.Join(dir, e.Name())); err == nil && fi.IsDir() {
-				out = append(out, e.Name())
-			}
-		}
-	}
-	return out
+// walkDoneMsg carries the finished candidate set back to the update loop, so
+// the walk runs off the main goroutine and typing stays responsive while it
+// does. gen ties the result to the walk that produced it, so a widen/toggle
+// fired while an older walk is still in flight can tell its now-stale result
+// apart from the one that matches the current roots.
+type walkDoneMsg struct {
+	gen   int
+	cands []string
 }
 
 // picker is the browsing half of the launch modal.
 type picker struct {
-	dir     string
-	all     []string // every sub-directory, unfiltered
-	entries []string // ".." plus what the search and hidden toggle leave
+	roots   []string   // walk roots; also the empty-query tail
+	recents []string   // recent launch dirs; the empty-query head
+	cands   []string   // every walked directory; nil until the walk lands
+	matches []dirMatch // the current ranked view
 	cursor  int
 	search  textField
 	hidden  bool
+	walking bool
+	walkGen int // bumped each time a new walk is kicked off; see walkDoneMsg
+	spin    spinner.Model
+	cfg     walkConfig
 }
 
-// searchWidth is the visible width of the search field; a directory name
-// longer than this scrolls under the cursor.
-const searchWidth = 40
-
-func newPicker(dir string) *picker {
-	p := &picker{dir: cleanDir(dir)}
+func newPicker(selected string, known []string) *picker {
+	roots := resolveRoots(selected, known)
+	p := &picker{
+		roots:   roots,
+		recents: existingRecents(),
+		cfg:     walkConfig{roots: roots},
+		walking: true,
+		spin:    spinner.New(spinner.WithSpinner(spinner.Dot)),
+	}
 	p.search = newTextField("", searchWidth)
 	p.search.placeholder("(type to search)")
-	p.load()
+	p.rebuild() // show recents+roots immediately, before the walk lands
 	return p
 }
 
-// cleanDir resolves dir to an absolute, existing directory, falling back to
-// $HOME and then the working directory. The picker must always have somewhere
-// to stand — a cwd that has since been deleted is a normal thing to inherit
-// from a session whose worktree was removed.
-func cleanDir(dir string) string {
-	for _, c := range []string{dir, os.Getenv("HOME")} {
-		if c == "" {
-			continue
-		}
-		abs, err := filepath.Abs(c)
-		if err != nil {
-			continue
-		}
-		if fi, err := os.Stat(abs); err == nil && fi.IsDir() {
-			return abs
-		}
-	}
-	wd, _ := os.Getwd()
-	return wd
+// walkCmd runs the filesystem walk off the update loop. The modal keeps
+// painting — the spinner, the recents — until walkDoneMsg replaces the set.
+// It captures the current generation, so a result from a walk superseded by a
+// later widen/toggle can be told apart from the one that matches p.roots now.
+func (p *picker) walkCmd() tea.Cmd {
+	cfg := p.cfg
+	gen := p.walkGen
+	return func() tea.Msg { return walkDoneMsg{gen: gen, cands: walkCandidates(cfg)} }
 }
 
-func (p *picker) load() {
-	p.all = readDirNames(p.dir)
+// setCands installs the walked set and re-derives the visible list — unless
+// gen names a walk that a later widen/toggle has since superseded, in which
+// case the stale result is dropped and p.walking is left alone so the
+// in-flight walk's spinner keeps spinning.
+func (p *picker) setCands(gen int, cands []string) {
+	if gen != p.walkGen {
+		return
+	}
+	p.cands = cands
+	p.walking = false
 	p.rebuild()
 }
 
-// rebuild recomputes the visible list and keeps the cursor in range. It is
-// called on every keystroke that changes the search, so it must be cheap: no
-// filesystem access, just the cached listing.
+// pool is the set a typed query searches: recents first (so a recent launch dir
+// is always reachable), then the walked candidates — or, while the walk is
+// still running, just the roots, so typing is never dead.
+func (p *picker) pool() []string {
+	base := p.cands
+	if base == nil {
+		base = p.roots
+	}
+	return dedupPaths(append(append([]string{}, p.recents...), base...))
+}
+
+// emptyOrder is the empty-query list: persisted recents first, then the roots.
+func emptyOrder(recents, roots []string) []string {
+	return dedupPaths(append(append([]string{}, recents...), roots...))
+}
+
+// rebuild recomputes the visible list. Cheap by design — no filesystem access,
+// only the cached candidate set — because it runs on every keystroke.
 func (p *picker) rebuild() {
-	p.entries = append([]string{parentEntry}, searchDirs(p.all, p.hidden, p.search.value())...)
-	if p.cursor >= len(p.entries) {
-		p.cursor = len(p.entries) - 1
+	if q := p.search.value(); q != "" {
+		p.matches = searchPaths(p.pool(), q)
+	} else {
+		p.matches = searchPaths(emptyOrder(p.recents, p.roots), "")
+	}
+	p.clampCursor()
+}
+
+func (p *picker) clampCursor() {
+	if p.cursor >= len(p.matches) {
+		p.cursor = len(p.matches) - 1
 	}
 	if p.cursor < 0 {
 		p.cursor = 0
@@ -149,64 +123,70 @@ func (p *picker) rebuild() {
 
 func (p *picker) move(d int) {
 	p.cursor += d
-	if p.cursor < 0 {
-		p.cursor = 0
-	}
-	if p.cursor >= len(p.entries) {
-		p.cursor = len(p.entries) - 1
-	}
+	p.clampCursor()
 }
 
-// enter descends into the highlighted entry (or climbs, on ".."). Moving
-// clears the search: it described the directory you were in, not this one.
-func (p *picker) enter() {
-	if p.cursor < 0 || p.cursor >= len(p.entries) {
-		return
+// dir is the directory a launch would use: the highlighted match, or the first
+// root when the query matched nothing.
+func (p *picker) dir() string {
+	if p.cursor >= 0 && p.cursor < len(p.matches) {
+		return p.matches[p.cursor].path
 	}
-	if p.entries[p.cursor] == parentEntry {
-		p.parent()
-		return
+	if len(p.roots) > 0 {
+		return p.roots[0]
 	}
-	p.goTo(filepath.Join(p.dir, p.entries[p.cursor]))
+	return ""
 }
 
-func (p *picker) parent() {
-	if parent := filepath.Dir(p.dir); parent != p.dir {
-		p.goTo(parent)
+// widen is the escape hatch: it adds each root's parent as a new root and
+// re-walks, so a query that reaches nothing under the current roots can search
+// a level up. It returns the re-walk command, or nil when there is nothing
+// higher to add.
+func (p *picker) widen() tea.Cmd {
+	var next []string
+	for _, r := range p.roots {
+		next = append(next, r)
+		if parent := filepath.Dir(r); parent != r {
+			next = append(next, parent)
+		}
 	}
-}
-
-func (p *picker) goTo(dir string) {
-	p.dir, p.cursor = dir, 0
-	p.search.set("")
-	p.load()
-}
-
-func (p *picker) toggleHidden() {
-	p.hidden = !p.hidden
+	next = dedupPaths(next)
+	if len(next) == len(p.roots) {
+		return nil
+	}
+	p.roots = next
+	p.cfg.roots = next
+	p.walking = true
+	p.walkGen++
 	p.rebuild()
+	return p.walkCmd()
+}
+
+// toggleHidden flips the hidden-directory filter and re-walks — hidden dirs are
+// pruned during the walk, not the search, so revealing them needs a fresh walk.
+func (p *picker) toggleHidden() tea.Cmd {
+	p.hidden = !p.hidden
+	p.cfg.showHidden = p.hidden
+	p.walking = true
+	p.walkGen++
+	return p.walkCmd()
 }
 
 // searchKey hands one key to the search field and re-derives the list. The
-// field is a textField like every other input here, so a coalesced burst of
-// keystrokes (or a paste) lands whole — reading one rune per message silently
-// swallowed most of what was typed.
+// field is a textField, so a coalesced burst or a paste lands whole.
 func (p *picker) searchKey(msg tea.KeyMsg) {
 	before := p.search.value()
 	p.search.key(msg)
 	if p.search.value() == before {
 		return
 	}
+	p.cursor = 0 // a new query re-ranks from the top
 	p.rebuild()
-	p.restCursor()
 }
 
-// searchView renders the field, placeholder included.
-func (p *picker) searchView(w int) string { return p.search.view(w) }
-
-// backspaceSearch deletes the last search character, reporting false when
-// there was nothing to delete — the caller then reads the backspace as "go up
-// a directory" instead.
+// backspaceSearch deletes the last search character, reporting false when the
+// query was already empty — the caller then reads the backspace as "widen the
+// roots" instead.
 func (p *picker) backspaceSearch() bool {
 	if p.search.value() == "" {
 		return false
@@ -215,18 +195,17 @@ func (p *picker) backspaceSearch() bool {
 	return true
 }
 
-// window returns the visible slice of entries, and top the index it starts at,
-// so a long directory scrolls under the cursor instead of overflowing.
-func (p *picker) window(n int) []string {
+func (p *picker) searchView(w int) string { return p.search.view(w) }
+
+// window returns the visible slice of matches and top the index it starts at,
+// so a long result list scrolls under the cursor instead of overflowing.
+func (p *picker) window(n int) []dirMatch {
 	if n <= 0 {
 		return nil
 	}
 	top := p.top(n)
-	end := top + n
-	if end > len(p.entries) {
-		end = len(p.entries)
-	}
-	return p.entries[top:end]
+	end := min(top+n, len(p.matches))
+	return p.matches[top:end]
 }
 
 func (p *picker) top(n int) int {
@@ -236,12 +215,56 @@ func (p *picker) top(n int) int {
 	return p.cursor - n + 1
 }
 
-// restCursor parks the cursor where the next Enter should go. With a search
-// typed, that is the first match, not ".." — typing "cmd" and pressing enter
-// has to descend into cmd/, not climb to the parent.
-func (p *picker) restCursor() {
-	p.cursor = 0
-	if p.search.value() != "" && len(p.entries) > 1 {
-		p.cursor = 1
+// abbrevHome shortens a $HOME-rooted path to "~/…" and shifts the highlight
+// spans left by the runes it collapsed, so the underline still lands on the
+// right runes. spans are rune-indexed (matchSpans reads fzf's match positions
+// as rune offsets), so the shift must be counted in runes too — path[len(home):]
+// stays a byte slice (home is confirmed a byte-exact prefix above, so a byte
+// offset is the correct way to strip it), only delta needs the rune count.
+func abbrevHome(path string, spans []span) (string, []span) {
+	home := os.Getenv("HOME")
+	if home == "" || (path != home && !strings.HasPrefix(path, home+"/")) {
+		return path, spans
 	}
+	delta := utf8.RuneCountInString(home) - 1 // the home runes become a single "~"
+	short := "~" + path[len(home):]
+	var out []span
+	for _, s := range spans {
+		st, en := s.start-delta, s.end-delta
+		if en <= 1 {
+			continue // wholly inside the collapsed prefix
+		}
+		if st < 1 {
+			st = 1 // clamp past the "~"
+		}
+		out = append(out, span{st, en})
+	}
+	return short, out
+}
+
+// renderMatch draws one path, its matched runes wearing hi and everything else
+// wearing base, clipped to width.
+func renderMatch(m dirMatch, base, hi lipgloss.Style, width int) string {
+	disp, spans := abbrevHome(m.path, m.spans)
+	if len(spans) == 0 {
+		return base.Render(trunc(disp, width))
+	}
+	r := []rune(disp)
+	var b strings.Builder
+	i := 0
+	for _, s := range spans {
+		if s.start >= len(r) {
+			break
+		}
+		end := min(s.end, len(r))
+		if s.start > i {
+			b.WriteString(base.Render(string(r[i:s.start])))
+		}
+		b.WriteString(hi.Render(string(r[s.start:end])))
+		i = end
+	}
+	if i < len(r) {
+		b.WriteString(base.Render(string(r[i:])))
+	}
+	return trunc(b.String(), width)
 }
