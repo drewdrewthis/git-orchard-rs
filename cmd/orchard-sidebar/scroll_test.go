@@ -212,8 +212,8 @@ func TestRefreshKeepsTheScrollPosition(t *testing.T) {
 // must not be mistaken for a selection change.
 func TestReSortAloneDoesNotCountAsSelecting(t *testing.T) {
 	rows := []row{
-		{session: "a", state: "idle", lastAct: time.Now().Add(-time.Hour)},
-		{session: "b", state: "idle", lastAct: time.Now().Add(-2 * time.Hour)},
+		{session: "a", state: "idle", lastAttached: time.Now().Add(-time.Hour)},
+		{session: "b", state: "idle", lastAttached: time.Now().Add(-2 * time.Hour)},
 	}
 	m := &model{rows: rows, cursor: 0, cursorSess: "a", stateDirOK: true}
 	sel := func() string {
@@ -223,9 +223,10 @@ func TestReSortAloneDoesNotCountAsSelecting(t *testing.T) {
 	if got := sel(); got != "a" {
 		t.Fatalf("the selected row is %q, want a", got)
 	}
-	// "b" becomes the most recent, so the two swap places and the cursor index
-	// follows its session from 0 to 1
-	m.rows[1].lastAct = time.Now()
+	// "b" is attached elsewhere and becomes the most recently attached, so the
+	// two swap places and the cursor index follows its session from 0 to 1 —
+	// a background re-sort, not a user gesture
+	m.rows[1].lastAttached = time.Now()
 	sortRows(m.rows)
 	m.reanchorCursor()
 	if m.cursor == 0 {

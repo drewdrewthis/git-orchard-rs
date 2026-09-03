@@ -36,7 +36,12 @@ type hookState struct {
 
 type hookDataMsg struct {
 	bySession map[string]hookState // tmux session name -> state
-	dirOK     bool
+	// order carries the tmux attach/create timestamps the list sorts on. Read
+	// here rather than off the daemon because the schema serves neither, and
+	// this lane execs tmux already (paneToSession fallback) and runs whether
+	// the daemon is up or down.
+	order map[string]sessMeta
+	dirOK bool
 	// err is a local read that failed (an unreadable state dir). It changes
 	// nothing on screen — the "no state dir" footer line already covers the
 	// user-visible half — but it is logged rather than dropped, so a broken
@@ -65,8 +70,11 @@ func fetchHooksWith(p2s map[string]string) tea.Cmd {
 
 func fetchHooksUsing(p2s map[string]string) tea.Msg {
 	files, err := filepath.Glob(stateDirPath() + "/*.json")
+	// the tmux ordering keys the list sorts on, fetched whether or not any
+	// state file exists: daemon-derived rows need an order too
+	order := sessionOrder()
 	if err != nil || files == nil {
-		return hookDataMsg{dirOK: err == nil && dirExists(stateDirPath()), err: err}
+		return hookDataMsg{order: order, dirOK: err == nil && dirExists(stateDirPath()), err: err}
 	}
 	if len(p2s) == 0 {
 		p2s = paneToSession()
@@ -91,7 +99,7 @@ func fetchHooksUsing(p2s map[string]string) tea.Msg {
 			by[sess] = hookState{state: s.State, lastAct: t, mission: promptOf(s), cwd: s.Cwd}
 		}
 	}
-	return hookDataMsg{bySession: by, dirOK: true}
+	return hookDataMsg{bySession: by, order: order, dirOK: true}
 }
 
 // promptOf is what the card quotes: the latest thing you asked, which the

@@ -126,10 +126,25 @@ func (m *model) join() {
 func (m *model) rebuild() {
 	m.applyHooks()
 	m.appendFakes()
+	m.applyOrder()
 	sortRows(m.rows)
 	m.join()
 	m.reanchorCursor()
 	m.bellCheck()
+}
+
+// applyOrder stamps each row with its tmux ordering keys from the sessMeta
+// cache, so sortRows can place the list by attach recency. A row tmux has no
+// entry for (a synthetic fake, or a session seen by a lane before the sessions
+// refresh caught up) keeps whatever keys it already carries — the fakes their
+// synthetic timestamps, everyone else zero, which sortRows handles.
+func (m *model) applyOrder() {
+	for i := range m.rows {
+		if meta, ok := m.sessMeta[m.rows[i].session]; ok {
+			m.rows[i].lastAttached = meta.lastAttached
+			m.rows[i].created = meta.created
+		}
+	}
 }
 
 // applyHooks overlays state-dir truth on the daemon-derived rows (hook lane

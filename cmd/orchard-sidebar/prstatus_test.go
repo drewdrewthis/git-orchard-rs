@@ -50,10 +50,10 @@ func TestPRStatus(t *testing.T) {
 	}
 }
 
-// The sidebar shows three sections, not one per state: the user asked for
-// "needs attention vs done", with working and idle folded together because the
-// spinner already says which is which. Pin both the mapping and the labels —
-// this is the whole information architecture of the pane.
+// rowBucket collapses five states to three classes for the state-dot colour
+// and the Needs-attention badge (not the list order, which is last-attached):
+// working and idle fold together because the spinner already says which is
+// which, and only input/stalled count as "needs attention".
 func TestRowBucketMapping(t *testing.T) {
 	cases := []struct {
 		name string
@@ -75,15 +75,5 @@ func TestRowBucketMapping(t *testing.T) {
 				t.Errorf("rowBucket(%+v) = %v, want %v", c.r, got, c.want)
 			}
 		})
-	}
-	want := map[bucket]string{
-		bucketAttention: "Needs attention",
-		bucketDone:      "Done",
-		bucketRunning:   "Sessions",
-	}
-	for b, w := range want {
-		if got := groupLabel(b); got != w {
-			t.Errorf("groupLabel(%v) = %q, want %q", b, got, w)
-		}
 	}
 }

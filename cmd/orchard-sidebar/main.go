@@ -89,6 +89,9 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		}
 		m.hooksBySess = msg.bySession
 		m.stateDirOK = msg.dirOK
+		if msg.order != nil {
+			m.sessMeta = msg.order
+		}
 		m.rebuild()
 		return nil
 	case tmuxSubMsg:

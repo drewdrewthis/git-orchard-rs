@@ -26,20 +26,23 @@ func TestPromptOfPrefersLatest(t *testing.T) {
 	}
 }
 
-// Within a section, most recent activity first: the thing you touched last is
-// the thing you are coming back to. A row with no activity timestamp sorts
-// last, where it can't displace a settled card.
-func TestSortIsMostRecentActivityFirstWithinBucket(t *testing.T) {
+// One flat list ordered by attach recency: most recently attached first, so a
+// card moves only when you attach it — never because its state ticked. Sessions
+// never attached fall below every attached one and order among themselves by
+// creation time (newest first), then name, so the order is total and stable.
+func TestSortIsMostRecentlyAttachedFirst(t *testing.T) {
 	now := time.Now()
 	rows := []row{
-		{session: "unknown", state: "idle", hooked: true},
-		{session: "stale", state: "idle", hooked: true, lastAct: now.Add(-time.Hour)},
-		{session: "asking", state: "input", hooked: true, lastAct: now.Add(-time.Hour)},
-		{session: "fresh", state: "idle", hooked: true, lastAct: now.Add(-time.Minute)},
-		{session: "busy", state: "working", hooked: true, lastAct: now},
+		{session: "never-old", state: "working", created: now.Add(-2 * time.Hour)},
+		{session: "old", state: "idle", lastAttached: now.Add(-time.Hour)},
+		{session: "never-new", state: "input", created: now.Add(-time.Minute)},
+		{session: "fresh", state: "working", lastAttached: now.Add(-time.Minute)},
+		{session: "newest", state: "idle", lastAttached: now},
 	}
 	sortRows(rows)
-	want := []string{"asking", "fresh", "stale", "unknown", "busy"}
+	// attached (by last_attached desc) before never-attached (by created desc);
+	// state is irrelevant to position
+	want := []string{"newest", "fresh", "old", "never-new", "never-old"}
 	got := make([]string, len(rows))
 	for i := range rows {
 		got[i] = rows[i].session
@@ -47,6 +50,20 @@ func TestSortIsMostRecentActivityFirstWithinBucket(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("order = %v, want %v", got, want)
+		}
+	}
+}
+
+// The last tie-break is the session name, so two sessions with identical
+// timestamps (or none at all) still have one fixed order rather than shimmering
+// between paints.
+func TestSortTieBreaksByName(t *testing.T) {
+	rows := []row{{session: "charlie"}, {session: "alpha"}, {session: "bravo"}}
+	sortRows(rows)
+	want := []string{"alpha", "bravo", "charlie"}
+	for i := range want {
+		if rows[i].session != want[i] {
+			t.Fatalf("order = %v, want %v", rows, want)
 		}
 	}
 }

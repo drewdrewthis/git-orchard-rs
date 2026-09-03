@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -141,6 +142,39 @@ func TestEnvProblemShowsInTheHeader(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 42, Height: 30})
 	if !strings.Contains(ansi.Strip(m.View()), "ORCHARD_TMUX_CLIENT") {
 		t.Errorf("the header does not name the broken environment:\n%s", ansi.Strip(m.View()))
+	}
+}
+
+// The list is ordered by these two timestamps, so the parser has to survive
+// the field tmux most often leaves blank: a session nobody has attached yet
+// reports an EMPTY last_attached, so its line starts with the tab delimiter.
+// Trimming the blob first ate that empty field and dropped the whole line to
+// two columns, which sank every idle session below the synthetic rows.
+func TestParseSessionOrder(t *testing.T) {
+	out := "" +
+		"1700000000\t1699990000\tattached-one\n" + // both fields present
+		"\t1699995000\tnever-attached\n" + // EMPTY last_attached: leading tab
+		"0\t1699980000\treported-zero\n" + // tmux's literal "0" is also never
+		"1700001000\t1699970000\tname with spaces\n" // name may contain spaces
+	m := parseSessionOrder([]byte(out))
+
+	if len(m) != 4 {
+		t.Fatalf("parsed %d sessions, want 4: %v", len(m), m)
+	}
+	if got := m["never-attached"]; got.lastAttached != (time.Time{}) || got.created != time.Unix(1699995000, 0) {
+		t.Errorf("never-attached = %+v, want zero last_attached and a real created", got)
+	}
+	if got := m["reported-zero"]; !got.lastAttached.IsZero() {
+		t.Errorf("a literal \"0\" last_attached is still never-attached, got %v", got.lastAttached)
+	}
+	if got := m["attached-one"]; got.lastAttached != time.Unix(1700000000, 0) {
+		t.Errorf("attached-one last_attached = %v", got.lastAttached)
+	}
+	if _, ok := m["name with spaces"]; !ok {
+		t.Error("a session name with spaces was dropped; the name must be the whole third field")
+	}
+	if len(parseSessionOrder(nil)) != 0 {
+		t.Error("empty output should parse to an empty map, not a nil-deref")
 	}
 }
 

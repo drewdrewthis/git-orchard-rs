@@ -19,13 +19,18 @@ func TestSelectRowSwitchesSession(t *testing.T) {
 
 	m := &model{rows: []row{{session: "a"}, {session: "b"}, {session: "c"}}}
 	m.selectRow(1, true)
-	if m.cursor != 1 || m.cursorSess != "b" {
-		t.Fatalf("cursor = %d/%q, want 1/\"b\"", m.cursor, m.cursorSess)
+	// a deliberate select attaches "b", which makes it the most recently
+	// attached session and so the top card; the cursor follows it there
+	if m.cursorSess != "b" {
+		t.Fatalf("cursorSess = %q, want b", m.cursorSess)
+	}
+	if m.cursor != 0 || m.rows[0].session != "b" {
+		t.Fatalf("selected session did not rise to the top: cursor=%d, top=%q", m.cursor, m.rows[0].session)
 	}
 	m.selectRow(-1, true) // off the top: no move, no switch
 	m.selectRow(3, true)  // off the bottom: same
-	if m.cursor != 1 {
-		t.Errorf("out-of-range select moved cursor to %d", m.cursor)
+	if m.cursorSess != "b" {
+		t.Errorf("out-of-range select changed the selection to %q", m.cursorSess)
 	}
 	if want := []string{"b"}; len(got) != 1 || got[0] != want[0] {
 		t.Errorf("switched to %v, want %v", got, want)

@@ -2,16 +2,16 @@ package main
 
 import "fmt"
 
-// The scrolling middle band: one section header per bucket, then a card per
-// session. Split from view.go because this is the only band whose height is
-// data-driven — the header and footer are fixed furniture, and keeping the two
-// apart is what makes "only the middle band moves" checkable.
+// The scrolling middle band: one card per session, in one flat list ordered by
+// attach recency (sortRows). Split from view.go because this is the only band
+// whose height is data-driven — the header and footer are fixed furniture, and
+// keeping the two apart is what makes "only the middle band moves" checkable.
 
 // A card is always exactly this tall, whatever the session has to say: a
 // missing mission or directory pads with a blank line instead of shortening
 // the card. Uniform cards are what make the list scannable and scrolling
 // predictable — line count is a function of the row count, not of how much
-// metadata happened to land. Section headers sit outside the budget.
+// metadata happened to land.
 const cardRows = 4
 
 // compactCardRows is the same card in a pane too narrow for the detail lines.
@@ -21,8 +21,9 @@ const compactCardRows = 2
 // margin rule beside the card rather than a second column of content.
 const selBar = "▌"
 
-// cards renders the scrolling band: one section header per bucket, then a card
-// per session the filter keeps. It walks visibleRows rather than m.rows, but
+// cards renders the scrolling band: one card per session the filter keeps, in
+// one flat run (no section headers — the list is ordered by attach recency, so
+// there are no sections to head). It walks visibleRows rather than m.rows, but
 // every line it emits still carries the row's index IN THE MODEL — a click map
 // built off screen positions would select a different session with a filter on
 // than without one.
@@ -45,29 +46,8 @@ func (m *model) cards(w int, compact bool) []viewLine {
 	// the gutter bar marks the cursor row — it moves the instant you press j/k
 	// rather than waiting for the next daemon poll to report the new attach.
 	sel := m.railIndex(vis)
-	cur, hasCur := m.rowAt(sel)
-	curBucket := bucketRunning
-	if hasCur {
-		curBucket = rowBucket(cur)
-	}
-
-	first := true
-	prev := bucketRunning
 	for n, i := range vis {
 		r := m.rows[i]
-		if b := rowBucket(r); first || b != prev {
-			if !first {
-				out = append(out, viewLine{text: "", row: -1}) // gap before the next header
-			}
-			// the selected card's own section title lights up with it
-			headSty := styDim
-			if hasCur && curBucket == b {
-				headSty = stySelHead
-			}
-			// right-aligned, opposite the cards' left border rail
-			out = append(out, viewLine{text: " " + headSty.Render(line(iw, "", groupLabel(b))), row: -1})
-			prev, first = b, false
-		}
 		// only the attached session gets a border — a half-width neon bar down
 		// every line of the card. Other cards render a plain space in that
 		// column so the layout doesn't shift on selection.

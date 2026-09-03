@@ -62,7 +62,11 @@ func fakeRows(n int) []row {
 			// old enough that a real session touched in the last few minutes
 			// always sorts above the synthetic ones, spread out enough that
 			// the age column varies down the list
-			lastAct:  time.Now().Add(-time.Duration(i*7+11) * time.Minute),
+			lastAct: time.Now().Add(-time.Duration(i*7+11) * time.Minute),
+			// synthetic ordering keys: never attached (fakes can't be), so the
+			// list places them by created — index-decreasing, so fake-01 leads
+			// and the order down the list is deterministic for the scroll tests
+			created:  time.Now().Add(-time.Duration(i*7+11) * time.Minute),
 			attached: false,
 		}
 		if i%3 == 0 {

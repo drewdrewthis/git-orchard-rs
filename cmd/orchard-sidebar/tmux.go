@@ -43,6 +43,67 @@ func paneToSession() map[string]string {
 	return m
 }
 
+// sessMeta is a session's ordering keys, read straight from tmux — the daemon
+// snapshot carries neither. last_attached is what the list sorts on; created
+// breaks ties and orders sessions that have never been attached.
+type sessMeta struct {
+	lastAttached time.Time
+	created      time.Time
+}
+
+// sessionOrder reads last_attached and created for every session on the INNER
+// server. Client-side tmux exec, same daemon-owns-state exception as
+// paneToSession/switchClient (orchardist#726): the schema serves attach and
+// the pane map but not these two timestamps, and the sidebar orders the whole
+// list by them. The name goes LAST because a session name may contain the tab
+// the other two fields are delimited by.
+func sessionOrder() map[string]sessMeta {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := env.innerCmdContext(ctx, "list-sessions", "-F",
+		sessionOrderFormat).Output()
+	if err != nil {
+		return map[string]sessMeta{}
+	}
+	return parseSessionOrder(out)
+}
+
+// sessionOrderFormat is the tmux -F string sessionOrder reads back; a const so
+// the parser's test drives the exact field order the exec produces.
+const sessionOrderFormat = "#{session_last_attached}\t#{session_created}\t#{session_name}"
+
+// parseSessionOrder folds `list-sessions` output into the ordering map. Split
+// on newline WITHOUT trimming the whole blob first: a never-attached session
+// reports an EMPTY last_attached, so its line begins with the tab delimiter —
+// a leading TrimSpace would eat that empty first field and collapse the line to
+// two columns, which silently dropped every idle session's created time and
+// sank it below the fakes.
+func parseSessionOrder(out []byte) map[string]sessMeta {
+	m := map[string]sessMeta{}
+	for _, ln := range strings.Split(string(out), "\n") {
+		if ln == "" {
+			continue
+		}
+		f := strings.SplitN(ln, "\t", 3)
+		if len(f) < 3 {
+			continue
+		}
+		m[f[2]] = sessMeta{lastAttached: epochTime(f[0]), created: epochTime(f[1])}
+	}
+	return m
+}
+
+// epochTime parses a tmux #{session_*} unix-epoch field. An empty or unparsable
+// value (a session tmux has never recorded attaching to reports "0") becomes
+// the zero time, which sortRows treats as never-attached.
+func epochTime(s string) time.Time {
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || n <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(n, 0)
+}
+
 // resizePane, setWidthOption, setCollapsed and handBackFocus are vars so tests
 // can observe the width and focus traffic without a live tmux. Same
 // client-side-exec exception as switchClient.

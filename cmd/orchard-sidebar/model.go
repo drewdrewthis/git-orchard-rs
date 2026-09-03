@@ -16,6 +16,11 @@ type row struct {
 	mission  string
 	lastAct  time.Time
 	cwd      string
+	// ordering keys, read from tmux (session_last_attached / session_created).
+	// The list is ordered by these, not by activity: a session moves only when
+	// you attach it, never because Claude ticked from working to idle.
+	lastAttached time.Time
+	created      time.Time
 	// slow-lane join, may be zero-valued until the first slow fetch lands
 	branch     string
 	repo       string
@@ -27,8 +32,10 @@ type row struct {
 	issueTitle string
 }
 
-// The sidebar answers one question — what needs me? — so rows fall into three
-// sections, not five states:
+// The state a session is in, collapsed to three classes. This drives the state
+// DOT colour and the Needs-attention badge/bell — NOT the list order, which is
+// last-attached (sortRows). The list is one flat run; a session's class only
+// tints its dot and, for bucketAttention, counts toward the header badge.
 //
 //	bucketAttention  a human has to do something: Claude asked a question, is
 //	                 waiting on a permission prompt (state "input"), or the
@@ -37,12 +44,8 @@ type row struct {
 //	                 "idle", the state file said so (hooked), and you are not
 //	                 attached to it. Attached-and-idle is not "done" — you are
 //	                 looking at it right now.
-//	bucketRunning    everything else: working sessions (the spinner already
-//	                 says they're busy, so they need no section of their own),
-//	                 attached idle ones, plain shells, and any session whose
-//	                 state we only inferred.
-//
-// Nothing outside this function decides which section a row lands in.
+//	bucketRunning    everything else: working sessions, attached idle ones,
+//	                 plain shells, and any session whose state we only inferred.
 type bucket int
 
 const (
@@ -64,13 +67,18 @@ func rowBucket(r row) bucket {
 }
 
 type model struct {
-	rows           []row
-	fakes          []row // synthetic rows, resolved once at startup (fake.go)
-	wtBySession    map[string]wtInfo
-	repoBySess     map[string]string
-	wtByPath       map[string]wtInfo // cwd fallback: worktree path -> info
-	repoByPath     map[string]string
-	hooksBySess    map[string]hookState
+	rows        []row
+	fakes       []row // synthetic rows, resolved once at startup (fake.go)
+	wtBySession map[string]wtInfo
+	repoBySess  map[string]string
+	wtByPath    map[string]wtInfo // cwd fallback: worktree path -> info
+	repoByPath  map[string]string
+	hooksBySess map[string]hookState
+	// sessMeta holds the tmux ordering keys per session (last_attached,
+	// created), refreshed by the sessions lane and read by applyOrder. Cached
+	// on the model so a lane that carries no fresh copy (a transient failure)
+	// keeps the last good order instead of collapsing it.
+	sessMeta       map[string]sessMeta
 	paneToSess     map[string]string // daemon-served pane id -> session
 	frame          int               // animation frame, advanced by animTickMsg
 	stateDirOK     bool
@@ -165,23 +173,25 @@ type animTickMsg struct{}
 
 type clientTickMsg struct{}
 
-// sortRows: section first, then most recent activity within the section, then
-// name. The section jump is the only movement a user should ever see — a card
-// changing state — so activity is the tie-break the eye can follow: within a
-// section the thing you touched last is the thing you are coming back to.
-// A session with no activity timestamp sorts last rather than first, so an
-// unknown can't displace a settled card.
+// sortRows orders the one flat list by tmux attach recency: most recently
+// attached first, so the session you are looking at sits at the top and a card
+// moves ONLY when you attach it — never because its state ticked from working
+// to idle under a background poll (the churn the user asked us to stop).
+// Never-attached sessions fall below every attached one and order among
+// themselves by creation time (newest first), then name, so the order is total
+// and stable — a session with no activity of any kind still has a fixed slot.
 func sortRows(rows []row) {
 	sort.SliceStable(rows, func(i, j int) bool {
-		if a, b := rowBucket(rows[i]), rowBucket(rows[j]); a != b {
-			return a < b
+		ai, aj := rows[i].lastAttached, rows[j].lastAttached
+		if ai.IsZero() != aj.IsZero() {
+			return aj.IsZero() // attached-at-some-point sorts before never-attached
 		}
-		li, lj := rows[i].lastAct, rows[j].lastAct
-		if li.IsZero() != lj.IsZero() {
-			return lj.IsZero()
+		if !ai.Equal(aj) {
+			return ai.After(aj) // most recently attached first
 		}
-		if !li.Equal(lj) {
-			return li.After(lj)
+		ci, cj := rows[i].created, rows[j].created
+		if !ci.Equal(cj) {
+			return ci.After(cj) // newer session first among ties / never-attached
 		}
 		return rows[i].session < rows[j].session
 	})

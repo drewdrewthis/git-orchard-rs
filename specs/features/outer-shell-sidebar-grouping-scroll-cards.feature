@@ -1,37 +1,42 @@
-# orchardist#747 · PR #748 — outer tmux wrapper: sidebar grouping, scroll, card shape
-Feature: outer shell sidebar grouping, scrolling, and card shape
+# orchardist#747 · PR #748 — outer tmux wrapper: sidebar ordering, scroll, card shape
+Feature: outer shell sidebar last-attached ordering, scrolling, and card shape
   As an orchard user scanning many sessions in the sidebar
-  I want sessions grouped by what needs me, at a constant card height, with a stable scroll
-  So that the list answers "what needs me?" at a glance and never jumps under me
+  I want one flat list ordered by which session I last attached to, at a constant
+    card height, with a stable scroll
+  So that the list stays put as sessions work — moving a card only when I attach it —
+    and never reshuffles under me on background activity
 
   Background:
-    Given the sidebar is showing sessions across three sections: "Needs attention", "Sessions", "Done"
+    Given the sidebar is showing sessions as one flat list, ordered by attach recency
 
   @unit
-  Scenario: A blocked session sorts into Needs attention
+  Scenario: Sessions are ordered by attach recency, not activity
+    Given several sessions with different tmux last-attached times
+    When the sidebar orders the list
+    Then the most recently attached session is first
+    And a session's position does not change when its state ticks from working to idle
+
+  @unit
+  Scenario: A never-attached session sorts below every attached one
+    Given one session that has been attached and two that never have
+    When the sidebar orders the list
+    Then the attached session sorts above both never-attached ones
+    And the two never-attached sessions order by creation time, newest first, then by name
+
+  @unit
+  Scenario: State drives the dot colour and the attention badge, not the position
     Given a session whose state is "input" or "stalled"
-    When the sidebar groups rows
-    Then the session appears under "Needs attention"
+    When the sidebar renders it
+    Then its state dot is amber and it counts toward the header's Needs-attention badge
+    But its position in the list is decided by attach recency alone
 
-  @unit
-  Scenario: An idle unattached session sorts into Done
-    Given a session whose state is "idle", hooked, and has no attached client
-    When the sidebar groups rows
-    Then the session appears under "Done"
-
-  @unit
-  Scenario: An attached idle session does not sort into Done
-    Given a session whose state is "idle" but a client is attached to it
-    When the sidebar groups rows
-    Then the session appears under "Sessions", not "Done"
-
-  @unit
-  Scenario: Rows within a section sort by most recent activity first
-    Given three sessions in "Sessions" with different last-activity timestamps
-    And one session with no activity timestamp
-    When the sidebar renders the section
-    Then rows are ordered most-recent-first
-    And the row with no timestamp sorts last
+  @e2e
+  Scenario: Clicking a card attaches it and moves it to the top
+    Given a card sits partway down the visible list and is not the selection
+    When I click that card
+    Then that session is attached and becomes the selection
+    And it moves to the top of the list as the most recently attached
+    And the viewport follows it to the top rather than jumping elsewhere
 
   @unit
   Scenario: Every card renders at a fixed height
@@ -60,11 +65,11 @@ Feature: outer shell sidebar grouping, scrolling, and card shape
     Then the viewport scrolls down by exactly one card's height
 
   @unit
-  Scenario: A click never moves the viewport
-    Given a card is partially clipped at the bottom edge of the viewport but still clickable
+  Scenario: Clicking a non-attachable synthetic card does not move the list
+    Given a synthetic (ORCHARD_SIDEBAR_FAKE) card is clickable in the viewport
     When I click that card
     Then the card is selected
-    And the viewport does not move
+    And the list order is unchanged, because a card that cannot attach cannot become the most recently attached
 
   @unit
   Scenario: Selection is compared by session identity, not cursor index
@@ -83,8 +88,8 @@ Feature: outer shell sidebar grouping, scrolling, and card shape
   @unit
   Scenario: A new row arriving above the anchor is visible when scrolled to the top
     Given the viewport is scrolled to offset 0
-    When a new "Needs attention" session and its section header arrive above the anchored card
-    Then the new session and its header are visible without further scrolling
+    When a session just attached elsewhere sorts to the top above the anchored card
+    Then the newly-arrived session is visible without further scrolling
 
   @unit
   Scenario: The git footer box always renders 4 body rows

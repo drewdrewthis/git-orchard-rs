@@ -1,6 +1,10 @@
 package main
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
 
 // Selection and viewport: which row is selected, and which part of the list
 // is on screen. The two are deliberately separate — selection attaches a tmux
@@ -31,7 +35,34 @@ func (m *model) selectRow(i int, handBack bool) {
 		// alt-screen pane) for a row that exists only to be scrolled past
 		return
 	}
+	if handBack {
+		// A deliberate choice (click/Enter) attaches this session, which makes
+		// it the most-recently-attached one — so it belongs at the top now.
+		// Promote it here rather than waiting for the sessions refresh to read
+		// tmux's own last_attached back (~2s): the reorder lands in the same
+		// frame as the snap, so the card moves up and the viewport follows it
+		// there in one motion. j/k (handBack=false) does NOT promote — browsing
+		// must not reshuffle the list under the person walking it.
+		m.promote(r.session)
+	}
 	switchClient(r.session, handBack)
+}
+
+// promote marks a session as attached-now and re-sorts so it rises to the top
+// immediately, keeping the cursor on it. The sessMeta bump is reconciled by
+// the next sessions refresh, which reads tmux's own last_attached (also ~now
+// after the switch-client) — so the optimistic value and the authoritative one
+// agree and the card stays put rather than snapping back.
+func (m *model) promote(session string) {
+	if m.sessMeta == nil {
+		m.sessMeta = map[string]sessMeta{}
+	}
+	meta := m.sessMeta[session]
+	meta.lastAttached = time.Now()
+	m.sessMeta[session] = meta
+	m.applyOrder()
+	sortRows(m.rows)
+	m.reanchorCursor()
 }
 
 // scrollBy moves the viewport without touching the cursor. Selection is an

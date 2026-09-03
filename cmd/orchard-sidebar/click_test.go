@@ -59,11 +59,11 @@ func clickLine(t *testing.T, m *model) (y, row int) {
 	return -1, -1
 }
 
-// The live complaint: "clicking something shouldn't reset the position of
-// everything." A click can only land on a card that is already drawn, so it
-// selects and does nothing else — the viewport does not move by a single line,
-// and the rendered list is byte-identical apart from the selection rail (which
-// is what lets bubbletea diff the frame instead of repainting the pane).
+// A click on a NON-attachable (synthetic) card selects it and does nothing
+// else: it cannot attach, so it cannot become the most-recently-attached card,
+// so the list order is untouched — the viewport does not move by a single line
+// and the rendered list is byte-identical apart from the selection rail. (A
+// click on a REAL session promotes it to the top; see the test below.)
 func TestClickSelectsWithoutMovingTheViewport(t *testing.T) {
 	prev := switchClient
 	switchClient = func(string, bool) {}
@@ -117,6 +117,50 @@ func TestClickSelectsWithoutMovingTheViewport(t *testing.T) {
 		t.Errorf("the post-click refresh lost the selection: cursor is on %q, want %q",
 			m.rows[m.cursor].session, m.cursorSess)
 	}
+}
+
+// The one movement the user asked for: clicking a real session attaches it,
+// which makes it the most recently attached card, so it rises to the TOP of the
+// last-attached list — and the viewport follows it there rather than jumping
+// anywhere else. This is the click → attach → re-sort sequence the whole change
+// exists to make legible: the clicked card ends up at the top, on screen, still
+// selected, and nothing reorders except through the attach the click performed.
+func TestClickPromotesRealSessionToTheTop(t *testing.T) {
+	prev := switchClient
+	switchClient = func(string, bool) {}
+	t.Cleanup(func() { switchClient = prev })
+
+	m := &model{stateDirOK: true, rows: rowsForHeight(30)}
+	m.cursorSess = m.rows[0].session // parked on the top card
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 42, Height: 30})
+	m = mm.(*model)
+	for i := 0; i < 6; i++ { // scroll the top of the list off screen
+		mm, _ = m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+		m = mm.(*model)
+	}
+	viewOf(m)
+	if m.scroll == 0 {
+		t.Fatal("setup did not scroll")
+	}
+
+	y, want := clickLine(t, m) // a visible mid-list card, not the selection
+	wantSess := m.rows[want].session
+	mm, _ = m.Update(tea.MouseMsg{X: 5, Y: y,
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = mm.(*model)
+	viewOf(m)
+
+	if m.cursorSess != wantSess {
+		t.Fatalf("the click selected %q, want the clicked session %q", m.cursorSess, wantSess)
+	}
+	if m.rows[0].session != wantSess || m.cursor != 0 {
+		t.Errorf("the clicked card did not rise to the top: top=%q cursor=%d",
+			m.rows[0].session, m.cursor)
+	}
+	if got := topCard(m); got != wantSess {
+		t.Errorf("the viewport did not follow the promoted card: top visible is %q, want %q", got, wantSess)
+	}
+	assertCursorVisible(t, m, "click-promote")
 }
 
 // The other half of the rule, so "a click never scrolls" cannot decay into
@@ -257,13 +301,13 @@ func TestHintLineNamesTheInvisibleKeys(t *testing.T) {
 // A row arriving ABOVE the viewport while the user is parked at the top of the
 // list has to appear there. Anchoring to the card that was on top pushed the
 // viewport down by the new card's height to keep the old one pinned, which hid
-// every newly-arrived "Needs attention" session — and its section header —
-// from anyone sitting at the top, which is where the sidebar is normally left.
+// every newly-arrived session from anyone sitting at the top, which is where
+// the sidebar is normally left.
 func TestANewTopRowAppearsWhenParkedAtTheTop(t *testing.T) {
 	m := &model{
 		rows: []row{
-			{session: "old-attn", state: "input", hooked: true, lastAct: time.Now().Add(-time.Hour)},
-			{session: "quiet", state: "shell", lastAct: time.Now().Add(-2 * time.Hour)},
+			{session: "old-attn", state: "input", hooked: true, lastAttached: time.Now().Add(-time.Hour)},
+			{session: "quiet", state: "shell"},
 		},
 		stateDirOK: true, width: 42, height: 30,
 	}
@@ -273,8 +317,9 @@ func TestANewTopRowAppearsWhenParkedAtTheTop(t *testing.T) {
 		t.Fatalf("setup: offset %d, top %q", m.scroll, topCard(m))
 	}
 
-	// a session needs a human, and sorts above everything already there
-	m.rows = append(m.rows, row{session: "brand-new", state: "input", hooked: true, lastAct: time.Now()})
+	// a session was just attached elsewhere, and so sorts above everything
+	// already there
+	m.rows = append(m.rows, row{session: "brand-new", state: "input", hooked: true, lastAttached: time.Now()})
 	sortRows(m.rows)
 	m.reanchorCursor()
 	view := viewOf(m)
@@ -285,7 +330,7 @@ func TestANewTopRowAppearsWhenParkedAtTheTop(t *testing.T) {
 	if got := topCard(m); got != "brand-new" {
 		t.Errorf("top card is %q, want the row that just arrived", got)
 	}
-	if !strings.Contains(ansi.Strip(view), "Needs attention") {
-		t.Errorf("the section header was pushed off the top:\n%s", ansi.Strip(view))
+	if !strings.Contains(ansi.Strip(view), "brand-new") {
+		t.Errorf("the newly-arrived card is not on screen:\n%s", ansi.Strip(view))
 	}
 }

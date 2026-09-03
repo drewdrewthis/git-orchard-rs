@@ -6,23 +6,9 @@ import (
 	"strings"
 )
 
-// The words the pane puts on screen for one row: section titles, the model
-// family, the branch line, the issue/PR references and the card's right-hand
-// tag. One home, because the card, the git box and the section header must
-// spell the same fact the same way.
-
-// groupLabel is the section header shown once above each run of same-bucket
-// rows (rows are already sorted by bucket, so runs are contiguous).
-func groupLabel(b bucket) string {
-	switch b {
-	case bucketAttention:
-		return "Needs attention"
-	case bucketDone:
-		return "Done"
-	default:
-		return "Sessions"
-	}
-}
+// The words the pane puts on screen for one row: the model family, the branch
+// line, the issue/PR references and the card's right-hand tag. One home,
+// because the card and the git box must spell the same fact the same way.
 
 // shortModel compresses "claude-opus-4-6" style ids to their family name.
 func shortModel(id string) string {
