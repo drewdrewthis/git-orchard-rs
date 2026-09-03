@@ -289,8 +289,7 @@ fn dispatcher_version_matches_orchard_tui_crate_version() {
     // together. If they drift, `orchard --version` disagrees with
     // `orchard-tui --version` and the release tag — this test fails CI
     // before that ships.
-    let orchard_cargo_toml =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../orchard/Cargo.toml");
+    let orchard_cargo_toml = Path::new(env!("CARGO_MANIFEST_DIR")).join("../orchard/Cargo.toml");
     let content = fs::read_to_string(&orchard_cargo_toml)
         .unwrap_or_else(|e| panic!("read {}: {e}", orchard_cargo_toml.display()));
     let orchard_version = extract_package_version(&content);
