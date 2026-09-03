@@ -57,10 +57,15 @@ func (m *model) applyUpdateCheck(msg updateCheckMsg) {
 }
 
 // updateAvailable reports whether the cached check names a release newer
-// than this binary. version is "dev" outside a release build; canonical()
-// in release/semver.go treats any non-semver string, "dev" included, as
-// always older than a real version, so a dev build always shows available.
+// than this binary. A dev build has no semver to compare (version is
+// release.DevVersion), so it is never "upgradable" — release/semver.go would
+// otherwise treat that non-semver string as older than any real version and
+// show a phantom upgrade (#789). The header still labels dev builds, via
+// updateHint's build-ident branch, just without this click-to-upgrade path.
 func (m *model) updateAvailable() bool {
+	if isDevBuild() {
+		return false
+	}
 	return release.IsNewer(m.updateCheck.Latest, version)
 }
 

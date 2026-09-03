@@ -32,6 +32,15 @@ func Compare(a, b string) int {
 // IsNewer reports whether latest is strictly newer than current.
 func IsNewer(latest, current string) bool { return Compare(latest, current) > 0 }
 
+// IsSemver reports whether v is a real release stamp — the one rule callers
+// need instead of hand-rolling their own check against the literal "dev" or
+// against a git-describe string with no version core, like "abc1234-dirty",
+// neither of which is semver even though both look version-shaped. Note that
+// "v1.2.3-<anything>" IS valid semver (a prerelease identifier), so a
+// git-describe stamp built off a tag (e.g. "v1.2.3-3-gabc1234-dirty") will
+// pass this check.
+func IsSemver(v string) bool { return canonical(v) != "" }
+
 // canonical normalises a version for comparison, returning "" when the string
 // is not a semver at all.
 func canonical(v string) string {

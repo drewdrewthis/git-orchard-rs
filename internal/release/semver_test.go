@@ -52,6 +52,24 @@ func TestCompare_GarbageSortsLikeDev(t *testing.T) {
 	}
 }
 
+func TestIsSemver(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"1.2.3", true},
+		{"v1.2.3", true},
+		{"dev", false},
+		{"abc1234-dirty", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := release.IsSemver(c.v); got != c.want {
+			t.Errorf("IsSemver(%q) = %v; want %v", c.v, got, c.want)
+		}
+	}
+}
+
 func TestIsNewer_EqualIsNotNewer(t *testing.T) {
 	if release.IsNewer("1.2.3", "1.2.3") {
 		t.Error("IsNewer on equal versions = true; an up-to-date install must report no update")
