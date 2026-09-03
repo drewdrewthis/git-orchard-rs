@@ -4,8 +4,10 @@ package hostservice
 
 // defaultServicesPerOS is the macOS default watchlist.
 //
-// `com.gitorchard.orchard` matches `scripts/init/com.gitorchard.orchard.plist`
-// — the daemon's own launchd unit. The `com.orchard.*` Labels match the
+// `com.gitorchard.orchard` is the Label in
+// `scripts/init/com.gitorchard.orchard.plist.template`, rendered and installed
+// by `scripts/init/launchd-install.sh` — the daemon's own launchd unit. The
+// `com.orchard.*` Labels match the
 // orchardist tooling installed by `~/.claude/orchardist/scripts/orchardist`
 // (see ~/.claude/orchardist/references/per-machine-startup.md). The list
 // is intentionally narrow so a fresh install reports `state: active` for

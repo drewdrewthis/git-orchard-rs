@@ -733,10 +733,19 @@ mod tests {
     /// the walker tests in Phase 2.
     #[test]
     fn emit_federation_discovered_host_writes_event() {
+        use crate::test_support::env_lock;
         use tempfile::TempDir;
+
+        // HOME is process-global: hold the crate-wide env lock so no sibling
+        // test observes (or clobbers) our redirect, and restore the prior
+        // value afterwards so the tempdir path does not leak into the rest of
+        // the run. Resolves issue #690.
+        let _guard = env_lock();
+        let prior_home = std::env::var_os("HOME");
 
         // Redirect HOME so the event goes to a temp directory.
         let home = TempDir::new().expect("temp dir");
+        // SAFETY: protected by the crate-wide env lock above.
         unsafe {
             std::env::set_var("HOME", home.path());
         }
@@ -751,6 +760,16 @@ mod tests {
             .join("events.jsonl");
 
         let contents = std::fs::read_to_string(&events_path).expect("events.jsonl must exist");
+
+        // Restore BEFORE asserting so a panic doesn't leak HOME to other tests.
+        // SAFETY: still under the crate-wide env lock.
+        unsafe {
+            match &prior_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
         let line = contents
             .lines()
             .next()

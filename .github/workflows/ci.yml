@@ -68,6 +68,35 @@ jobs:
             exit 1
           fi
 
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    # The daemon (every resolver, provider, and loader) is Go. Until #712
+    # this workflow ran only `cargo test -p orchard`, so no Go test in the
+    # repo ran in CI and a green badge on a daemon PR proved nothing about
+    # the daemon — seven resolver tests sat red on main unnoticed (#664).
+    #
+    # The suite is hermetic: it needs no tmux, gh, or systemd on the runner.
+    # Tests that shell out either install a fake `gh` script onto PATH, stub
+    # the systemctl seam, or t.Skip behind an exec.LookPath guard. Where the
+    # runner image does happen to ship a binary (tmux), the guarded tests run
+    # for real and add coverage rather than requiring it.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          # Single source of truth for the toolchain version.
+          go-version-file: go.mod
+          # Caches the module cache and build cache, keyed on go.sum.
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
   bats:
     name: Bats (scripts)
     runs-on: ubuntu-latest

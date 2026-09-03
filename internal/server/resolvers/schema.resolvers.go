@@ -581,9 +581,9 @@ func (r *queryResolver) TmuxSessions(ctx context.Context, filter *graphql1.TmuxS
 	if r.Tmux == nil {
 		return []*graphql1.TmuxSession{}, nil
 	}
-	snap := r.Tmux.Snapshot()
-	out := make([]*graphql1.TmuxSession, 0, len(snap.Sessions))
-	for _, s := range snap.Sessions {
+	all := r.Tmux.SessionsByHost(string(r.Tmux.Host()))
+	out := make([]*graphql1.TmuxSession, 0, len(all))
+	for _, s := range all {
 		if !sessionMatchesFilter(s, filter) {
 			continue
 		}
@@ -655,10 +655,10 @@ func (r *queryResolver) TmuxPanes(ctx context.Context, filter *graphql1.TmuxPane
 		return projectPanesWithFilter(raw, filter), nil
 	}
 
-	// Default: snapshot walk for cheap filter axes.
-	snap := r.Tmux.Snapshot()
-	out := make([]*graphql1.TmuxPane, 0, len(snap.Panes))
-	for _, p := range snap.Panes {
+	// Default: walk the host's panes for the cheap filter axes.
+	all := r.Tmux.PanesByHost(string(r.Tmux.Host()))
+	out := make([]*graphql1.TmuxPane, 0, len(all))
+	for _, p := range all {
 		if !paneMatchesFilter(p, filter) {
 			continue
 		}
@@ -1042,9 +1042,9 @@ func (r *subscriptionResolver) TmuxSessionsChanged(ctx context.Context) (<-chan 
 				if !ok {
 					return
 				}
-				snap := r.Tmux.Snapshot()
-				sessions := make([]*graphql1.TmuxSession, 0, len(snap.Sessions))
-				for _, s := range snap.Sessions {
+				all := r.Tmux.SessionsByHost(string(r.Tmux.Host()))
+				sessions := make([]*graphql1.TmuxSession, 0, len(all))
+				for _, s := range all {
 					sessions = append(sessions, projectSession(s))
 				}
 				select {
@@ -1245,8 +1245,7 @@ func (r *tmuxClientResolver) Session(ctx context.Context, obj *graphql1.TmuxClie
 	if !ok {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	s, ok := r.Tmux.Snapshot().Sessions[tmux.SessionKey{Host: host, Name: c.Session}]
+	s, ok := r.Tmux.SessionByName(string(r.Tmux.Host()), c.Session)
 	if !ok {
 		return nil, nil
 	}
@@ -1314,8 +1313,7 @@ func (r *tmuxClientResolver) CurrentWindow(ctx context.Context, obj *graphql1.Tm
 	if !ok || r.Tmux == nil {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	w, ok := r.Tmux.Snapshot().Windows[tmux.WindowKey{Host: host, Session: c.Session, Index: c.CurrentWindow}]
+	w, ok := r.Tmux.WindowByKey(string(r.Tmux.Host()), c.Session, c.CurrentWindow)
 	if !ok {
 		return nil, nil
 	}
@@ -1328,8 +1326,7 @@ func (r *tmuxClientResolver) CurrentPane(ctx context.Context, obj *graphql1.Tmux
 	if !ok || r.Tmux == nil || c.CurrentPane == "" {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	p, ok := r.Tmux.Snapshot().Panes[tmux.PaneKey{Host: host, PaneID: c.CurrentPane}]
+	p, ok := r.Tmux.PaneByID(string(r.Tmux.Host()), c.CurrentPane)
 	if !ok {
 		return nil, nil
 	}
@@ -1342,8 +1339,7 @@ func (r *tmuxPaneResolver) Window(ctx context.Context, obj *graphql1.TmuxPane) (
 	if !ok || r.Tmux == nil {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	w, ok := r.Tmux.Snapshot().Windows[tmux.WindowKey{Host: host, Session: p.WindowKey.Session, Index: p.WindowKey.Index}]
+	w, ok := r.Tmux.WindowByKey(string(r.Tmux.Host()), p.WindowKey.Session, p.WindowKey.Index)
 	if !ok {
 		return nil, nil
 	}
@@ -1415,10 +1411,8 @@ func (r *tmuxPaneResolver) WatchingClients(ctx context.Context, obj *graphql1.Tm
 		return nil, nil
 	}
 	out := []*graphql1.TmuxClient{}
-	for _, c := range r.Tmux.Snapshot().Clients {
-		if c.CurrentPane == p.Key.PaneID {
-			out = append(out, projectClient(c))
-		}
+	for _, c := range r.Tmux.ClientsByCurrentPane(string(r.Tmux.Host()), p.Key.PaneID) {
+		out = append(out, projectClient(c))
 	}
 	return out, nil
 }
@@ -1556,11 +1550,7 @@ func (r *tmuxServerResolver) Sessions(ctx context.Context, obj *graphql1.TmuxSer
 	if r.Tmux == nil {
 		return nil, nil
 	}
-	snap := r.Tmux.Snapshot()
-	sessions := make([]tmux.Session, 0, len(snap.Sessions))
-	for _, s := range snap.Sessions {
-		sessions = append(sessions, s)
-	}
+	sessions := r.Tmux.SessionsByHost(string(r.Tmux.Host()))
 
 	key := graphql1.TmuxSessionSortLastActivity
 	if sort != nil {
@@ -1615,9 +1605,9 @@ func (r *tmuxServerResolver) Clients(ctx context.Context, obj *graphql1.TmuxServ
 	if r.Tmux == nil {
 		return nil, nil
 	}
-	snap := r.Tmux.Snapshot()
-	out := make([]*graphql1.TmuxClient, 0, len(snap.Clients))
-	for _, c := range snap.Clients {
+	all := r.Tmux.ClientsByHost(string(r.Tmux.Host()))
+	out := make([]*graphql1.TmuxClient, 0, len(all))
+	for _, c := range all {
 		out = append(out, projectClient(c))
 	}
 	return out, nil
@@ -1668,10 +1658,8 @@ func (r *tmuxSessionResolver) AttachedClients(ctx context.Context, obj *graphql1
 		return nil, nil
 	}
 	out := []*graphql1.TmuxClient{}
-	for _, c := range r.Tmux.Snapshot().Clients {
-		if c.Session == s.Key.Name {
-			out = append(out, projectClient(c))
-		}
+	for _, c := range r.Tmux.ClientsBySession(string(r.Tmux.Host()), s.Key.Name) {
+		out = append(out, projectClient(c))
 	}
 	return out, nil
 }
@@ -1696,10 +1684,8 @@ func (r *tmuxSessionResolver) Windows(ctx context.Context, obj *graphql1.TmuxSes
 		return nil, nil
 	}
 	out := []*graphql1.TmuxWindow{}
-	for _, w := range r.Tmux.Snapshot().Windows {
-		if w.Key.Session == s.Key.Name {
-			out = append(out, projectWindow(w))
-		}
+	for _, w := range r.Tmux.WindowsBySession(string(r.Tmux.Host()), s.Key.Name) {
+		out = append(out, projectWindow(w))
 	}
 	return out, nil
 }
@@ -1713,8 +1699,7 @@ func (r *tmuxSessionResolver) CurrentWindow(ctx context.Context, obj *graphql1.T
 	if !ok {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	w, ok := r.Tmux.Snapshot().Windows[tmux.WindowKey{Host: host, Session: s.Key.Name, Index: s.CurrentWindow}]
+	w, ok := r.Tmux.WindowByKey(string(r.Tmux.Host()), s.Key.Name, s.CurrentWindow)
 	if !ok {
 		return nil, nil
 	}
@@ -1730,8 +1715,7 @@ func (r *tmuxWindowResolver) Session(ctx context.Context, obj *graphql1.TmuxWind
 	if !ok {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	s, ok := r.Tmux.Snapshot().Sessions[tmux.SessionKey{Host: host, Name: w.Key.Session}]
+	s, ok := r.Tmux.SessionByName(string(r.Tmux.Host()), w.Key.Session)
 	if !ok {
 		return nil, nil
 	}
@@ -1766,10 +1750,8 @@ func (r *tmuxWindowResolver) Panes(ctx context.Context, obj *graphql1.TmuxWindow
 		return nil, nil
 	}
 	out := []*graphql1.TmuxPane{}
-	for _, p := range r.Tmux.Snapshot().Panes {
-		if p.WindowKey.Session == w.Key.Session && p.WindowKey.Index == w.Key.Index {
-			out = append(out, projectPane(p))
-		}
+	for _, p := range r.Tmux.PanesByWindow(string(r.Tmux.Host()), w.Key.Session, w.Key.Index) {
+		out = append(out, projectPane(p))
 	}
 	return out, nil
 }
@@ -1783,8 +1765,7 @@ func (r *tmuxWindowResolver) CurrentPane(ctx context.Context, obj *graphql1.Tmux
 	if !ok || w.CurrentPane == "" {
 		return nil, nil
 	}
-	host := r.Tmux.Host()
-	p, ok := r.Tmux.Snapshot().Panes[tmux.PaneKey{Host: host, PaneID: w.CurrentPane}]
+	p, ok := r.Tmux.PaneByID(string(r.Tmux.Host()), w.CurrentPane)
 	if !ok {
 		return nil, nil
 	}
@@ -1907,8 +1888,7 @@ func (r *worktreeResolver) TmuxPanes(ctx context.Context, obj *graphql1.Worktree
 		return []*graphql1.TmuxPane{}, nil
 	}
 
-	snap := r.Tmux.Snapshot()
-	rawPanes := matchPanesForWorktree(ctx, r, snap, obj)
+	rawPanes := matchPanesForWorktree(ctx, r, r.Tmux.PanesByHost(obj.Host), obj)
 
 	// Map raw provider panes to GraphQL projection.
 	out := make([]*graphql1.TmuxPane, len(rawPanes))
@@ -1930,8 +1910,7 @@ func (r *worktreeResolver) TmuxSession(ctx context.Context, obj *graphql1.Worktr
 		return nil, nil
 	}
 
-	snap := r.Tmux.Snapshot()
-	matching := matchPanesForWorktree(ctx, r, snap, obj)
+	matching := matchPanesForWorktree(ctx, r, r.Tmux.PanesByHost(obj.Host), obj)
 	if len(matching) == 0 {
 		return nil, nil
 	}
@@ -1946,11 +1925,11 @@ func (r *worktreeResolver) TmuxSession(ctx context.Context, obj *graphql1.Worktr
 			continue
 		}
 		// Look up the Session to get its LastActivityAt.
-		s, ok := snap.Sessions[sessionKey]
+		s, ok := r.Tmux.SessionByName(string(pane.Key.Host), pane.WindowKey.Session)
 		if !ok {
-			// Snapshot inconsistency: pane references a session that is absent
-			// from snap.Sessions. Skip rather than synthesise a zero-activity
-			// placeholder — the missing session is not a valid candidate.
+			// Cache inconsistency: pane references a session that is absent
+			// from the session store. Skip rather than synthesise a
+			// zero-activity placeholder — it is not a valid candidate.
 			continue
 		}
 		seen[sessionKey] = s

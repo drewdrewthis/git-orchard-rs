@@ -110,7 +110,7 @@ func firstNonFlagArg(args []string) string {
 // the combined-format line on list-panes (and only that) for the
 // one-session state.
 func stubTmuxRunner() *stubRunner {
-	const fieldSep = "\x01"
+	const fieldSep = tmuxprovider.FieldSep
 	emptyState := func(name string, args ...string) ([]byte, error) {
 		// `tmux info` -> "alive" probe. Always succeed.
 		if firstNonFlagArg(args) == "info" {

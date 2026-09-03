@@ -101,12 +101,16 @@ type model struct {
 	// refresh, a re-sort, or a wheel roll must never yank the list back to the
 	// selected card.
 	snapSel      bool
-	anchorSess   string    // session of the card the viewport is anchored to
-	anchorDelta  int       // lines from that card's first line to the top of the view
-	desiredWidth int       // the width this sidebar last published; 0 until sized
-	clientGen    int       // bumped on switch; older in-flight reads are stale
-	menu         rowMenu   // the right-click row menu; zero value = closed (menu.go)
-	pane         paneFrame // the composed pane: what View paints, what a click reads
+	anchorSess   string // session of the card the viewport is anchored to
+	anchorDelta  int    // lines from that card's first line to the top of the view
+	desiredWidth int    // the width this sidebar last published; 0 until sized
+	clientGen    int    // bumped on switch; older in-flight reads are stale
+	// client-lane cadence: decays while the lane's answer (which session this
+	// client is on) stops changing, so an idle desktop stops paying 150ms of
+	// tmux forks forever (#727).
+	clientTick idleBackoff
+	menu       rowMenu   // the right-click row menu; zero value = closed (menu.go)
+	pane       paneFrame // the composed pane: what View paints, what a click reads
 	// the / filter (filter.go). Zero value = closed with no query, which is
 	// also "every row is visible" — nothing has to be initialised for the
 	// unfiltered list to be the list.

@@ -53,15 +53,17 @@ func subscribeGQL(t *testing.T, conn *websocket.Conn, id, query string, vars map
 	}
 }
 
-// waitForNext reads WS messages until a "next" message with id arrives or timeout.
-func waitForNext(t *testing.T, conn *websocket.Conn, id string, timeout time.Duration) string {
+// tryNext reads WS messages until a "next" message with id arrives, returning
+// ok=false if the timeout expires first. Non-fatal: callers that trigger the
+// event repeatedly need to distinguish "not yet" from "never".
+func tryNext(t *testing.T, conn *websocket.Conn, id string, timeout time.Duration) (string, bool) {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
-			t.Fatalf("ws read: %v (timeout waiting for id=%s next)", err, id)
+			return "", false
 		}
 		var env struct {
 			ID   string `json:"id"`
@@ -71,9 +73,31 @@ func waitForNext(t *testing.T, conn *websocket.Conn, id string, timeout time.Dur
 			continue
 		}
 		if env.ID == id && env.Type == "next" {
-			return string(raw)
+			return string(raw), true
 		}
 	}
+}
+
+// appendAssistantRecord appends one assistant turn to a session JSONL, which
+// is what the daemon's fsnotify watcher turns into a conversationChanged push.
+func appendAssistantRecord(t *testing.T, jsonlPath, sessionUUID string) {
+	t.Helper()
+	record := map[string]any{
+		"type":      "assistant",
+		"sessionId": sessionUUID,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"message": map[string]any{
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": "appended"}},
+		},
+	}
+	data, _ := json.Marshal(record)
+	f, err := os.OpenFile(jsonlPath, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open jsonl for append: %v", err)
+	}
+	_, _ = fmt.Fprintln(f, string(data))
+	_ = f.Close()
 }
 
 // @scenario Subscription fires when JSONL file is appended
@@ -93,27 +117,26 @@ func TestConversationChangedSubscription_FiresOnJSONLAppend(t *testing.T) {
 		map[string]any{"sessionUuid": sessionUUID},
 	)
 
-	// Append a new record to the JSONL to trigger the subscription.
-	jsonlPath := filepath.Join(cpDir, "test", sessionUUID+".jsonl")
-	record := map[string]any{
-		"type":      "assistant",
-		"sessionId": sessionUUID,
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"message": map[string]any{
-			"role":    "assistant",
-			"content": []any{map[string]any{"type": "text", "text": "appended"}},
-		},
-	}
-	data, _ := json.Marshal(record)
-	f, err := os.OpenFile(jsonlPath, os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		t.Fatalf("open jsonl for append: %v", err)
-	}
-	_, _ = fmt.Fprintln(f, string(data))
-	_ = f.Close()
+	// Let the server register the subscription before triggering it.
+	// graphql-transport-ws does not ack a `subscribe`, so the client has no
+	// signal for when the resolver is actually listening; an append issued
+	// before then produces an fsnotify event with no subscriber, and that
+	// event never comes back. The original test appended immediately and won
+	// the race only on a fast, unloaded machine — it failed the first time CI
+	// ran the suite on Linux.
+	time.Sleep(500 * time.Millisecond)
 
-	// The daemon should emit within 500ms.
-	payload := waitForNext(t, conn, "sub1", 500*time.Millisecond)
+	// One append, then wait generously. Retrying the append instead would be
+	// counterproductive: Provider.broadcast does a non-blocking send and drops
+	// on a full buffer, so a burst of appends makes the very event we are
+	// waiting for more likely to be dropped, not less.
+	jsonlPath := filepath.Join(cpDir, "test", sessionUUID+".jsonl")
+	appendAssistantRecord(t, jsonlPath, sessionUUID)
+
+	payload, ok := tryNext(t, conn, "sub1", 10*time.Second)
+	if !ok {
+		t.Fatal("no conversationChanged push for sub1 within 10s of appending")
+	}
 	if !strings.Contains(payload, sessionUUID) {
 		t.Errorf("subscription payload missing sessionUuid=%s: %s", sessionUUID, payload)
 	}

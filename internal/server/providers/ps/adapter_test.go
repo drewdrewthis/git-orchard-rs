@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -160,9 +161,32 @@ func TestAdapter_FetchCwds_RealLsof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Getwd: %v", err)
 	}
-	if got != want {
+	if !sameDir(t, got, want) {
 		t.Errorf("cwd = %q, want %q", got, want)
 	}
+}
+
+// sameDir reports whether two paths name the same directory. The kernel
+// hands back fully-resolved paths (lsof on macOS, /proc/<pid>/cwd on Linux)
+// while os.Getwd may return the logical path, so the two disagree whenever
+// any component of the checkout path is a symlink — e.g. a worktree under
+// /tmp on macOS, where /tmp -> /private/tmp turns a correct answer into a
+// string mismatch. Compare resolved forms so the assertion tests the
+// adapter rather than where the test happens to be checked out.
+func sameDir(t *testing.T, got, want string) bool {
+	t.Helper()
+	if got == want {
+		return true
+	}
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		return false
+	}
+	wantResolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		return false
+	}
+	return gotResolved == wantResolved
 }
 
 // TestAdapter_FetchArgs_RealPs verifies that argv resolution finds the

@@ -27,6 +27,26 @@
 // GraphQL error so the daemon does not collapse just because one field
 // could not be resolved.
 //
+// # Locating the CLIs
+//
+// The daemon usually runs under launchd or systemd, which do not
+// source the operator's shell profile: PATH is the system default and
+// holds none of the prefixes `bun install -g` / `npm install -g` /
+// Homebrew write to. Bare-name lookup therefore misses `ccusage` on
+// hosts where an interactive shell finds it (#400), and every quota
+// field resolves null. Resolution (toolpath.go) searches, in order:
+//
+//   - ORCHARD_CLAUDE_BIN / ORCHARD_CCUSAGE_BIN — an explicit
+//     executable. Set but not executable is an error, never a silent
+//     fall-through.
+//   - PATH.
+//   - ~/.bun/bin, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin —
+//     replaced wholesale by ORCHARD_BIN_DIRS (a PATH-style list) when
+//     that is set; set it empty to search nothing beyond PATH.
+//
+// A tool that resolves nowhere is logged once per not-found
+// transition, at Warn.
+//
 // PII: the adapter MUST NOT log raw stdout, because `claude auth
 // status` includes the user's email. The provider's logger only sees
 // structured fields the implementation has explicitly redacted.

@@ -73,3 +73,17 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -q "split-window -hb -d -l 34 -t s1:" "$TMUX_STUB_LOG"
 }
+
+@test "unset width option: script seeds it so the sidebar can bootstrap (#742)" {
+  STUB_WIDTH_OPTION=""
+  run bash "$SCRIPT" s1
+  [ "$status" -eq 0 ]
+  grep -q "set-option -g @orchard_sidebar_width 42" "$TMUX_STUB_LOG"
+}
+
+@test "already-set width option: script does not overwrite it" {
+  STUB_WIDTH_OPTION="50"
+  run bash "$SCRIPT" s1
+  [ "$status" -eq 0 ]
+  ! grep -q "set-option -g @orchard_sidebar_width" "$TMUX_STUB_LOG"
+}

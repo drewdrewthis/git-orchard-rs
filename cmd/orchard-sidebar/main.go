@@ -27,7 +27,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-func tickAfter(d time.Duration, msg tea.Msg) tea.Cmd {
+// tickAfter is a var so tests can read back the cadence a lane scheduled
+// without waiting on a real timer. Same testing-seam pattern as resizePane.
+var tickAfter = func(d time.Duration, msg tea.Msg) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return msg })
 }
 
@@ -52,16 +54,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// A resize is the loudest hint that the client lane's answer is about
+		// to move (a drag, an attach reflow), so the cadence goes back to fast
+		// whether or not the width itself ends up changing (#727).
+		m.clientTick.reset()
 		m.height = msg.Height
 		m.applyWidth(msg.Width)
 		return nil
 	case clientSessMsg:
-		next := tickAfter(clientEvery, clientTickMsg{})
 		// A read that started before the last switch carries the old world;
-		// applying it is the visible flicker. Drop it.
+		// applying it is the visible flicker. It is also no evidence that the
+		// answer has settled, so it does not feed the backoff either — the lane
+		// just re-ticks at its current cadence (#727).
 		if msg.gen != m.clientGen {
-			return next
+			return tickAfter(m.clientTick.interval(), clientTickMsg{})
 		}
+		next := tickAfter(
+			m.clientTick.observe(clientRead{session: msg.name}),
+			clientTickMsg{})
 		// tmux is the authority here — no grace window, no daemon reconciliation.
 		// If the name is empty the read failed; keep the last known good value
 		// rather than dropping the bar.
@@ -80,6 +90,13 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 		return fetchSlow
 	case fastDataMsg:
 		m.applyFast(msg)
+		// Sampled every fast tick regardless of whether this read succeeded: it
+		// is the only thing that notices the push lane going quietly stale
+		// (subFresh, no error ever arrives) rather than erroring outright. While
+		// push is down the client lane cannot rely on the attach signals that
+		// normally re-arm it, so it must not coast on the assumption nothing is
+		// happening (#727).
+		m.clientTick.observePushHealth(m.subLive())
 		return tickAfter(fastEvery, fastTickMsg{})
 	case hookDataMsg:
 		if msg.err != nil {
@@ -97,10 +114,24 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 	case tmuxSubMsg:
 		if msg.err != nil {
 			m.subErr = msg.err // the header marks the degraded lane
+			// The lane cannot trust attach signals it isn't receiving: pin the
+			// client lane at the fast rung until the push lane recovers (#727).
+			m.clientTick.observePushHealth(false)
 			logf("tmux subscription: %v", msg.err)
 			return nil
 		}
 		m.subErr = nil
+		m.clientTick.observePushHealth(true)
+		// An attach or detach anywhere means "which session is THIS client on"
+		// is about to move, and it is the only such event the sidebar sees
+		// without having caused it (a switch from another terminal or keybind).
+		// Re-arm the fast cadence before adopting the snapshot; a repeated
+		// identical snapshot must not, or the push lane's steady stream would
+		// defeat the backoff entirely (#727).
+		attached, _ := foldSessions(msg.sessions)
+		if !sameAttach(attached, m.attachedBySess) {
+			m.clientTick.reset()
+		}
 		m.applySessions(msg.sessions)
 		return nil
 	case slowDataMsg:

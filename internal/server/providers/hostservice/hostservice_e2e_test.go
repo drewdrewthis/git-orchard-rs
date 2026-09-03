@@ -235,8 +235,15 @@ func writeStubSystemctl(t *testing.T, dir string) {
 	t.Helper()
 	script := `#!/bin/sh
 set -e
+# The adapter calls ` + "`systemctl --user <verb> [flags] <name>`" + `, so the verb is
+# $2 and the unit name is the last argument. Take the last argument with a
+# POSIX for-loop, NOT bash's ${@: -1}: /bin/sh is dash on Debian/Ubuntu, which
+# rejects that slice with "Bad substitution" and — under set -e — exits
+# non-zero for every call, so the adapter reported every service as "unknown".
+# macOS never caught it because /bin/sh there is bash, and macOS runs the
+# launchctl stub anyway.
 verb="$2"
-name="${@: -1}"
+for name; do :; done
 case "$verb" in
   is-active)
     case "$name" in

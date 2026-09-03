@@ -31,16 +31,18 @@ import (
 // Shared fakes
 // ----------------------------------------------------------------------
 
-// tmuxTestRunner is a CommandRunner for the tmux adapter. It handles
-// the four list-* commands and the info probe using a fixed field
-// separator (0x01) matching the adapter's fieldSep constant.
+// tmuxTestRunner is a CommandRunner for the tmux adapter. It handles the
+// four list-* commands and the alive probe. Rows are joined with
+// tmuxprovider.FieldSep — the adapter's own constant — so the stub cannot
+// drift from the wire format the way the hardcoded U+0001 copies did
+// (#664, #712).
 type tmuxTestRunner struct {
-	// paneRows is the list of raw pane lines in the format:
-	// session\x01windowIdx\x01paneId\x01title\x01command\x01pid\x01width\x01height\x01dead
+	// paneRows is the list of raw pane lines, FieldSep-separated:
+	// session|windowIdx|paneId|title|command|pid|width|height|dead
 	paneRows []string
-	// sessionRows: session\x01created\x01attached\x01activity\x01windows\x01curwindow
+	// sessionRows: session|created|attached|activity|windows|curwindow
 	sessionRows []string
-	// windowRows: session\x01index\x01name\x01active\x01panes\x01curpane
+	// windowRows: session|index|name|active|panes|curpane
 	windowRows []string
 }
 
@@ -81,8 +83,8 @@ func firstNonFlagTmuxArg(args []string) string {
 
 // buildPaneRow builds a `tmux list-panes -a -F <listAllFormat>` row.
 //
-// listAllFormat (tmux/adapter.go:406) emits 18 U+0001-separated fields per
-// pane row — every test row must include all 18 even when most are filler.
+// listAllFormat emits tmuxprovider.ListAllFieldCount FieldSep-separated fields
+// per pane row — every test row must include all of them, even filler.
 // Field order (0-based):
 //
 //	0  session_name
@@ -135,7 +137,21 @@ func buildPaneRowAt(session, paneID string, pid int, activityUnix int64) string 
 		"200",                                // 15 pane_width
 		"50",                                 // 16 pane_height
 		"0",                                  // 17 pane_dead
-	}, "\x01")
+	}, tmuxprovider.FieldSep)
+}
+
+// TestStubPaneRowMatchesAdapterFieldCount binds the stub row builders to the
+// adapter's parser width. listAll drops any row whose field count is not
+// exactly ListAllFieldCount, so a new field in listAllFormat would otherwise
+// empty every tmux provider in these tests and surface as a dozen unrelated
+// assertion failures — the same silent-drop failure that the field separator
+// caused in #664. This fails in one obvious place instead.
+func TestStubPaneRowMatchesAdapterFieldCount(t *testing.T) {
+	row := buildPaneRow("session", "%1", 1234)
+	if got := len(strings.Split(row, tmuxprovider.FieldSep)); got != tmuxprovider.ListAllFieldCount {
+		t.Fatalf("buildPaneRow emits %d fields; adapter's listAll parses %d",
+			got, tmuxprovider.ListAllFieldCount)
+	}
 }
 
 // sessionRow builds a list-sessions row.
@@ -147,12 +163,12 @@ func sessionRow(name string, activityUnix int64) string {
 		fmt.Sprintf("%d", activityUnix), // last activity
 		"1",                  // window count
 		"0",                  // current window index
-	}, "\x01")
+	}, tmuxprovider.FieldSep)
 }
 
 // windowRow builds a list-windows row.
 func windowRow(session string) string {
-	return strings.Join([]string{session, "0", "main", "1", "1", "%1"}, "\x01")
+	return strings.Join([]string{session, "0", "main", "1", "1", "%1"}, tmuxprovider.FieldSep)
 }
 
 // psTestRunner is a CommandRunner for the ps and lsof adapters.

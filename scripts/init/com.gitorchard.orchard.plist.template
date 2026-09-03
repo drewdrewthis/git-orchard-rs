@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd unit TEMPLATE for the orchard daemon (macOS).
+
+  Install:
+    scripts/init/launchd-install.sh
+    launchctl load -w ~/Library/LaunchAgents/com.gitorchard.orchard.plist
+
+  Do NOT `cp` this file into ~/Library/LaunchAgents directly. launchd does
+  not expand `~` or any environment variable in StandardOutPath /
+  StandardErrorPath — it open(2)s the string verbatim. The installer
+  substitutes __ORCHARD_STATE_DIR__ with the absolute state directory
+  (honouring XDG_STATE_HOME exactly as internal/orchpaths.StateDir does)
+  and creates that directory, because launchd opens these files BEFORE
+  exec'ing the program: a missing parent directory means no log at all,
+  and no error anywhere the operator will look.
+
+  Logs land in <state dir>/orchard.{out,err}.log so they coexist with the
+  pidfile and any other daemon-owned state.
+
+  ProgramArguments names /usr/local/bin/orchard-daemon — the binary `make
+  install-daemon` installs and the one that owns the `daemon start` verb. The
+  `orchard` dispatcher's `daemon start` routes through a control script and is
+  not a launchd entry point.
+
+  Verbosity: append --log-level <level> to ProgramArguments, or set
+  ORCHARD_LOG_LEVEL (debug|info|warn|error) under EnvironmentVariables below.
+  Default is info.
+
+  RunAtLoad + KeepAlive give us "always running" behaviour. The daemon
+  itself handles SIGTERM via signal.NotifyContext for clean shutdown
+  during launchctl unload.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.gitorchard.orchard</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/usr/local/bin/orchard-daemon</string>
+      <string>daemon</string>
+      <string>start</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__ORCHARD_STATE_DIR__/orchard.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__ORCHARD_STATE_DIR__/orchard.err.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+  </dict>
+</plist>

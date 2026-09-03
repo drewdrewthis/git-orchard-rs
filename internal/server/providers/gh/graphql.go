@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // graphqlPath is the GitHub GraphQL endpoint path appended to the
@@ -87,7 +88,9 @@ func (c *Client) GraphQLWithHeaders(ctx context.Context, query string, variables
 		req.Header.Set(k, v)
 	}
 
+	start := time.Now()
 	resp, err := c.httpClient().Do(req)
+	c.logCall(callKindGraphQL, graphqlPath, repoFromGraphQLVariables(variables), 0, start, resp, err)
 	if err != nil {
 		return nil, fmt.Errorf("github POST %s: %w", graphqlPath, err)
 	}

@@ -34,12 +34,13 @@ type PathLookup interface {
 // and set before handing off to ServeContent so the stdlib conditional
 // logic applies it.
 //
-// root is the configured projects root. At construction time the handler
-// computes a canonical clean root via filepath.EvalSymlinks (falling back
-// to filepath.Clean(filepath.Abs) when the root does not yet exist). Per
-// request, any path returned by the PathLookup is validated to be a
-// descendant of cleanRoot using filepath.Rel — the classic HasPrefix-bypass
-// bug is avoided by design.
+// root is the configured projects root. It is canonicalised per request
+// via filepath.EvalSymlinks — not once at construction — because the root
+// may not exist when the daemon boots and may later appear as a symlink;
+// a root pinned at boot would then disagree with every symlink-resolved
+// candidate and 404 the whole endpoint (#513). Any path returned by the
+// PathLookup is validated to be a descendant of that canonical root using
+// filepath.Rel — the classic HasPrefix-bypass bug is avoided by design.
 //
 // Errors:
 //   - 405 for any method other than GET or HEAD.
@@ -52,43 +53,68 @@ func NewConversationsJSONLHandler(lookup PathLookup, root string, logger *slog.L
 		logger = slog.Default()
 	}
 
-	cleanRoot := computeCleanRoot(root, logger)
+	// Resolve once at construction for the boot-time diagnostic only; the
+	// value each request validates against is recomputed in cleanRoot().
+	if _, err := resolveRoot(root); err != nil {
+		logger.Warn("conversations jsonl: projects root does not resolve yet, will retry per request",
+			"root", root, "err", err)
+	}
 
 	return &conversationsJSONLHandler{
-		lookup:    lookup,
-		root:      root,
-		cleanRoot: cleanRoot,
-		logger:    logger,
+		lookup: lookup,
+		root:   root,
+		logger: logger,
 	}
 }
 
 type conversationsJSONLHandler struct {
-	lookup    PathLookup
-	root      string
-	cleanRoot string // canonical root for path-traversal validation
-	logger    *slog.Logger
+	lookup PathLookup
+	root   string
+	logger *slog.Logger
 }
 
-// computeCleanRoot computes the canonical form of root for path-traversal
-// validation. EvalSymlinks is preferred; if the directory does not exist yet
-// (fresh install), we fall back to Clean(Abs). A warning is logged in the
-// fallback case but the daemon continues to start.
-func computeCleanRoot(root string, logger *slog.Logger) string {
+// resolveRoot returns the canonical, symlink-resolved form of root.
+// Fails when the root does not exist yet or is a dangling symlink.
+func resolveRoot(root string) (string, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		// filepath.Abs only fails when os.Getwd fails — extremely unusual.
-		logger.Warn("conversations jsonl: filepath.Abs failed for root, using raw value",
-			"root", root, "err", err)
-		return filepath.Clean(root)
+		return "", fmt.Errorf("filepath.Abs(%q): %w", root, err)
 	}
 	resolved, err := filepath.EvalSymlinks(abs)
 	if err != nil {
-		// Root doesn't exist yet (fresh install) or is a broken symlink.
-		logger.Warn("conversations jsonl: EvalSymlinks failed for root, falling back to Clean(Abs)",
-			"root", root, "err", err)
-		return filepath.Clean(abs)
+		return "", fmt.Errorf("EvalSymlinks(%q): %w", abs, err)
 	}
-	return resolved
+	return resolved, nil
+}
+
+// cleanRoot returns the canonical root this request validates against.
+//
+// Resolved per request rather than cached at construction: the daemon must
+// boot before ~/.claude/projects exists (fresh install), and that directory
+// may later appear as a symlink to storage elsewhere. A root pinned at boot
+// stays unresolved while every candidate is symlink-resolved, so
+// filepath.Rel reports every legitimate transcript as outside the root and
+// the endpoint 404s until restart (#513).
+//
+// EvalSymlinks costs one lstat per path component and the endpoint goes on
+// to stream a multi-MB transcript, so the per-request cost is noise.
+//
+// When the root still does not resolve we fall back to Clean(Abs) — the
+// same fresh-install tolerance the constructor had. Logged at Debug, not
+// Warn: the constructor already warned once, and this runs per request.
+func (h *conversationsJSONLHandler) cleanRoot() string {
+	resolved, err := resolveRoot(h.root)
+	if err == nil {
+		return resolved
+	}
+	h.logger.Debug("conversations jsonl: projects root does not resolve, falling back to Clean(Abs)",
+		"root", h.root, "err", err)
+	abs, absErr := filepath.Abs(h.root)
+	if absErr != nil {
+		return filepath.Clean(h.root)
+	}
+	return filepath.Clean(abs)
 }
 
 // validatePath checks that candidate resolves to a path that is a descendant
@@ -161,10 +187,11 @@ func (h *conversationsJSONLHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	// the symlink-resolved path so we open exactly what we validated —
 	// closes the TOCTOU window where a symlink could be rewritten between
 	// EvalSymlinks and os.Open.
-	resolved, err := validatePath(h.cleanRoot, path)
+	cleanRoot := h.cleanRoot()
+	resolved, err := validatePath(cleanRoot, path)
 	if err != nil {
 		h.logger.Warn("conversations jsonl: path validation rejected candidate",
-			"cleanRoot", h.cleanRoot, "candidate", path, "err", err)
+			"cleanRoot", cleanRoot, "candidate", path, "err", err)
 		http.NotFound(w, r)
 		return
 	}

@@ -6,15 +6,19 @@
 //!
 //! Architecture follows the functional core / imperative shell pattern:
 //! - `diagnose()` is a pure function that computes a `HealReport` from its inputs.
-//! - `apply_fixes()` performs the actual I/O side effects.
+//! - `apply_fixes()` performs the actual I/O side effects, through the
+//!   injectable [`FixExecutor`] port so tests stay hermetic.
 //! - `format_report()` formats a human-readable text output.
 use std::path::Path;
 
 use serde::Serialize;
 
 use crate::cache;
-use crate::tmux;
 use crate::types::TmuxSession;
+
+pub mod fix_executor;
+
+pub use fix_executor::{FixCall, FixExecutor, ProcessFixExecutor, RecordingFixExecutor};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -464,7 +468,20 @@ fn check_multiple_sessions_per_worktree(
 ///
 /// Kills sessions and deletes files as directed. Worktrees flagged with
 /// `FlagForCleanup` are never deleted automatically — they require manual action.
+///
+/// Thin wrapper over [`apply_fixes_with`] bound to [`ProcessFixExecutor`].
 pub fn apply_fixes(findings: &[HealFinding]) -> Vec<FixResult> {
+    apply_fixes_with(findings, &ProcessFixExecutor)
+}
+
+/// Applies the actions from a set of findings using an injected [`FixExecutor`].
+///
+/// Same behaviour as [`apply_fixes`], with the tmux and filesystem effects
+/// supplied by the caller. Tests pass a [`RecordingFixExecutor`] and assert on
+/// the recorded calls instead of killing sessions or deleting files.
+///
+/// Resolves issue #372.
+pub fn apply_fixes_with(findings: &[HealFinding], exec: &dyn FixExecutor) -> Vec<FixResult> {
     let mut results = Vec::new();
 
     for finding in findings {
@@ -482,8 +499,8 @@ pub fn apply_fixes(findings: &[HealFinding]) -> Vec<FixResult> {
                 // The `is_self` guard above makes the cross-cutting
                 // wrapper redundant here, but use it anyway so the code
                 // path matches every other in-process kill site.
-                let result =
-                    tmux::kill_tmux_session_safe(name, tmux::current_session_name().as_deref());
+                let current = exec.current_session();
+                let result = exec.kill_session(name, current.as_deref());
                 let success = result.is_ok();
                 results.push(FixResult {
                     outcome: if success {
@@ -493,7 +510,7 @@ pub fn apply_fixes(findings: &[HealFinding]) -> Vec<FixResult> {
                     },
                     message: format!("Killed session \"{}\"", name),
                     success,
-                    error: result.err().map(|e| e.to_string()),
+                    error: result.err(),
                 });
             }
             HealAction::DeleteFile(path) => {
@@ -511,7 +528,7 @@ pub fn apply_fixes(findings: &[HealFinding]) -> Vec<FixResult> {
                     });
                     continue;
                 }
-                let result = std::fs::remove_file(path);
+                let result = exec.remove_file(path);
                 let success = result.is_ok();
                 results.push(FixResult {
                     outcome: if success {
@@ -521,7 +538,7 @@ pub fn apply_fixes(findings: &[HealFinding]) -> Vec<FixResult> {
                     },
                     message: format!("Deleted file \"{}\"", path),
                     success,
-                    error: result.err().map(|e| e.to_string()),
+                    error: result.err(),
                 });
             }
             HealAction::FlagForCleanup(desc) => {
@@ -935,11 +952,17 @@ mod tests {
             ..Default::default()
         });
 
-        let results = apply_fixes(&report.findings);
+        let exec = RecordingFixExecutor::new();
+        let results = apply_fixes_with(&report.findings, &exec);
         // FlagForCleanup produces a result but does not kill/delete anything.
         for r in &results {
             assert_eq!(r.outcome, FixOutcome::Flagged);
         }
+        assert!(
+            exec.calls().is_empty(),
+            "flagging must not issue any effect; got: {:?}",
+            exec.calls()
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1326,17 +1349,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn apply_fixes_skips_kill_session_for_is_self_finding() {
-        let finding = HealFinding {
+    /// Builds a KillSession finding for `name`.
+    fn kill_finding(name: &str, is_self: bool) -> HealFinding {
+        HealFinding {
             category: HealCategory::OrphanedSession,
             severity: Severity::Warning,
-            message: "Session \"orchardist\" has no matching worktree".to_string(),
-            action: HealAction::KillSession("orchardist".into()),
-            is_self: true,
-        };
+            message: format!("Session \"{name}\" has no matching worktree"),
+            action: HealAction::KillSession(name.to_string()),
+            is_self,
+        }
+    }
 
-        let results = apply_fixes(&[finding]);
+    #[test]
+    fn apply_fixes_skips_kill_session_for_is_self_finding() {
+        let exec = RecordingFixExecutor::new().with_current_session("orchardist");
+
+        let results = apply_fixes_with(&[kill_finding("orchardist", true)], &exec);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].success, "skip result must be success=true");
@@ -1347,23 +1375,20 @@ mod tests {
             results[0].message
         );
         assert!(results[0].error.is_none(), "skip result must have no error");
+        assert!(
+            exec.calls().is_empty(),
+            "the is_self gate must fire before any effect reaches the executor; got: {:?}",
+            exec.calls()
+        );
     }
 
+    /// Issue #372: the kill is observed through the injected executor rather
+    /// than by shelling out to a real `tmux kill-session`.
     #[test]
     fn apply_fixes_runs_kill_session_when_is_self_is_false() {
-        // Use a session name that certainly does not exist on the host.
-        // tmux kill-session on a nonexistent session emits an error to stderr
-        // but Command::status() still returns Ok — so kill_tmux_session always
-        // returns Ok for our purposes; success will be true regardless.
-        let finding = HealFinding {
-            category: HealCategory::OrphanedSession,
-            severity: Severity::Warning,
-            message: "Session has no matching worktree".to_string(),
-            action: HealAction::KillSession("orchardist-test-no-such-session-issue361-xxx".into()),
-            is_self: false,
-        };
+        let exec = RecordingFixExecutor::new().with_current_session("host-session");
 
-        let results = apply_fixes(&[finding]);
+        let results = apply_fixes_with(&[kill_finding("orphan-session", false)], &exec);
 
         assert_eq!(results.len(), 1);
         assert_eq!(
@@ -1371,6 +1396,83 @@ mod tests {
             FixOutcome::Killed,
             "non-self finding must take the Killed path; got message: {}",
             results[0].message
+        );
+        assert_eq!(
+            exec.calls(),
+            vec![FixCall::KillSession {
+                name: "orphan-session".to_string(),
+                current_session: Some("host-session".to_string()),
+            }],
+            "the kill must be issued once, with the host session passed to the \
+             #369 self-kill guard"
+        );
+    }
+
+    /// The `Failed` outcome is only reachable through the seam: a real
+    /// `tmux kill-session` against a missing session still exits `Ok`.
+    #[test]
+    fn apply_fixes_reports_failed_when_the_kill_errors() {
+        let exec = RecordingFixExecutor::new().failing_kill("tmux: no server running");
+
+        let results = apply_fixes_with(&[kill_finding("orphan-session", false)], &exec);
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, FixOutcome::Failed);
+        assert!(!results[0].success);
+        assert_eq!(
+            results[0].error.as_deref(),
+            Some("tmux: no server running"),
+            "the executor's error must be surfaced verbatim on FixResult::error"
+        );
+        assert_eq!(exec.killed_sessions(), vec!["orphan-session"]);
+    }
+
+    #[test]
+    fn apply_fixes_deletes_files_inside_the_cache_dir_via_the_executor() {
+        let path = cache::cache_dir().join("stale.json");
+        let path_str = path.to_string_lossy().to_string();
+        let exec = RecordingFixExecutor::new();
+
+        let results = apply_fixes_with(
+            &[HealFinding {
+                category: HealCategory::StaleCache,
+                severity: Severity::Warning,
+                message: "stale cache".to_string(),
+                action: HealAction::DeleteFile(path_str.clone()),
+                is_self: false,
+            }],
+            &exec,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, FixOutcome::Deleted);
+        assert_eq!(exec.removed_files(), vec![path_str]);
+    }
+
+    /// The path guard must reject before the executor is reached — nothing
+    /// outside `~/.cache/orchard/` or `/tmp/orchard-*` is ever handed to it.
+    #[test]
+    fn apply_fixes_does_not_reach_the_executor_for_paths_outside_allowed_dirs() {
+        let exec = RecordingFixExecutor::new();
+
+        let results = apply_fixes_with(
+            &[HealFinding {
+                category: HealCategory::StaleCache,
+                severity: Severity::Warning,
+                message: "stale cache".to_string(),
+                action: HealAction::DeleteFile("/etc/passwd".to_string()),
+                is_self: false,
+            }],
+            &exec,
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].outcome, FixOutcome::Skipped);
+        assert!(!results[0].success);
+        assert!(
+            exec.calls().is_empty(),
+            "the path guard must fire before any effect reaches the executor; got: {:?}",
+            exec.calls()
         );
     }
 

@@ -30,6 +30,9 @@ func (m *model) selectRow(i int, handBack bool) {
 	// Any client read already in flight predates this switch and would bounce
 	// the bar back for a tick (the flicker); bumping the generation kills it.
 	m.clientGen++
+	// A switch is precisely when the lane must be fast again, however long it
+	// had been idle — this covers both the keys and the click (#727).
+	m.clientTick.reset()
 	if r.fake {
 		// no such tmux session: attaching would fail loudly (stderr into an
 		// alt-screen pane) for a row that exists only to be scrolled past

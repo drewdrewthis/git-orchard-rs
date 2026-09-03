@@ -383,12 +383,10 @@ mod tests {
     // (so cache_dir() resolves into a tempdir) to observe whether refresh_issues
     // and refresh_prs are called by refresh_all_sources.
     //
-    // A mutex serialises the environment-variable writes so parallel test
-    // threads don't clobber each other's HOME or PATH.
+    // The crate-wide env lock serialises the environment-variable writes so
+    // parallel test threads don't clobber each other's HOME or PATH.
 
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_support::env_lock;
 
     /// Builds a minimal GlobalConfig with one test repo at `repo_path`.
     fn make_test_config(slug: &str, repo_path: &str) -> GlobalConfig {
@@ -425,7 +423,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn watch_does_not_write_orphaned_issue_pr_caches_by_default() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
 
         let home_dir = tempfile::tempdir().unwrap();
         let bin_dir = tempfile::tempdir().unwrap();
@@ -498,7 +496,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn keep_diagnostic_caches_flag_reenables_orphan_writes_for_debugging() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
 
         let home_dir = tempfile::tempdir().unwrap();
         let bin_dir = tempfile::tempdir().unwrap();

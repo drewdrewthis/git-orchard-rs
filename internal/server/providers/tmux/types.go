@@ -91,6 +91,17 @@ type Pane struct {
 	WatchingTTYs   []string // tty paths from `client_active_pane`
 }
 
+// clone returns a Pane whose reference-typed fields are independent of the
+// receiver's. Cached panes are handed out by value, and a plain struct copy
+// shares WatchingTTYs' backing array with the store's own entry — a caller
+// could otherwise rewrite the cache by writing through it.
+func (p Pane) clone() Pane {
+	if p.WatchingTTYs != nil {
+		p.WatchingTTYs = append([]string(nil), p.WatchingTTYs...)
+	}
+	return p
+}
+
 // Client mirrors `tmux list-clients -F`.
 type Client struct {
 	Key            ClientKey
