@@ -307,6 +307,16 @@ else
   record FAIL "inner pane (0.1) has focus after boot" "active pane index=${BOOT_ACTIVE:-<none>}, want 1 -- #747 live defect: user's typing goes to the sidebar with no way to move focus"
 fi
 
+# --- outer server forwards pane OSC 52 (#797) ------------------------------
+# tmux defaults set-clipboard to `external`, which drops OSC 52 from pane
+# programs (Claude Code copy, inner tmux relay). outer.conf turns it on.
+SET_CLIP="$(tmux -L "$OUTER" show -sv set-clipboard 2>/dev/null)"
+if [[ "$SET_CLIP" == "on" ]]; then
+  record PASS "outer server has set-clipboard on (#797)" "show -sv set-clipboard=on"
+else
+  record FAIL "outer server has set-clipboard on (#797)" "set-clipboard=${SET_CLIP:-<none>}, want on -- pane OSC 52 copies are dropped"
+fi
+
 # --- keystrokes typed right after boot land in the inner shell -------------
 # Stronger than the pane_index check above: a real attached pty client,
 # typing immediately, with zero select-pane call anywhere in this script so

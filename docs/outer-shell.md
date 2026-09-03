@@ -790,6 +790,38 @@ way to move focus between panes at all without them. This was #747's
 original live defect: boot-time focus landed on 0.0 with no bound way off
 it.
 
+## Clipboard
+
+`outer.conf` sets `set -s set-clipboard on` so OSC 52 escape sequences
+emitted by pane programs — Claude Code's own copy, the inner tmux session's
+copy-mode — pass through the outer server to the real terminal instead of
+being dropped (tmux's default, `external`, discards them; see the tmux wiki
+Clipboard page: https://github.com/tmux/tmux/wiki/Clipboard). A
+`copy-command` for the outer server's own copy-mode was tried and cut: the
+`if-shell` guards it needs to pick xclip/wl-copy/pbcopy per host stall
+tmux's config queue during boot and broke the sidebar's 40-column pin (12
+`verify.sh` failures), and that copy-mode is unreachable anyway (`prefix
+None`, `MouseDrag1Pane` unbound).
+
+Whether the sequence actually lands in the system clipboard then depends on
+the OUTER terminal emulator, not on orchard:
+
+| Terminal | OSC 52 from a nested tmux |
+| --- | --- |
+| VS Code integrated terminal ≥1.90 (local) | accepts |
+| VS Code Remote (SSH/WSL/Containers) | ignores — see https://github.com/microsoft/vscode-remote-release/issues/11475 |
+| Warp | denies by default (`osc52_clipboard_access: deny`) — enable it in Warp's own settings |
+| iTerm2 | accept |
+| kitty | accept |
+
+The sidebar footer's click-to-copy (`cmd/orchard-sidebar/gitbox.go`) shells
+out to `pbcopy` directly and does not depend on OSC 52 or any of the above —
+it is terminal-independent by construction.
+
+Note: whether mouse click/drag events reach the outer tmux client at all
+inside VS Code's integrated terminal is a separate, terminal-side concern
+and out of scope here.
+
 ## Trade-offs
 
 - **No outer prefix.** A prefix key at the outer layer swallows itself AND
