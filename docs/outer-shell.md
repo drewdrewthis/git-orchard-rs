@@ -796,11 +796,12 @@ it.
 emitted by pane programs — Claude Code's own copy, the inner tmux session's
 copy-mode — pass through the outer server to the real terminal instead of
 being dropped (tmux's default, `external`, discards them; see the tmux wiki
-Clipboard page: https://github.com/tmux/tmux/wiki/Clipboard). The outer
-server's own copy-mode (`prefix [`, unreachable with `prefix None` but kept
-for completeness) shells out via `copy-command`, guarded per host so xclip
-(Linux/X11), wl-copy (Linux/Wayland), or pbcopy (macOS) is picked up if
-present.
+Clipboard page: https://github.com/tmux/tmux/wiki/Clipboard). A
+`copy-command` for the outer server's own copy-mode was tried and cut: the
+`if-shell` guards it needs to pick xclip/wl-copy/pbcopy per host stall
+tmux's config queue during boot and broke the sidebar's 40-column pin (12
+`verify.sh` failures), and that copy-mode is unreachable anyway (`prefix
+None`, `MouseDrag1Pane` unbound).
 
 Whether the sequence actually lands in the system clipboard then depends on
 the OUTER terminal emulator, not on orchard:
