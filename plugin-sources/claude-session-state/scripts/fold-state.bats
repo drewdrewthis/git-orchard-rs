@@ -38,6 +38,7 @@ field() { jq -r ".$1 // \"null\"" "$CLAUDE_SESSION_STATE_DIR/t.json"; }
 }
 
 notify() { jq -nc --arg m "$2" '{session_id: $ARGS.positional[0], hook_event_name: "Notification", message: $m}' --args "$1" | "$REDUCER"; }
+tool() { jq -nc --arg e "$1" --arg n "$2" '{session_id: "t", hook_event_name: $e, tool_name: $n}' | "$REDUCER"; }
 
 @test "permission notification sets state=input with message" {
   notify t "Claude needs your permission to use Bash"
@@ -53,9 +54,23 @@ notify() { jq -nc --arg m "$2" '{session_id: $ARGS.positional[0], hook_event_nam
 
 @test "idle-nag after an answered permission clears the stale message" {
   notify t "Claude needs your permission to use Bash"
-  jq -nc '{session_id: "t", hook_event_name: "PreToolUse", tool_name: "Bash"}' | "$REDUCER"
+  tool PreToolUse Bash
   notify t "Claude is waiting for your input"
   [ "$(field state)" = "idle" ]
+  [ "$(field message)" = "null" ]
+}
+
+@test "PreToolUse clears the message of the permission it answers" {
+  notify t "Claude needs your permission to use Bash"
+  tool PreToolUse Bash
+  [ "$(field state)" = "working" ]
+  [ "$(field message)" = "null" ]
+}
+
+@test "PostToolUse clears a stale permission message" {
+  notify t "Claude needs your permission to use Bash"
+  tool PostToolUse Bash
+  [ "$(field state)" = "working" ]
   [ "$(field message)" = "null" ]
 }
 
