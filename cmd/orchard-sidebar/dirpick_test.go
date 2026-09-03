@@ -64,7 +64,7 @@ func TestPickerSearchesWalkedCandidates(t *testing.T) {
 	mkdirs(t, root, "cmd/orchard-sidebar", "docs")
 	p := newPicker(root, nil)
 	p.cfg = walkConfig{roots: []string{root}} // keep the test walk off the real $HOME
-	p.setCands(p.walkGen, walkCandidates(p.cfg))
+	p.setCands(p.walkGen, p.cfg.showHidden, walkCandidates(p.cfg))
 
 	p.searchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("orsi")})
 	if p.cursor != 0 {
@@ -136,7 +136,7 @@ func TestPickerSetCandsDropsStaleGeneration(t *testing.T) {
 	}
 
 	// the superseded walk's result lands late: it must be ignored
-	p.setCands(staleGen, []string{"/should-not-apply"})
+	p.setCands(staleGen, false, []string{"/should-not-apply"})
 	if !p.walking {
 		t.Error("a stale walkDoneMsg cleared walking")
 	}
@@ -146,7 +146,7 @@ func TestPickerSetCandsDropsStaleGeneration(t *testing.T) {
 
 	// the current walk's result lands: it must be applied
 	current := []string{filepath.Join(tmp, "ws", "proj")}
-	p.setCands(p.walkGen, current)
+	p.setCands(p.walkGen, false, current)
 	if p.walking {
 		t.Error("the current walkDoneMsg left walking true")
 	}
@@ -211,7 +211,7 @@ func drivePickerWalk(t *testing.T, p *picker, cmd tea.Cmd) {
 	if !ok {
 		t.Fatalf("re-walk command did not produce a walkDoneMsg")
 	}
-	p.setCands(msg.gen, msg.cands)
+	p.setCands(msg.gen, msg.hidden, msg.cands)
 }
 
 // AC1: a query whose path segment starts with a dot flips the picker into
@@ -223,7 +223,7 @@ func TestPickerDotQuerySurfacesHiddenDir(t *testing.T) {
 	mkdirs(t, root, ".hidden/inside", "visible")
 	p := newPicker(root, nil)
 	p.cfg = walkConfig{roots: []string{root}} // keep the test walk off the real $HOME
-	p.setCands(p.walkGen, walkCandidates(p.cfg))
+	p.setCands(p.walkGen, p.cfg.showHidden, walkCandidates(p.cfg))
 
 	if hasPath(matchPaths(p.matches), filepath.Join(root, ".hidden")) {
 		t.Fatal("the plain walk surfaced the hidden dir before any dot query")
@@ -243,7 +243,7 @@ func TestPickerNonDotQueryKeepsHiddenOff(t *testing.T) {
 	mkdirs(t, root, ".hidden", "visible")
 	p := newPicker(root, nil)
 	p.cfg = walkConfig{roots: []string{root}}
-	p.setCands(p.walkGen, walkCandidates(p.cfg))
+	p.setCands(p.walkGen, p.cfg.showHidden, walkCandidates(p.cfg))
 
 	if cmd := p.searchKey(runesMsg("visible")); cmd != nil {
 		t.Fatal("a non-dot query asked for a re-walk")
@@ -281,11 +281,59 @@ func TestPickerHiddenToggleReusesCachedTree(t *testing.T) {
 	mkdirs(t, root, ".hidden", "visible")
 	p := newPicker(root, nil)
 	p.cfg = walkConfig{roots: []string{root}}
-	p.setCands(p.walkGen, walkCandidates(p.cfg)) // plain walk cached
+	p.setCands(p.walkGen, p.cfg.showHidden, walkCandidates(p.cfg)) // plain walk cached
 
 	drivePickerWalk(t, p, p.toggleHidden()) // auto → on: walks + caches hidden
 	p.toggleHidden()                        // on → off: plain already cached
 	if p.walking {
 		t.Error("flip to a cached hidden state re-walked instead of reusing")
+	}
+}
+
+// setCands must key the cache off the walkDoneMsg's own hidden field — the
+// state the walk actually ran with — not the picker's live cfg.showHidden,
+// which a toggle fired while that walk is still in flight has already moved
+// on from. Without this, a stale plain-walk result landing after a flip to
+// hidden mode would get filed into hiddenCands and poison it.
+func TestPickerSetCandsKeysOffMsgHiddenNotLiveCfg(t *testing.T) {
+	tmp := t.TempDir()
+	mkdirs(t, tmp, "ws/proj")
+	p := &picker{roots: []string{filepath.Join(tmp, "ws", "proj")}}
+	p.search = newTextField("", searchWidth)
+	p.cfg = walkConfig{roots: p.roots} // showHidden: false
+
+	firstCmd := p.walkCmd() // in-flight plain walk, gen 0, hidden false
+
+	secondCmd := p.toggleHidden() // mid-flight flip: bumps gen, kicks a hidden walk
+	if secondCmd == nil {
+		t.Fatal("toggleHidden did not start a re-walk")
+	}
+	if p.walkGen == 0 {
+		t.Fatal("toggleHidden did not bump walkGen")
+	}
+
+	// the first walk's result lands late, carrying its own now-stale gen: it
+	// must be dropped outright, not filed into either cache.
+	first := firstCmd().(walkDoneMsg)
+	p.setCands(first.gen, first.hidden, []string{"/should-not-apply"})
+	if p.plainCands != nil || p.hiddenCands != nil {
+		t.Fatal("a stale walkDoneMsg poisoned a cache")
+	}
+	if !p.walking {
+		t.Error("a stale walkDoneMsg cleared walking")
+	}
+
+	// the second (current) walk's result lands: it must populate hiddenCands,
+	// keyed off msg.hidden, leaving plainCands untouched.
+	second := secondCmd().(walkDoneMsg)
+	p.setCands(second.gen, second.hidden, second.cands)
+	if p.walking {
+		t.Error("the current walkDoneMsg left walking true")
+	}
+	if p.hiddenCands == nil {
+		t.Error("the current walkDoneMsg did not populate hiddenCands")
+	}
+	if p.plainCands != nil {
+		t.Error("the current walkDoneMsg polluted plainCands")
 	}
 }

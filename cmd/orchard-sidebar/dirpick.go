@@ -26,10 +26,14 @@ const searchWidth = 40
 // the walk runs off the main goroutine and typing stays responsive while it
 // does. gen ties the result to the walk that produced it, so a widen/toggle
 // fired while an older walk is still in flight can tell its now-stale result
-// apart from the one that matches the current roots.
+// apart from the one that matches the current roots. hidden is the state the
+// walk was run with (captured at walkCmd time), so setCands keys the cache off
+// what actually produced cands rather than the picker's live (possibly since
+// changed) mode.
 type walkDoneMsg struct {
-	gen   int
-	cands []string
+	gen    int
+	hidden bool
+	cands  []string
 }
 
 // picker is the browsing half of the launch modal.
@@ -74,19 +78,22 @@ func newPicker(selected string, known []string) *picker {
 func (p *picker) walkCmd() tea.Cmd {
 	cfg := p.cfg
 	gen := p.walkGen
-	return func() tea.Msg { return walkDoneMsg{gen: gen, cands: walkCandidates(cfg)} }
+	return func() tea.Msg {
+		return walkDoneMsg{gen: gen, hidden: cfg.showHidden, cands: walkCandidates(cfg)}
+	}
 }
 
 // setCands caches the walked set under the hidden state it was walked with
-// (read from cfg, which the matching generation still reflects) and re-derives
+// (hidden, as captured by walkCmd for this generation — not the picker's live
+// mode, which a later widen/toggle may have already moved on) and re-derives
 // the visible list — unless gen names a walk that a later widen/toggle has since
 // superseded, in which case the stale result is dropped and p.walking is left
 // alone so the in-flight walk's spinner keeps spinning.
-func (p *picker) setCands(gen int, cands []string) {
+func (p *picker) setCands(gen int, hidden bool, cands []string) {
 	if gen != p.walkGen {
 		return
 	}
-	if p.cfg.showHidden {
+	if hidden {
 		p.hiddenCands = cands
 	} else {
 		p.plainCands = cands

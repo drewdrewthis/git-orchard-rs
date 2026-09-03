@@ -82,7 +82,7 @@ func (m *launchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.w, m.h = msg.Width, msg.Height
 		return m, nil
 	case walkDoneMsg:
-		m.pick.setCands(msg.gen, msg.cands)
+		m.pick.setCands(msg.gen, msg.hidden, msg.cands)
 		return m, nil
 	case spinner.TickMsg:
 		if !m.pick.walking {
