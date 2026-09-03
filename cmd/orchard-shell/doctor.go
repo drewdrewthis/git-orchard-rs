@@ -137,6 +137,7 @@ func runDoctor(opts Options, stdout, stderr io.Writer) int {
 
 // runChecks runs every check, in AC8's order.
 func runChecks(ctx context.Context, env doctorEnv) []checkResult {
+	logPath, _ := recoveryLogPath()
 	return []checkResult{
 		checkTmuxVersion(env),
 		checkTmuxNesting(),
@@ -145,6 +146,7 @@ func runChecks(ctx context.Context, env doctorEnv) []checkResult {
 		checkRevisions(ctx, env),
 		checkInnerSocket(env),
 		checkOuterSocket(env),
+		checkRecoveryStatus(env, logPath),
 		checkSystemd(ctx, env),
 		checkPath(env),
 		checkPlugin(env),

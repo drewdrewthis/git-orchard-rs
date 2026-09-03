@@ -35,6 +35,13 @@ func TestEveryOuterInvocationDuringBootPassesDashF(t *testing.T) {
 		t.Fatalf("focusInner: %v", err)
 	}
 	for _, c := range f.calls {
+		// Inner-server calls (e.g. AC0's detach-on-destroy set-option) target
+		// the user's own socket and deliberately carry no -f — see
+		// TestInnerArgs_NeverCarriesAConfig. Only OUTER invocations are held
+		// to the -f invariant.
+		if strings.HasPrefix(c, "-L inner-test ") {
+			continue
+		}
 		if !strings.HasPrefix(c, "-L outer-test -f /conf/outer.conf ") {
 			t.Errorf("outer invocation without -f: %q", c)
 		}

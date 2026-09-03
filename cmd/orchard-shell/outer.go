@@ -215,6 +215,7 @@ const bootPane = outerSessionName + ":0"
 
 // boot builds the wrapper from nothing.
 func (w *wrapper) boot(session string) error {
+	w.disarmDetachOnDestroy()
 	cols, rows := termSize()
 	if _, err := w.outer("new-session", "-d", "-s", outerSessionName,
 		"-x", strconv.Itoa(cols), "-y", strconv.Itoa(rows)); err != nil {
@@ -335,6 +336,19 @@ func (w *wrapper) rebuild(session string) error {
 		return err
 	}
 	return w.respawn(session)
+}
+
+// disarmDetachOnDestroy turns off detach-on-destroy on the INNER server
+// (AC0). tmux's default is to DETACH a client when the session it is viewing
+// is destroyed; on the inner client running in pane 0.1 that would leave the
+// pane a dead shell. Off, tmux switches the client to another session
+// instead, so killing the session the user is looking at never strands the
+// pane. Set here, on the server orchard-shell attaches to, rather than in the
+// user's ~/.tmux.conf, so the guarantee holds regardless of their config.
+// Best-effort: an inner server that is not up yet has nothing to set, and the
+// caller's own attach will surface that.
+func (w *wrapper) disarmDetachOnDestroy() {
+	_, _ = w.inner("set-option", "-g", "detach-on-destroy", "off")
 }
 
 // focusInner moves focus to 0.1, unconditionally, on boot AND on every

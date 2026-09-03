@@ -74,6 +74,15 @@ func innerAttachCommand(socket, session string) string {
 	return fmt.Sprintf("TMUX= tmux -L %s attach -t %s", shellQuote(socket), shellQuote(session))
 }
 
+// innerNewSessionCommand is pane 0.1's command line when the inner server has
+// no session left to attach: `new-session -A` creates one (or attaches an
+// existing one of that name), so a killed-off inner server heals into a fresh
+// session instead of a dead pane. `TMUX=` is cleared for the same nesting
+// reason as innerAttachCommand.
+func innerNewSessionCommand(socket, session string) string {
+	return fmt.Sprintf("TMUX= tmux -L %s new-session -A -s %s", shellQuote(socket), shellQuote(session))
+}
+
 // sidebarCommand is pane 0.0's command line.
 //
 // ORCHARD_TMUX_SOCKET tells the sidebar's own tmux execs (switch-client,

@@ -130,7 +130,8 @@ every other exec in this file targets. `handBackFocus` runs it as
 goroutine, and only after `cmd.Wait()` confirms the inner switch itself
 succeeded — never handing back focus onto a switch that failed. Failure to
 hand back is logged, never fatal: a stuck outer pane is recoverable by hand
-(`M-Left`/`M-Right`), a crashed sidebar is not.
+(`M-Left`/`M-Right`), and a crashed sidebar now self-heals (see "Pane
+recovery").
 
 `selectRow` threads a `handBack bool` through to `switchClient` so only a
 click or Enter triggers the hand-back — `j`/`k` pass `false`. Handing back
@@ -636,6 +637,60 @@ no inner client to switch. Pointing the variable at some *other* client on the
 inner socket is the one thing that must not happen; that is #747 defect 2, and
 it hijacks a terminal the user never pointed at this sidebar. The fix is to
 restore the inner attach in pane 0.1, not to re-aim the variable.
+
+## Pane recovery
+
+A pane that dies used to sit there dead: killing the inner session pane 0.1
+was viewing detached the client and left a corpse, an exited inner server
+left the same corpse, and a crashed sidebar left pane 0.0 blank. `remain-on-exit`
+(outer.conf) keeps such a pane addressable instead of collapsing the window,
+but addressable is not alive. Issue #796 makes each of these self-heal.
+
+The first line of defence never involves a hook. `orchard-shell` sets
+`detach-on-destroy off` on the **inner** server (not the user's `~/.tmux.conf`,
+so the guarantee holds regardless of their config) every time it boots or
+reattaches. tmux's default is to *detach* a client when the session it is
+viewing is destroyed; off, tmux switches the client to another session
+instead — so killing the session you are looking at moves you to another one
+and pane 0.1 stays alive, no recovery needed.
+
+When a pane process does exit, `remain-on-exit` fires tmux's `pane-died` hook.
+outer.conf binds it to `orchard-shell recover-pane #{pane_index}`, passing the
+dead pane's index (0 = sidebar, 1 = inner). The binary path and this wrapper's
+sockets are substituted into the config when `orchard-shell` materialises it
+(`conf.go`): a config loaded with `-f` cannot know either, and `orchard-shell`
+is dispatched as `orchard shell` so it is rarely on `$PATH` inside `run-shell`.
+
+`recover-pane` reads the pane's state and applies one policy (`decideRecovery`,
+`recover.go`, the pure core the table test owns):
+
+- **inner pane, sessions remain** → `respawn-pane -k` reattaches pane 0.1 to
+  the most-recently-attached inner session, showing
+  `inner tmux exited (status N) — reattached`.
+- **inner pane, server gone** → `respawn-pane -k` runs `new-session -A`, so a
+  killed-off inner server heals into a fresh session with no user action.
+- **sidebar** → pane 0.0 is respawned with fresh env, and the exit status and
+  reason are appended to `sidebar.log`.
+- **too many restarts too fast** → more than five restarts of the same pane in
+  the trailing 60 seconds halts automatic recovery and leaves the pane showing
+  `… keeps crashing … press M-r to retry`, rather than looping forever. `M-r`
+  (root-table bind, no prefix) reruns recovery with the bound ignored, once the
+  user has looked at why the pane kept dying.
+
+**Coordination with #787.** When the sidebar is respawned it only needs pane
+0.1's *current* inner-client tty for `ORCHARD_TMUX_CLIENT`, which `recover-pane`
+re-reads from `#{pane_tty}` before relaunching. It does **not** try to refresh
+any wider environment: #787 moved the sidebar's client resolution to click
+time, so the sidebar re-resolves the live client on each selection and a
+respawn does not have to seed it correctly up front. The outer shell therefore
+does the minimum — reattach pane 0.1, respawn pane 0.0 with a correct tty — and
+leaves client resolution to the sidebar.
+
+Every action appends a `recoveryEvent` to
+`${XDG_STATE_HOME:-~/.local/state}/orchard/recovery.log` (JSONL, beside
+`sidebar.log`). `orchard shell doctor` reads it: its `recovery` check lists any
+pane still dead and the last recovery event, e.g.
+`dead panes: 0.0; last recovery: sidebar exited (status 1) — respawned`.
 
 ## Keeping the sidebar pinned
 

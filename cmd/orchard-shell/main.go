@@ -37,6 +37,9 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		runInternalUpdateCheck(argv[1])
 		return 0
 	}
+	if len(argv) > 0 && argv[0] == "recover-pane" {
+		return runRecoverPane(argv[1:], stderr)
+	}
 	opts, err := parseArgs(argv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -53,7 +56,7 @@ func run(argv []string, stdout, stderr io.Writer) int {
 		return runDoctor(opts, stdout, stderr)
 	}
 
-	conf, err := resolveConf(opts.Conf)
+	conf, err := resolveConfFor(opts.Conf, selfPath(), opts.InnerSocket, opts.OuterSocket)
 	if err != nil {
 		fmt.Fprintf(stderr, "orchard shell: %v\n", err)
 		return 1
@@ -104,6 +107,11 @@ func (w *wrapper) ensureReady() error {
 			return err
 		}
 	}
+	// After the inner server is confirmed present (every path above that
+	// reaches here has either resolved a session on it or found a live inner
+	// client via probe) — never before, so a missing inner server still fails
+	// fast and mutates nothing (AC3).
+	w.disarmDetachOnDestroy()
 	return w.focusInner()
 }
 
