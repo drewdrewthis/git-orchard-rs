@@ -215,9 +215,9 @@ func TestLoadUpdateInfo(t *testing.T) {
 }
 
 // AC8's exact order: tmux, tmux-nesting, daemon, suite-versions,
-// inner-socket, outer-socket, systemd, path — 8 checks, one per line in the
-// human renderer.
-func TestRunChecks_ReturnsAllEightInDocumentedOrder(t *testing.T) {
+// inner-socket, outer-socket, systemd, path, plugin — 9 checks, one per
+// line in the human renderer (issue #772 adds the 9th, plugin).
+func TestRunChecks_ReturnsAllNineInDocumentedOrder(t *testing.T) {
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"data":{"version":"1.0.0"}}`))
 	}))
@@ -228,18 +228,20 @@ func TestRunChecks_ReturnsAllEightInDocumentedOrder(t *testing.T) {
 
 	f := newFakeTmux()
 	env := doctorEnv{
-		tmux:        f.exec,
-		run:         func(ctx context.Context, name string, args ...string) (string, error) { return "", nil },
-		daemonURL:   daemon.URL,
-		goos:        "darwin",
-		self:        filepath.Join(t.TempDir(), "orchard-shell"),
-		selfVersion: "1.0.0",
-		pathEnv:     "",
-		conf:        "/fake/outer.conf",
+		tmux:           f.exec,
+		run:            func(ctx context.Context, name string, args ...string) (string, error) { return "", nil },
+		daemonURL:      daemon.URL,
+		goos:           "darwin",
+		self:           filepath.Join(t.TempDir(), "orchard-shell"),
+		selfVersion:    "1.0.0",
+		pathEnv:        "",
+		conf:           "/fake/outer.conf",
+		pluginsFile:    filepath.Join(t.TempDir(), "installed_plugins.json"),
+		pluginStateDir: t.TempDir(),
 	}
 
 	got := runChecks(context.Background(), env)
-	want := []string{"tmux", "tmux-nesting", "daemon", "suite-versions", "inner-socket", "outer-socket", "systemd", "path"}
+	want := []string{"tmux", "tmux-nesting", "daemon", "suite-versions", "inner-socket", "outer-socket", "systemd", "path", "plugin"}
 	if len(got) != len(want) {
 		t.Fatalf("runChecks returned %d results; want %d", len(got), len(want))
 	}
@@ -277,5 +279,11 @@ func TestNewDoctorEnv_PopulatesProductionSeams(t *testing.T) {
 	}
 	if env.outerSocket != "orchard-shell" {
 		t.Errorf("outerSocket = %q; want orchard-shell", env.outerSocket)
+	}
+	if !strings.HasSuffix(env.pluginsFile, filepath.Join(".claude", "plugins", "installed_plugins.json")) {
+		t.Errorf("pluginsFile = %q; want it under ~/.claude/plugins/", env.pluginsFile)
+	}
+	if !strings.HasSuffix(env.pluginStateDir, filepath.Join(".local", "state", "claude-sessions", "state")) {
+		t.Errorf("pluginStateDir = %q; want ~/.local/state/claude-sessions/state", env.pluginStateDir)
 	}
 }

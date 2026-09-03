@@ -119,3 +119,41 @@ Feature: orchard install, upgrade, and doctor
     When I run "orchard shell doctor"
     Then the path check warns
     And the remedy suggests reordering $PATH or removing the stale binary
+
+  # orchardist#772 — the sidebar's card content (state glyph, model tag, last
+  # message) depends on the claude-session-state Claude Code plugin's hooks.
+  @unit
+  Scenario: doctor passes the plugin check when claude-session-state is installed and writing state
+    Given "~/.claude/plugins/installed_plugins.json" lists "claude-session-state@orchardist"
+    And "~/.local/state/claude-sessions/state" contains at least one session file
+    When I run "orchard shell doctor"
+    Then the plugin check passes
+
+  @unit
+  Scenario: doctor warns when the claude-session-state plugin is not installed
+    Given "~/.claude/plugins/installed_plugins.json" does not list "claude-session-state@orchardist"
+    When I run "orchard shell doctor"
+    Then the plugin check warns
+    And the remedy is "/plugin marketplace add drewdrewthis/orchardist && /plugin install claude-session-state@orchardist"
+
+  @unit
+  Scenario: doctor warns when the plugin is installed but its hooks have never fired
+    Given "~/.claude/plugins/installed_plugins.json" lists "claude-session-state@orchardist"
+    And "~/.local/state/claude-sessions/state" is empty
+    When I run "orchard shell doctor"
+    Then the plugin check warns
+    And the detail mentions that the hooks have never fired
+
+  @integration
+  Scenario: install prints a hint when the claude-session-state plugin is missing
+    Given no "claude-session-state@orchardist" entry in "~/.claude/plugins/installed_plugins.json"
+    When I run the installer
+    Then the human output includes a "hint:" line naming the plugin install remedy
+    And "--json" output includes a "hints" array containing the same remedy
+
+  @integration
+  Scenario: install prints no plugin hint when claude-session-state is already installed
+    Given "~/.claude/plugins/installed_plugins.json" lists "claude-session-state@orchardist"
+    When I run the installer
+    Then the human output has no "hint:" line
+    And "--json" output's "hints" array is empty

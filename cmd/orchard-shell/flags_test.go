@@ -187,7 +187,7 @@ func TestRun_UsageErrorExitsOne(t *testing.T) {
 }
 
 // doctor --json must always produce a structurally valid envelope, on any
-// host: exactly 8 checks (runChecks' documented set), each with a status in
+// host: exactly 9 checks (runChecks' documented set), each with a status in
 // {pass,warn,fail}. This runs against real seams (tmux, the daemon, $PATH),
 // so unlike doctor_test.go's hermetic, pass/fail-specific coverage it cannot
 // assert particular outcomes without becoming flaky across machines and CI.
@@ -202,8 +202,8 @@ func TestRun_DoctorJSONIsAlwaysValidJSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout.String()), &env); err != nil {
 		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout.String())
 	}
-	if env.Data == nil || len(env.Data.Checks) != 8 {
-		t.Fatalf("Data.Checks has %d entries; want 8", len(env.Data.Checks))
+	if env.Data == nil || len(env.Data.Checks) != 9 {
+		t.Fatalf("Data.Checks has %d entries; want 9", len(env.Data.Checks))
 	}
 	if env.OK && code != 0 {
 		t.Errorf("ok=true but exit code = %d; want 0", code)

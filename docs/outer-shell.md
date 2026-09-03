@@ -284,6 +284,14 @@ unpredictable amounts. Below `minWidth` the pane switches to
 `compactCardRows` (2) — name and a blank — since the detail lines have no room
 to say anything true at that width.
 
+The state glyph, model tag, and last-message text on a Claude row all come
+from the `claude-session-state` Claude Code plugin (this repo's marketplace,
+`plugin-sources/claude-session-state`), whose hooks write
+`~/.local/state/claude-sessions/state/<sid>.json`. Without it installed a
+Claude row still draws — it just has nothing to say. `orchard shell doctor`'s
+`plugin` check (issue #772) warns when the plugin is missing or its hooks have
+never fired, with the install remedy.
+
 Scrolling is a property of the middle band alone:
 
 - **The wheel scrolls, and never selects.** Selection attaches a session, so a

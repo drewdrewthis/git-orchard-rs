@@ -95,6 +95,7 @@ EOF
 
   export ORCHARD_RELEASE_BASE_URL="file://$RELEASE_DIR"
   export XDG_CONFIG_HOME="$FAKE_HOME/.config"
+  export HOME="$FAKE_HOME"
   export PATH="$STUB_DIR:$PATH"
 }
 
@@ -168,6 +169,58 @@ teardown() {
   run bash "$SCRIPT" --prefix "$PREFIX_DIR"
   [ "$status" -eq 0 ]
   grep -qF "note: add $PREFIX_DIR to your \$PATH" <<<"$output"
+}
+
+# --- --json plugin hint (issue #772) --------------------------------------
+
+# write_plugins_manifest [KEY] -- writes $FAKE_HOME/.claude/plugins/installed_plugins.json,
+# optionally containing the given plugin key.
+write_plugins_manifest() {
+  mkdir -p "$FAKE_HOME/.claude/plugins"
+  if [ -n "${1:-}" ]; then
+    printf '{"version":3,"plugins":{"%s":[{"scope":"user"}]}}' "$1" > "$FAKE_HOME/.claude/plugins/installed_plugins.json"
+  else
+    printf '{"version":3,"plugins":{"other@foo":[{"scope":"user"}]}}' > "$FAKE_HOME/.claude/plugins/installed_plugins.json"
+  fi
+}
+
+@test "hints: present with the install remedy when the plugin manifest is missing" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+  grep -qF '"hints":["sidebar cards need the claude-session-state plugin' <<<"$output"
+  grep -qF '/plugin marketplace add drewdrewthis/orchardist' <<<"$output"
+}
+
+@test "hints: present when the manifest exists but lacks the plugin key" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  write_plugins_manifest
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+  grep -qF '"hints":["sidebar cards need the claude-session-state plugin' <<<"$output"
+}
+
+@test "hints: empty when the plugin key is present" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  write_plugins_manifest "claude-session-state@orchardist"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR" --json
+  [ "$status" -eq 0 ]
+  grep -qF '"hints":[]' <<<"$output"
+}
+
+@test "hints: human text mode prints a hint line when the plugin is missing" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR"
+  [ "$status" -eq 0 ]
+  grep -qF "hint: sidebar cards need the claude-session-state plugin" <<<"$output"
+}
+
+@test "hints: human text mode prints no hint line when the plugin is present" {
+  export STUB_ACTIVE_UNIT="orchard-daemon.service"
+  write_plugins_manifest "claude-session-state@orchardist"
+  run bash "$SCRIPT" --prefix "$PREFIX_DIR"
+  [ "$status" -eq 0 ]
+  ! grep -qF "hint:" <<<"$output"
 }
 
 # --- backup rotation ------------------------------------------------------

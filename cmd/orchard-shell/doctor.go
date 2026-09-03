@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -69,36 +70,41 @@ type pathLookup func(name string) (string, error)
 
 // doctorEnv bundles every check's IO seam.
 type doctorEnv struct {
-	tmux        tmuxExec
-	run         cmdRunner
-	lookPath    pathLookup // exec.LookPath; for the path check's suite-binary shadow detection
-	daemonURL   string
-	goos        string
-	self        string // selfPath(); "" if it could not be resolved
-	selfVersion string // orchard-shell's own in-process version
-	pathEnv     string // $PATH
-	conf        string // outer.conf path, for the outer-socket check
-	confErr     error  // set when conf could not be resolved
-	innerSocket string // -inner-socket / $ORCHARD_TMUX_SOCKET, for inner/outer-socket checks
-	outerSocket string // -outer-socket, for the outer-socket check
+	tmux           tmuxExec
+	run            cmdRunner
+	lookPath       pathLookup // exec.LookPath; for the path check's suite-binary shadow detection
+	daemonURL      string
+	goos           string
+	self           string // selfPath(); "" if it could not be resolved
+	selfVersion    string // orchard-shell's own in-process version
+	pathEnv        string // $PATH
+	conf           string // outer.conf path, for the outer-socket check
+	confErr        error  // set when conf could not be resolved
+	innerSocket    string // -inner-socket / $ORCHARD_TMUX_SOCKET, for inner/outer-socket checks
+	outerSocket    string // -outer-socket, for the outer-socket check
+	pluginsFile    string // ~/.claude/plugins/installed_plugins.json, for the plugin check
+	pluginStateDir string // ~/.local/state/claude-sessions/state, for the plugin check
 }
 
 // newDoctorEnv is the production doctorEnv.
 func newDoctorEnv(selfVersion, innerSocket, outerSocket string) doctorEnv {
 	conf, confErr := resolveConf("")
+	home, _ := os.UserHomeDir()
 	return doctorEnv{
-		tmux:        runTmux,
-		run:         runCommand,
-		lookPath:    exec.LookPath,
-		daemonURL:   "http://127.0.0.1:7777/graphql",
-		goos:        runtime.GOOS,
-		self:        selfPath(),
-		selfVersion: selfVersion,
-		pathEnv:     os.Getenv("PATH"),
-		conf:        conf,
-		confErr:     confErr,
-		innerSocket: innerSocket,
-		outerSocket: outerSocket,
+		tmux:           runTmux,
+		run:            runCommand,
+		lookPath:       exec.LookPath,
+		daemonURL:      "http://127.0.0.1:7777/graphql",
+		goos:           runtime.GOOS,
+		self:           selfPath(),
+		selfVersion:    selfVersion,
+		pathEnv:        os.Getenv("PATH"),
+		conf:           conf,
+		confErr:        confErr,
+		innerSocket:    innerSocket,
+		outerSocket:    outerSocket,
+		pluginsFile:    filepath.Join(home, ".claude", "plugins", "installed_plugins.json"),
+		pluginStateDir: filepath.Join(home, ".local", "state", "claude-sessions", "state"),
 	}
 }
 
@@ -138,6 +144,7 @@ func runChecks(ctx context.Context, env doctorEnv) []checkResult {
 		checkOuterSocket(env),
 		checkSystemd(ctx, env),
 		checkPath(env),
+		checkPlugin(env),
 	}
 }
 

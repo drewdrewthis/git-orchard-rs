@@ -208,6 +208,11 @@ func (w *wrapper) resolveSession() (string, error) {
 	return "", &sessionMissingError{want: w.opts.Session, socket: w.opts.InnerSocket, have: have}
 }
 
+// bootPane is boot's single starting pane before the sidebar split pushes
+// it to paneInner (0.1) — the same window-level address boot's own
+// split-window targets.
+const bootPane = outerSessionName + ":0"
+
 // boot builds the wrapper from nothing.
 func (w *wrapper) boot(session string) error {
 	cols, rows := termSize()
@@ -216,36 +221,32 @@ func (w *wrapper) boot(session string) error {
 		return err
 	}
 
-	// split-window -h -b -l <width>: the new pane goes before (-b, left of)
-	// the target at an exact width. The NEW pane becomes 0.0; the pane that
-	// existed before the split becomes 0.1.
-	//
-	// The split MUST happen before either send-keys. Sending to "0.0" first
-	// targets the pre-split sole pane — which the split then renumbers to 0.1
-	// — so both commands land in the SAME physical pane while the true 0.0
-	// gets nothing. That was the original bug: the sidebar ended up in 0.1
-	// with the attach keystrokes typed into its TUI and swallowed.
-	if _, err := w.outer("split-window", "-h", "-b", "-l", strconv.Itoa(w.opts.Width),
-		"-t", outerSessionName+":0"); err != nil {
+	// bootPane is unambiguous here: only one pane exists, so sending the
+	// inner attach before splitting cannot land in the wrong pane.
+	if _, err := w.outer("send-keys", "-t", bootPane, innerAttachCommand(w.opts.InnerSocket, session), "Enter"); err != nil {
 		return err
 	}
-	if _, err := w.outer("send-keys", "-t", paneInner, innerAttachCommand(w.opts.InnerSocket, session), "Enter"); err != nil {
-		return err
-	}
-	return w.startSidebar()
+	return w.startSidebar(bootPane)
 }
 
-// startSidebar launches pane 0.0 with the env the sidebar needs, resolved
-// from pane 0.1 AFTER its inner attach has been sent — 0.1's #{pane_tty} is
-// the inner client's own tty only once that client exists.
-func (w *wrapper) startSidebar() error {
-	tty, err := w.outer("display", "-p", "-t", paneInner, "#{pane_tty}")
+// startSidebar splits off pane 0.0 running the sidebar directly, as
+// split-window's own command argument rather than a follow-up send-keys —
+// send-keys races the pane's default shell starting up and reading the
+// keystrokes (the 5s flake seen in verify.sh); handing tmux the command
+// up front removes the race, matching respawn()'s directness.
+//
+// inner is the address of the already-created pane that becomes 0.1 —
+// bootPane on boot, paneInner on any later rebuild. split-window -b puts
+// the NEW pane before it, so inner is read for its env (tty, pane id)
+// BEFORE the split, then becomes 0.1 once the split runs.
+func (w *wrapper) startSidebar(inner string) error {
+	tty, err := w.outer("display", "-p", "-t", inner, "#{pane_tty}")
 	if err != nil {
 		return err
 	}
 	// #{pane_id} (e.g. %1), not a tty path: it is stable across resizes and
 	// redraws, and it is what the sidebar hands keyboard focus back to.
-	paneID, err := w.outer("display", "-p", "-t", paneInner, "#{pane_id}")
+	paneID, err := w.outer("display", "-p", "-t", inner, "#{pane_id}")
 	if err != nil {
 		return err
 	}
@@ -256,7 +257,11 @@ func (w *wrapper) startSidebar() error {
 	} else {
 		fmt.Fprintf(w.log, "orchard shell: no orchard-sidebar found beside %s or on $PATH; using the watch(1) placeholder\n", selfPath())
 	}
-	_, err = w.outer("send-keys", "-t", paneSidebar, cmd, "Enter")
+	// split-window -h -b -l <width>: the new pane goes before (-b, left of)
+	// the target at an exact width, running cmd directly instead of the
+	// default shell — same remain-on-exit semantics (outer.conf) apply to
+	// whatever pane process exits, launched or not via send-keys.
+	_, err = w.outer("split-window", "-h", "-b", "-l", strconv.Itoa(w.opts.Width), "-t", inner, cmd)
 	return err
 }
 

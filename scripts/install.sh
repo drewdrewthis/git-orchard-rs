@@ -625,10 +625,21 @@ compute_path_warning() {
   printf 'add %s to your $PATH (e.g. echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.profile)' "$prefix" "$prefix"
 }
 
+# compute_plugin_hint -- prints a hint when the claude-session-state Claude
+# Code plugin isn't found in ~/.claude/plugins/installed_plugins.json;
+# prints nothing when it is (issue #772: the sidebar's card content --
+# state glyph, model tag, last message -- depends on this plugin's hooks).
+compute_plugin_hint() {
+  local manifest="$HOME/.claude/plugins/installed_plugins.json"
+  grep -q '"claude-session-state@orchardist"' "$manifest" 2>/dev/null && return 0
+  printf 'sidebar cards need the claude-session-state plugin for Claude state (glyph, model, last message): in Claude Code, run /plugin marketplace add drewdrewthis/orchardist && /plugin install claude-session-state@orchardist'
+}
+
 emit_success() {
   local triple=$1 prefix=$2 tag=$3
-  local path_warning
+  local path_warning plugin_hint
   path_warning=$(compute_path_warning "$prefix")
+  plugin_hint=$(compute_plugin_hint)
   local service_installed=0
   [ -n "$SERVICE_ACTION" ] && service_installed=1
 
@@ -641,13 +652,15 @@ emit_success() {
       bins_json="$bins_json{\"name\":\"$(json_escape "$n")\",\"action\":\"$(json_escape "$a")\"}"
     done
     local path_warning_json="null"
-    [ -n "$path_warning" ] && path_warning_json="\"$(json_escape "$path_warning")\""
-    printf '{"ok":true,"data":{"version":"%s","prefix":"%s","triple":"%s","binaries":[%s],"changed":%s,"from_source":%s,"service_installed":%s,"path_warning":%s},"error":null}\n' \
+    if [ -n "$path_warning" ]; then path_warning_json="\"$(json_escape "$path_warning")\""; fi
+    local hints_json=""
+    if [ -n "$plugin_hint" ]; then hints_json="\"$(json_escape "$plugin_hint")\""; fi
+    printf '{"ok":true,"data":{"version":"%s","prefix":"%s","triple":"%s","binaries":[%s],"changed":%s,"from_source":%s,"service_installed":%s,"path_warning":%s,"hints":[%s]},"error":null}\n' \
       "$(json_escape "$tag")" "$(json_escape "$prefix")" "$(json_escape "$triple")" "$bins_json" \
       "$CHANGED_COUNT" \
       "$([ "$FROM_SOURCE" -eq 1 ] && echo true || echo false)" \
       "$([ "$service_installed" -eq 1 ] && echo true || echo false)" \
-      "$path_warning_json"
+      "$path_warning_json" "$hints_json"
     JSON_EMITTED=1
   else
     echo "installed orchard $tag to $prefix ($triple)"
@@ -665,7 +678,8 @@ emit_success() {
       installed) echo "systemd user unit installed: ${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/orchard.service" ;;
       unchanged:*) echo "systemd user unit unchanged: ${SERVICE_ACTION#unchanged:} (orchard-daemon unchanged)" ;;
     esac
-    [ -n "$path_warning" ] && echo "note: $path_warning"
+    if [ -n "$path_warning" ]; then echo "note: $path_warning"; fi
+    if [ -n "$plugin_hint" ]; then echo "hint: $plugin_hint"; fi
   fi
 }
 

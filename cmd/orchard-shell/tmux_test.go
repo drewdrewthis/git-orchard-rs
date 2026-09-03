@@ -24,8 +24,8 @@ func TestInnerArgs_NeverCarriesAConfig(t *testing.T) {
 
 func TestEveryOuterInvocationDuringBootPassesDashF(t *testing.T) {
 	f := newFakeTmux().
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys004").
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_id}"), "%3")
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_tty}"), "/dev/ttys004").
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_id}"), "%3")
 	w := testWrapper(f)
 
 	if err := w.boot("work"); err != nil {
@@ -41,42 +41,49 @@ func TestEveryOuterInvocationDuringBootPassesDashF(t *testing.T) {
 	}
 }
 
-// Sending to 0.0 before the split targets the pre-split sole pane, which the
-// split then renumbers to 0.1 — both commands land in one pane and the real
-// 0.0 gets nothing.
-func TestBoot_SplitsBeforeSendingAnyKeys(t *testing.T) {
+// The inner attach is sent to bootPane — the sole pre-split pane — before
+// the split runs, and the split hands the sidebar its command directly
+// rather than a follow-up send-keys, closing the startup race send-keys had
+// against the new pane's default shell (verify.sh's flake).
+func TestBoot_SendsAttachThenSplitsWithTheSidebarCommand(t *testing.T) {
 	f := newFakeTmux().
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys004").
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_id}"), "%3")
-	w := testWrapper(f)
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_tty}"), "/dev/ttys004").
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_id}"), "%3")
+	w := testWrapper(f, func(o *Options) { o.Width = 55 })
 
 	if err := w.boot("work"); err != nil {
 		t.Fatalf("boot: %v", err)
 	}
 
-	split, firstKeys := -1, -1
+	attachIdx, splitIdx := -1, -1
 	for i, c := range f.calls {
-		if strings.Contains(c, "split-window") && split < 0 {
-			split = i
+		if strings.Contains(c, "send-keys") && attachIdx < 0 {
+			attachIdx = i
 		}
-		if strings.Contains(c, "send-keys") && firstKeys < 0 {
-			firstKeys = i
+		if strings.Contains(c, "split-window") && splitIdx < 0 {
+			splitIdx = i
 		}
 	}
-	if split < 0 || firstKeys < 0 {
-		t.Fatalf("boot did not split and send keys; calls: %v", f.calls)
+	if attachIdx < 0 || splitIdx < 0 {
+		t.Fatalf("boot did not send-keys and split; calls: %v", f.calls)
 	}
-	if split > firstKeys {
-		t.Errorf("split-window ran at %d, after the first send-keys at %d; calls: %v", split, firstKeys, f.calls)
+	if splitIdx < attachIdx {
+		t.Errorf("split-window ran at %d, before the inner attach send-keys at %d; calls: %v", splitIdx, attachIdx, f.calls)
+	}
+	if f.calls[splitIdx] != "-L outer-test -f /conf/outer.conf split-window -h -b -l 55 -t "+bootPane+" "+placeholderCommand("inner-test") {
+		t.Errorf("split-window call = %q; want the sidebar/placeholder command as its own argument", f.calls[splitIdx])
+	}
+	if f.called("send-keys -t " + paneSidebar) {
+		t.Errorf("boot must not send-keys into the sidebar pane; calls: %v", f.calls)
 	}
 }
 
-// The tty handed to the sidebar is pane 0.1's, and it is only the inner
+// The tty handed to the sidebar is bootPane's, and it is only the inner
 // client's tty once that client's attach has been sent.
 func TestBoot_ResolvesTheInnerTTYAfterSendingTheAttach(t *testing.T) {
 	f := newFakeTmux().
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys004").
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_id}"), "%3")
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_tty}"), "/dev/ttys004").
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_id}"), "%3")
 	w := testWrapper(f)
 
 	if err := w.boot("work"); err != nil {
@@ -85,7 +92,7 @@ func TestBoot_ResolvesTheInnerTTYAfterSendingTheAttach(t *testing.T) {
 
 	attachIdx, ttyIdx := -1, -1
 	for i, c := range f.calls {
-		if strings.Contains(c, paneInner) && strings.Contains(c, "send-keys") {
+		if strings.Contains(c, bootPane) && strings.Contains(c, "send-keys") {
 			attachIdx = i
 		}
 		if strings.Contains(c, "#{pane_tty}") && ttyIdx < 0 {
@@ -100,8 +107,8 @@ func TestBoot_ResolvesTheInnerTTYAfterSendingTheAttach(t *testing.T) {
 // @scenario --width sets the sidebar pane's initial column count
 func TestBoot_SizesTheSessionAndPinsTheSidebarWidth(t *testing.T) {
 	f := newFakeTmux().
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_tty}"), "/dev/ttys004").
-		reply(outerCall("display", "-p", "-t", paneInner, "#{pane_id}"), "%3")
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_tty}"), "/dev/ttys004").
+		reply(outerCall("display", "-p", "-t", bootPane, "#{pane_id}"), "%3")
 	w := testWrapper(f, func(o *Options) { o.Width = 55 })
 
 	if err := w.boot("work"); err != nil {
