@@ -235,6 +235,12 @@ func main() {
 	// Bind the switch to THIS model so the exec reads its focus-follow snapshot
 	// (m.workOverride) rather than a package global (#777 data-race fix).
 	switchClient = m.switchClientBound
+	// One-time drift check: a stale outer-shell launcher hands an env shape a
+	// current build never would, and clicks fail quietly on it (#787 AC3). Warn
+	// once on screen; a healthy env shows nothing and behaves exactly as before.
+	if s, ok := envDriftStatus(); ok {
+		m.setStatus(s)
+	}
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
