@@ -25,27 +25,24 @@ type workPaneRef struct {
 	client clientTTY // the inner client switch-client / detach-client scope to
 }
 
-// workOverride is the focused work pane in split mode. The client lane
-// discovers it from the inner server's most-recently-active work client
-// (pickWork), so it moves as focus moves. Its zero value is the single-pane
-// default — env.client / env.outer, unchanged from before #777 — which is why
-// every pre-split path reads exactly as it did.
-var workOverride workPaneRef
-
 // activeClient / activeOuter are the client tty and outer pane the sidebar
-// currently drives. switchClientArgs and handBackFocusArgs read these rather
-// than env directly, so a click switches (and hands focus back to) the
-// last-focused work pane, not always the one the sidebar launched in.
-func activeClient() clientTTY {
-	if workOverride.client != "" {
-		return workOverride.client
+// currently drives. m.workOverride is the focused work pane in split mode: the
+// client lane discovers it from the inner server's most-recently-active work
+// client (pickWork), so it moves as focus moves. Its zero value is the
+// single-pane default — env.client / env.outer, unchanged from before #777 —
+// which is why every pre-split path reads exactly as it did. Kept on the model
+// (not a package global) so the exec goroutine reads a snapshot taken on the UI
+// goroutine, never a value another goroutine is concurrently writing.
+func (m *model) activeClient() clientTTY {
+	if m.workOverride.client != "" {
+		return m.workOverride.client
 	}
 	return env.client
 }
 
-func activeOuter() outerPane {
-	if workOverride.outer != "" {
-		return workOverride.outer
+func (m *model) activeOuter() outerPane {
+	if m.workOverride.outer != "" {
+		return m.workOverride.outer
 	}
 	return env.outer
 }
@@ -55,7 +52,7 @@ func activeOuter() outerPane {
 // same reason orchard-shell's innerAttachCommand clears it). It is one argument
 // to split-window, which tmux runs via /bin/sh, so the session is shell-quoted.
 func innerAttachCmd(inner innerSocket, session string) string {
-	return "TMUX= tmux -L " + shq(string(inner)) + " attach -t " + shq(session)
+	return "TMUX= tmux -L " + shellQuote(string(inner)) + " attach -t " + shellQuote(session)
 }
 
 // splitWindowArgs opens a new outer pane to the right of beside, running a
@@ -139,7 +136,7 @@ var detachClient = func(tty clientTTY) {
 // split` menu item calls this directly on the card it acts on, so the split
 // logic never has to leak into menu.go / menuops.go / menuview.go.
 func (m *model) openInSplit(session string, fake bool) {
-	if !env.wrapped() || activeOuter() == "" {
+	if !env.wrapped() || m.activeOuter() == "" {
 		m.setStatus("open in split needs the outer shell")
 		return
 	}
@@ -154,7 +151,7 @@ func (m *model) openInSplit(session string, fake bool) {
 		m.setStatus(why)
 		return
 	}
-	pane, ok := doSplit(activeOuter(), env.inner, session)
+	pane, ok := doSplit(m.activeOuter(), env.inner, session)
 	if !ok {
 		m.setStatus("split failed — see log")
 		return
@@ -183,7 +180,7 @@ func (m *model) detachSplit() {
 	detachClient(m.alt.client)
 	m.splitOpen = false
 	m.alt = workPaneRef{}
-	workOverride = workPaneRef{} // drive the original pane again
+	m.workOverride = workPaneRef{} // drive the original pane again
 }
 
 // workTTYs is the set of the wrapper's own work-pane clients pickWork chooses
@@ -201,7 +198,7 @@ func (m *model) retargetWork(tty clientTTY) {
 	if !m.splitOpen {
 		return
 	}
-	workOverride = workPaneRef{client: tty, outer: m.outerFor(tty)}
+	m.workOverride = workPaneRef{client: tty, outer: m.outerFor(tty)}
 }
 
 // outerFor maps a work client's tty to its outer pane. Only two exist: the
@@ -239,19 +236,4 @@ func runOuterOut(args ...string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out.String()), nil
-}
-
-// shq single-quotes s for a send-through-sh command line, leaving ordinary
-// socket and session names untouched so the pane's command stays readable.
-func shq(s string) string {
-	if s == "" {
-		return "''"
-	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
-			strings.ContainsRune("_.:/@%+=-", r)) {
-			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-		}
-	}
-	return s
 }

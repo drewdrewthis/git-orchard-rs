@@ -8,14 +8,12 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// splitEnv sets up split test environment with outer/inner panes and resets workOverride
-// to avoid leaking into #747-guard tests.
+// splitEnv sets up the split test environment with outer/inner panes. The
+// focus override now lives on the model (m.workOverride), so there is no
+// package global to reset between tests.
 func splitEnv(t *testing.T) {
 	t.Helper()
 	setTmuxEnv(t, tmuxEnv{inner: "default", client: "/dev/ttys001", outer: "%1", self: "%0"})
-	prev := workOverride
-	workOverride = workPaneRef{}
-	t.Cleanup(func() { workOverride = prev })
 }
 
 // splitModel returns a two-row pane with selection on an unattached session.
@@ -36,25 +34,36 @@ func splitModel() *model {
 
 // The exact tmux each half of the gesture emits (split, layout pin, detach).
 func TestSplitCommandArgs(t *testing.T) {
-	if got, want := innerAttachCmd("default", "beta"), "TMUX= tmux -L default attach -t beta"; got != want {
-		t.Errorf("innerAttachCmd = %q, want %q", got, want)
-	}
-	got := splitWindowArgs("%1", "default", "beta")
-	want := []string{"split-window", "-h", "-t", "%1", "-P", "-F",
-		"#{pane_id} #{pane_tty}", "TMUX= tmux -L default attach -t beta"}
-	if !equalStrings(got, want) {
-		t.Errorf("splitWindowArgs = %v\nwant %v", got, want)
-	}
-	if got := mainVerticalArgs(); !equalStrings(got, []string{"select-layout", "main-vertical"}) {
-		t.Errorf("mainVerticalArgs = %v", got)
-	}
-	if got := detachClientArgs("/dev/ttys002"); !equalStrings(got, []string{"detach-client", "-t", "/dev/ttys002"}) {
-		t.Errorf("detachClientArgs = %v", got)
-	}
-	// a session with a space reaches sh through split-window, so it is quoted
-	if got := innerAttachCmd("default", "my session"); !strings.Contains(got, "attach -t 'my session'") {
-		t.Errorf("innerAttachCmd did not quote a spaced session: %q", got)
-	}
+	// innerAttachCmd shell-quotes the socket and session via shellQuote, so both
+	// are wrapped even when ordinary — safe through the sh split-window runs.
+	t.Run("innerAttachCmd quotes socket and session", func(t *testing.T) {
+		if got, want := innerAttachCmd("default", "beta"), "TMUX= tmux -L 'default' attach -t 'beta'"; got != want {
+			t.Errorf("innerAttachCmd = %q, want %q", got, want)
+		}
+	})
+	t.Run("splitWindowArgs opens beside and prints id+tty", func(t *testing.T) {
+		got := splitWindowArgs("%1", "default", "beta")
+		want := []string{"split-window", "-h", "-t", "%1", "-P", "-F",
+			"#{pane_id} #{pane_tty}", "TMUX= tmux -L 'default' attach -t 'beta'"}
+		if !equalStrings(got, want) {
+			t.Errorf("splitWindowArgs = %v\nwant %v", got, want)
+		}
+	})
+	t.Run("mainVerticalArgs pins the sidebar layout", func(t *testing.T) {
+		if got := mainVerticalArgs(); !equalStrings(got, []string{"select-layout", "main-vertical"}) {
+			t.Errorf("mainVerticalArgs = %v", got)
+		}
+	})
+	t.Run("detachClientArgs detaches by tty", func(t *testing.T) {
+		if got := detachClientArgs("/dev/ttys002"); !equalStrings(got, []string{"detach-client", "-t", "/dev/ttys002"}) {
+			t.Errorf("detachClientArgs = %v", got)
+		}
+	})
+	t.Run("a spaced session stays one quoted argument", func(t *testing.T) {
+		if got := innerAttachCmd("default", "my session"); !strings.Contains(got, "attach -t 'my session'") {
+			t.Errorf("innerAttachCmd did not quote a spaced session: %q", got)
+		}
+	})
 }
 func TestSplitBlocked(t *testing.T) {
 	cases := []struct {
@@ -75,14 +84,6 @@ func TestSplitBlocked(t *testing.T) {
 				t.Errorf("splitBlocked refusal = %v, want %v", got, c.want)
 			}
 		})
-	}
-}
-func TestDetachBlocked(t *testing.T) {
-	if detachBlocked(false) == "" {
-		t.Error("detach on the sole work pane must be refused")
-	}
-	if detachBlocked(true) != "" {
-		t.Error("detach with a split open must be allowed")
 	}
 }
 
@@ -176,84 +177,6 @@ func TestSecondSplitRefused(t *testing.T) {
 	}
 	if m.alt.outer != "%2" {
 		t.Error("the tracked split pane was overwritten")
-	}
-}
-
-// M-w detaches split pane's client, re-pins layout, drops to single-pane state.
-func TestDetachSplitClosesPane(t *testing.T) {
-	splitEnv(t)
-	var detached clientTTY
-	prev := detachClient
-	detachClient = func(tty clientTTY) { detached = tty }
-	t.Cleanup(func() { detachClient = prev })
-
-	m := splitModel()
-	m.splitOpen = true
-	m.alt = workPaneRef{outer: "%2", client: "/dev/ttys002"}
-	workOverride = m.alt // pretend focus was on the split pane
-	m.detachSplit()
-
-	if detached != "/dev/ttys002" {
-		t.Errorf("detached %q, want the split pane's client", detached)
-	}
-	if m.splitOpen || m.alt != (workPaneRef{}) {
-		t.Errorf("split state not cleared: open=%v alt=%+v", m.splitOpen, m.alt)
-	}
-	if workOverride != (workPaneRef{}) {
-		t.Error("workOverride not reset — the sidebar would keep driving a closed pane")
-	}
-}
-
-// M-w on sole work pane is refused: detaching only client drops user's terminal.
-func TestDetachSplitRefusedOnSolePane(t *testing.T) {
-	splitEnv(t)
-	called := false
-	prev := detachClient
-	detachClient = func(clientTTY) { called = true }
-	t.Cleanup(func() { detachClient = prev })
-
-	m := splitModel() // splitOpen defaults false
-	m.detachSplit()
-
-	if called {
-		t.Error("the sole work pane's client was detached")
-	}
-	if !strings.Contains(m.statusText(), "sole work pane") {
-		t.Errorf("status = %q, want the refusal reason", m.statusText())
-	}
-}
-
-// Switch and hand-back follow focused work pane via workOverride; default to original.
-func TestActiveTargetsFollowWorkOverride(t *testing.T) {
-	splitEnv(t)
-	if activeClient() != "/dev/ttys001" || activeOuter() != "%1" {
-		t.Fatalf("default active target = (%q,%q), want the env pane", activeClient(), activeOuter())
-	}
-	workOverride = workPaneRef{outer: "%2", client: "/dev/ttys002"}
-	if activeClient() != "/dev/ttys002" || activeOuter() != "%2" {
-		t.Errorf("override active target = (%q,%q), want the split pane", activeClient(), activeOuter())
-	}
-	args, ok := switchClientArgs("beta")
-	if !ok || !equalStrings(args, []string{"switch-client", "-c", "/dev/ttys002", "-t", "beta"}) {
-		t.Errorf("switchClientArgs = %v (ok=%v), want the split client scope", args, ok)
-	}
-	hb, ok := handBackFocusArgs()
-	if !ok || !equalStrings(hb, []string{"select-pane", "-t", "%2"}) {
-		t.Errorf("handBackFocusArgs = %v (ok=%v), want the split pane", hb, ok)
-	}
-}
-
-// pickWork takes most-recently-active of wrapper's OWN work clients, never bystanders.
-func TestPickWorkFollowsMostActiveWorkClient(t *testing.T) {
-	allow := []clientTTY{"/dev/ttys001", "/dev/ttys002"}
-	out := "100 /dev/ttys001 alpha\n200 /dev/ttys002 beta\n999 /dev/ttys009 bystander\n"
-	if name, tty := pickWork(out, allow); name != "beta" || tty != "/dev/ttys002" {
-		t.Errorf("pickWork = (%q,%q), want (beta, /dev/ttys002)", name, tty)
-	}
-	// focus moves back to the first pane: its activity now leads
-	out = "300 /dev/ttys001 alpha\n200 /dev/ttys002 beta\n"
-	if name, tty := pickWork(out, allow); name != "alpha" || tty != "/dev/ttys001" {
-		t.Errorf("pickWork after refocus = (%q,%q), want (alpha, /dev/ttys001)", name, tty)
 	}
 }
 

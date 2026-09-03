@@ -221,6 +221,9 @@ func main() {
 		// the environment and rebuilding the same synthetic list every time
 		fakes: fakeRows(fakeCount()),
 	}
+	// Bind the switch to THIS model so the exec reads its focus-follow snapshot
+	// (m.workOverride) rather than a package global (#777 data-race fix).
+	switchClient = m.switchClientBound
 	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

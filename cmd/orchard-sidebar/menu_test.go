@@ -35,7 +35,7 @@ func newMenuSpy(t *testing.T) *menuSpy {
 	switchClient = func(name string, handBack bool) {
 		s.calls = append(s.calls, "switch "+name)
 	}
-	handBackFocus = func() { s.calls = append(s.calls, "handback") }
+	handBackFocus = func(outerPane) { s.calls = append(s.calls, "handback") }
 	t.Cleanup(func() {
 		renameSession, killSession, switchClient, handBackFocus = rn, kl, sw, hb
 	})

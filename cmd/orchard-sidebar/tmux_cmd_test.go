@@ -65,7 +65,7 @@ func TestOuterCmdBypassesInnerRouting(t *testing.T) {
 	setTmuxEnv(t, tmuxEnv{inner: "inner", outer: "%1"})
 	t.Setenv("TMUX", "/tmp/outer-socket,123,0")
 
-	args, ok := handBackFocusArgs()
+	args, ok := handBackFocusArgs(env.outer)
 	if !ok {
 		t.Fatal("handBackFocusArgs declined with an outer pane set")
 	}
@@ -84,7 +84,7 @@ func TestOuterCmdBypassesInnerRouting(t *testing.T) {
 // hand focus back to, and the sidebar must not guess a pane id.
 func TestHandBackFocusDeclinesWithoutAnOuterPane(t *testing.T) {
 	setTmuxEnv(t, tmuxEnv{inner: "inner", client: "/dev/ttys003"})
-	if args, ok := handBackFocusArgs(); ok {
+	if args, ok := handBackFocusArgs(env.outer); ok {
 		t.Errorf("handBackFocusArgs = %v, want a refusal with no outer pane", args)
 	}
 }

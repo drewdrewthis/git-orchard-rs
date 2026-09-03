@@ -138,10 +138,13 @@ type model struct {
 	updateOpen      bool
 	updateLogFailed bool
 	// open-in-split (#777): whether a second work pane exists and, when it
-	// does, the pane Open in split created. The sidebar drives whichever work
-	// pane was focused last (workOverride, split.go).
-	splitOpen bool
-	alt       workPaneRef
+	// does, the pane Open in split created (alt). workOverride is whichever work
+	// pane was focused last — the sidebar drives it, defaulting to the env pane
+	// when unset. Kept here (not a package global) so switchClientExec reads a
+	// snapshot taken on the UI goroutine (split.go, tmux_switch.go).
+	splitOpen    bool
+	alt          workPaneRef
+	workOverride workPaneRef
 	// status is a transient refusal/notice from a keyboard chord (M-Enter,
 	// M-w) — the footer shows it in place of the key hints until it ages out.
 	status   string

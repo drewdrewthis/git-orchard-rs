@@ -15,11 +15,12 @@ import (
 // the wild (#747 defect 2). Wrapped but not yet told which client is its own,
 // ok is false: never fall back to an unscoped switch on a foreign socket.
 // Neither set (legacy, unwrapped mode) is unchanged.
-func switchClientArgs(session string) (args []string, ok bool) {
-	// activeClient is env.client until a split retargets the sidebar at the
-	// last-focused work pane (#777, split.go); unchanged in single-pane mode.
-	if c := activeClient(); c != "" {
-		return []string{"switch-client", "-c", string(c), "-t", session}, true
+func switchClientArgs(session string, client clientTTY) (args []string, ok bool) {
+	// client is the work-pane tty the caller snapshotted (env.client, or the
+	// last-focused split pane in #777); threaded in rather than read from a
+	// package global so the exec goroutine never races the UI goroutine.
+	if client != "" {
+		return []string{"switch-client", "-c", string(client), "-t", session}, true
 	}
 	if env.wrapped() {
 		return nil, false
@@ -41,7 +42,9 @@ var errUnscopedSwitch = errors.New(
 // A var so the break-pane flow's test can observe the switch without a live
 // tmux, the same reason switchClient is a var.
 var switchClientTo = func(session string) error {
-	args, ok := switchClientArgs(session)
+	// The launch modal runs in the sidebar's own (primary) work pane, so the
+	// switch scopes to env.client — a split's focus-follow never applies here.
+	args, ok := switchClientArgs(session, env.client)
 	if !ok {
 		return errUnscopedSwitch
 	}
@@ -49,13 +52,32 @@ var switchClientTo = func(session string) error {
 }
 
 // switchClient is a var so tests can observe the switch without a live tmux.
+// main() binds it to (*model).switchClientBound so the exec reads the model's
+// focus-follow snapshot; the package-level default is the single-pane path used
+// before that binding and by the unwrapped/legacy modes.
 //
 // KNOWN VIOLATION, tracked in orchardist#726. RULES L7 / M2 and ADR-018 line
 // 20 put "switch tmux session" on the daemon, but no switchTmuxSession
 // mutation exists yet — sendTextToPane is the only tmux mutation in the
 // schema. Replace this exec with the mutation when #726 lands.
 var switchClient = func(session string, handBack bool) {
-	args, ok := switchClientArgs(session)
+	switchClientExec(session, handBack, env.client, env.outer)
+}
+
+// switchClientBound is the runtime switch: it snapshots the client and outer
+// targets ON THE UI GOROUTINE (via m.activeClient/m.activeOuter, which read
+// m.workOverride) and hands the snapshots to switchClientExec, which captures
+// them in its closure. Snapshotting here is what keeps the exec goroutine off
+// the shared focus state the UI goroutine is concurrently updating.
+func (m *model) switchClientBound(session string, handBack bool) {
+	switchClientExec(session, handBack, m.activeClient(), m.activeOuter())
+}
+
+// switchClientExec runs the switch for the snapshotted client/outer targets.
+// client and outer are captured in the goroutine closure, so the wait-and-hand-
+// back never reads state another goroutine may be writing.
+func switchClientExec(session string, handBack bool, client clientTTY, outer outerPane) {
+	args, ok := switchClientArgs(session, client)
 	if !ok {
 		logf("%v (session %s)", errUnscopedSwitch, session)
 		return
@@ -84,7 +106,7 @@ var switchClient = func(session string, handBack bool) {
 		// typed would ever reach the shell they just switched to. j/k pass
 		// handBack=false: still browsing, must not steal focus mid-move.
 		if handBack {
-			handBackFocus()
+			handBackFocus(outer)
 		}
 	}()
 }
@@ -166,23 +188,24 @@ var runTmuxOutput = func(args ...string) (string, error) {
 // outer pane to hand focus to (legacy unwrapped mode, or wrapped but not yet
 // told its outer pane). Split out so the argv is testable without a tmux
 // server — the exec itself is one line.
-func handBackFocusArgs() (args []string, ok bool) {
-	// activeOuter is env.outer until a split retargets it at the last-focused
-	// work pane (#777, split.go); unchanged in single-pane mode.
-	p := activeOuter()
-	if p == "" {
+func handBackFocusArgs(outer outerPane) (args []string, ok bool) {
+	// outer is env.outer until a split retargets it at the last-focused work
+	// pane (#777); threaded in so the caller snapshots it, never a global.
+	if outer == "" {
 		return nil, false
 	}
-	return selectPaneArgs(p), true
+	return selectPaneArgs(outer), true
 }
 
 // handBackFocus is a var so tests can observe the hand-back without a live
-// tmux. Runs synchronously on switchClient's own goroutine, after cmd.Wait()
-// confirms the inner switch itself succeeded -- never hands back focus onto a
-// switch that failed. Logs failure, never fatal: a stuck outer pane is
-// recoverable by hand (M-Left/M-Right), a crashed sidebar is not.
-var handBackFocus = func() {
-	args, ok := handBackFocusArgs()
+// tmux. Runs synchronously on switchClientExec's own goroutine, after
+// cmd.Wait() confirms the inner switch itself succeeded -- never hands back
+// focus onto a switch that failed. The outer target is passed in (a snapshot
+// captured on the UI goroutine), so this reads no shared state. Logs failure,
+// never fatal: a stuck outer pane is recoverable by hand (M-Left/M-Right), a
+// crashed sidebar is not.
+var handBackFocus = func(outer outerPane) {
+	args, ok := handBackFocusArgs(outer)
 	if !ok {
 		return
 	}

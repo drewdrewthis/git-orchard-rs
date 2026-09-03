@@ -158,7 +158,7 @@ func TestCollapseButtonTogglesTheStrip(t *testing.T) {
 	spy := newWidthSpy(t)
 	origSet, origHB := setCollapsed, handBackFocus
 	setCollapsed = func(c bool, w int) { calls = append(calls, call{c, w}) }
-	handBackFocus = func() { handBacks++ }
+	handBackFocus = func(outerPane) { handBacks++ }
 	defer func() { setCollapsed, handBackFocus = origSet, origHB }()
 
 	m := &model{rows: rowsForHeight(3), stateDirOK: true, cursor: 0}

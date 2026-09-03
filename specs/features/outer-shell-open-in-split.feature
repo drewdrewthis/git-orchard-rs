@@ -30,6 +30,8 @@ Feature: outer shell open session in split
 
   @e2e
   Scenario: The attached bar follows the last-focused work pane without a click
+    # Focus is inferred from tmux client_activity (most-recent activity, not true
+    # focus — tmux has no per-client focus signal).
     Given two work panes each attached to a different session
     When I move focus from one work pane to the other
     Then the attached-bar indicator moves to the newly focused pane's session
@@ -58,9 +60,7 @@ Feature: outer shell open session in split
 
   @unit
   Scenario: Two clients on the same session is refused
-    # Decision (#777): keep it simple. tmux mirrors one session into both panes,
-    # which reads as a glitch rather than a comparison, so a second client on an
-    # already-attached session is refused rather than rendered.
+    # Decision (#777): refuse a second client on an already-attached session — tmux would mirror it into both panes.
     Given the selected card is a session that already has a client attached
     When I try to open it in a split
     Then no split pane is opened
@@ -73,7 +73,7 @@ Feature: outer shell open session in split
     Then no split pane is opened
     And the sidebar shows there is nothing to open
 
-  @e2e
+  @future
   Scenario: Open in split is reachable from the right-click menu
     # The reusable openInSplit entry point is shared; the menu item itself lands
     # with #776 (menu.go / menuops.go / menuview.go), which this issue does not touch.
