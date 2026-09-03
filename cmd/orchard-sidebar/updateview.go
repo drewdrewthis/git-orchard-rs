@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
+)
 
 // Drawing the update indicator: the header glyph, the collapsed-strip glyph
 // (view.go draws both, reading updateGlyph directly), and the one-line
@@ -17,10 +21,16 @@ const updateGlyph = "⇡"
 // number rather than only a count.
 const updateMinWidth = 24
 
-// updateHint is the header's glyph plus version, empty when there is
-// nothing to show. Dim, like the badge and the buttons it sits beside — the
-// header is not the place an update becomes urgent, only visible.
+// updateHint is what the header shows on the right of the title. On a dev
+// build it is the build ident (dev@<rev>), which labels the binary but is not
+// a click-to-upgrade target (#789). On a release build it is the glyph plus
+// the newer version when one is available, and empty otherwise. Dim, like the
+// badge and the buttons it sits beside — the header is not the place an
+// update becomes urgent, only visible.
 func (m *model) updateHint() string {
+	if version == release.DevVersion {
+		return styDim.Render(buildIdent())
+	}
 	if !m.updateAvailable() {
 		return ""
 	}

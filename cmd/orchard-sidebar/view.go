@@ -59,16 +59,20 @@ func (m *model) header(w int) ([]viewLine, headZones) {
 	if b := m.attnBadge(); b != "" && iw >= badgeMinWidth {
 		right = b + "  " + buttons
 	}
-	// the update glyph joins ahead of the badge — the LEADING segment of the
+	// the update hint joins ahead of the badge — the LEADING segment of the
 	// right-hand strip, not the trailing one the button constants below
 	// assume, so its zone is computed from the strip's own final width
 	// rather than hardcoded. Suppressed first on a narrowing pane: dropped
 	// below ~24 inner columns, well before the badge (18) or the buttons
-	// (never), so it can never crowd either.
+	// (never), so it can never crowd either. The click zone is set only when
+	// an upgrade is actually available: a dev build shows its ident here too
+	// (dev@<rev>), but that is a label, not a click-to-upgrade target (#789).
 	var updateZone clickZone
 	if u := m.updateHint(); u != "" && iw >= updateMinWidth {
 		right = u + "  " + right
-		updateZone = clickZone{x: max(0, 1+iw-cellWidth(right)), y: 0, w: cellWidth(u), h: 1}
+		if m.updateAvailable() {
+			updateZone = clickZone{x: max(0, 1+iw-cellWidth(right)), y: 0, w: cellWidth(u), h: 1}
+		}
 	}
 	// the filter takes the title's place rather than a line of its own: an
 	// extra header line would shorten the list every time someone typed "/"

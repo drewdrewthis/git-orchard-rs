@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func TestUpdateAvailable(t *testing.T) {
 		{"older latest: nothing to show", "1.3.0", "1.2.3", false},
 		{"equal: nothing to show", "1.2.3", "1.2.3", false},
 		{"genuinely newer", "1.2.3", "1.3.0", true},
-		{"dev build: always older than any real release", release.DevVersion, "0.0.1", true},
+		{"dev build: no semver, never upgradable", release.DevVersion, "0.0.1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			version = tc.version
@@ -44,6 +45,97 @@ func TestUpdateAvailable(t *testing.T) {
 					got, tc.want, tc.version, tc.latest)
 			}
 		})
+	}
+}
+
+// buildInfoWith returns a readBuildInfo stub carrying the given VCS settings.
+func buildInfoWith(settings ...debug.BuildSetting) func() (*debug.BuildInfo, bool) {
+	return func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: settings}, true
+	}
+}
+
+// TestUpdateHint: what the header shows on the right. A dev build labels
+// itself with its VCS revision (dev@<rev>, "*" when dirty, bare "dev" without
+// a stamp) and never the upgrade glyph (#789); a release build shows the glyph
+// plus a newer version, and nothing for an equal or older latest.
+func TestUpdateHint(t *testing.T) {
+	prevVersion := version
+	prevBuild := readBuildInfo
+	t.Cleanup(func() { version = prevVersion; readBuildInfo = prevBuild })
+
+	rev := debug.BuildSetting{Key: "vcs.revision", Value: "abcdef1234567"}
+	for _, tc := range []struct {
+		name        string
+		version     string
+		latest      string
+		build       func() (*debug.BuildInfo, bool)
+		wantSub     string // substring the hint must contain
+		wantNoGlyph bool   // and must NOT carry the upgrade glyph
+	}{
+		{"dev clean: revision only", release.DevVersion, "9.9.9",
+			buildInfoWith(rev, debug.BuildSetting{Key: "vcs.modified", Value: "false"}),
+			"dev@abcdef1", true},
+		{"dev modified: trailing star", release.DevVersion, "9.9.9",
+			buildInfoWith(rev, debug.BuildSetting{Key: "vcs.modified", Value: "true"}),
+			"dev@abcdef1*", true},
+		{"dev no build info: plain dev", release.DevVersion, "9.9.9",
+			func() (*debug.BuildInfo, bool) { return nil, false }, "dev", true},
+		{"dev no vcs.revision: plain dev", release.DevVersion, "9.9.9",
+			buildInfoWith(debug.BuildSetting{Key: "vcs.modified", Value: "true"}), "dev", true},
+		{"versioned equal latest: empty", "1.2.3", "1.2.3", nil, "", true},
+		{"versioned older latest: empty", "1.2.3", "1.1.0", nil, "", true},
+		{"versioned newer latest: glyph", "1.2.3", "1.3.0", nil, updateGlyph + "v1.3.0", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			version = tc.version
+			if tc.build != nil {
+				readBuildInfo = tc.build
+			}
+			m := &model{updateCheck: release.Check{Latest: tc.latest}}
+			got := ansi.Strip(m.updateHint())
+			if !strings.Contains(got, tc.wantSub) {
+				t.Errorf("updateHint() = %q, want it to contain %q", got, tc.wantSub)
+			}
+			if tc.wantNoGlyph && strings.Contains(got, updateGlyph) {
+				t.Errorf("updateHint() = %q, want no upgrade glyph %q", got, updateGlyph)
+			}
+			// a dev hint is never a bare empty string — the label always shows
+			if tc.version == release.DevVersion && got == "" {
+				t.Errorf("dev build hint is empty, want a build ident")
+			}
+		})
+	}
+}
+
+// A dev build shows its ident in the header, but the ident is not a click
+// target: no updateZone is published, so a click where it renders opens no
+// "update available" overlay (#789).
+func TestDevBuildHintIsNotAClickTarget(t *testing.T) {
+	prevVersion := version
+	prevBuild := readBuildInfo
+	t.Cleanup(func() { version = prevVersion; readBuildInfo = prevBuild })
+	version = release.DevVersion
+	readBuildInfo = buildInfoWith(
+		debug.BuildSetting{Key: "vcs.revision", Value: "abcdef1234567"},
+		debug.BuildSetting{Key: "vcs.modified", Value: "false"})
+
+	m := fakeModel(t, 10, 80, 30) // wide: the hint is not width-suppressed
+	head := ansi.Strip(strings.Split(viewOf(m), "\n")[0])
+	if !strings.Contains(head, "dev@abcdef1") {
+		t.Fatalf("header does not show the dev ident: %q", head)
+	}
+	if m.pane.updateZone.w != 0 {
+		t.Fatalf("dev build published a click zone (w=%d); the ident must not be clickable",
+			m.pane.updateZone.w)
+	}
+	// clicking where the ident renders must not open the overlay
+	x := strings.Index(head, "dev@")
+	mm, _ := m.Update(tea.MouseMsg{X: x, Y: 0,
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	m = mm.(*model)
+	if m.updateOpen {
+		t.Error("clicking the dev ident opened the update overlay")
 	}
 }
 
