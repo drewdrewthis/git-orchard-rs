@@ -201,6 +201,9 @@ type model struct {
 	clients        int // attached clients per latest clientSessMsg
 	desiredWidth   int // shared @orchard_sidebar_width; 0 until first read
 	clientGen      int // bumped on switch/resize; older in-flight reads are stale
+	// client-lane cadence: decays while the lane's answer stops changing, so
+	// an idle desktop stops paying 150ms of tmux forks forever (#727).
+	clientTick idleBackoff
 }
 
 type fastTickMsg struct{}
@@ -459,7 +462,9 @@ func fetchSlow() tea.Msg {
 	return slowDataMsg{wtBySession: wt, repoBySess: repo, wtByPath: wtp, repoByPath: repop}
 }
 
-func tickAfter(d time.Duration, msg tea.Msg) tea.Cmd {
+// tickAfter is a var so tests can read back the cadence a lane scheduled
+// without waiting on a real timer. Same testing-seam pattern as resizePane.
+var tickAfter = func(d time.Duration, msg tea.Msg) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return msg })
 }
 
@@ -589,6 +594,10 @@ func sortRows(rows []row) {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		// A resize is the loudest hint that the client lane's answer is about
+		// to move (a drag, an attach reflow), so the cadence goes back to fast
+		// whether or not the width itself ends up changing (#727).
+		m.clientTick.reset()
 		// A size we didn't ask for while the shared width is known means the
 		// user dragged this pane (or the layout shoved it): last write wins,
 		// publish it and every other session follows on its next tick. A size
@@ -617,13 +626,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		return m, nil
 	case clientSessMsg:
-		next := tickAfter(clientEvery, clientTickMsg{})
 		// A read that started before the last switch or width change carries
-		// the old world; applying it is the visible flicker. Drop it.
+		// the old world; applying it is the visible flicker. It is also no
+		// evidence that the answer has settled, so it does not feed the
+		// backoff either — the lane just re-ticks at its current cadence.
 		if msg.gen != m.clientGen {
-			return m, next
+			return m, tickAfter(m.clientTick.interval(), clientTickMsg{})
 		}
 		m.clients = msg.clients
+		next := tickAfter(
+			m.clientTick.observe(clientRead{session: msg.name, width: msg.width}),
+			clientTickMsg{})
 		if msg.width >= minWidth && msg.width != m.desiredWidth {
 			m.desiredWidth = msg.width
 			if msg.width != m.width {
@@ -665,6 +678,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case slowTickMsg:
 		return m, fetchSlow
 	case fastDataMsg:
+		// Sampled every fast tick regardless of whether this particular read
+		// succeeded: it is the only thing that notices the push lane going
+		// quietly stale (subFresh, no error ever arrives) rather than erroring
+		// outright (PR #757 review, discussion_r3918791010).
+		m.clientTick.observePushHealth(m.subLive())
 		m.err = msg.err
 		if msg.err == nil {
 			m.rows = msg.rows
@@ -710,11 +728,27 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// lane's, and this message carries nothing about them.
 		if msg.err != nil {
 			m.subErr = msg.err
+			// The lane cannot trust attach signals it isn't receiving: pin the
+			// client lane at the fast rung until the push lane recovers, rather
+			// than leaving an externally-driven switch-client bounded by
+			// whatever cadence it had already decayed to (PR #757 review,
+			// discussion_r3918791010).
+			m.clientTick.observePushHealth(false)
 			return m, nil
 		}
 		m.subErr = nil
 		m.subAt = time.Now()
+		m.clientTick.observePushHealth(true)
 		attached, created, p2s := foldSessions(msg.sessions)
+		// An attach or detach anywhere means "which session is THIS client on"
+		// is about to move, and it is the only such event the sidebar sees
+		// without having caused it (a switch driven from another terminal or a
+		// keybinding). Re-arm the fast cadence before adopting the snapshot;
+		// a repeated identical snapshot must not, or the push lane's steady
+		// stream would defeat the backoff entirely (#727).
+		if !sameAttach(attached, m.attachedBySess) {
+			m.clientTick.reset()
+		}
 		m.createdBySess, m.paneToSess, m.attachedBySess = created, p2s, attached
 		live := map[string]bool{}
 		for _, s := range msg.sessions {
@@ -798,6 +832,9 @@ func (m *model) selectRow(i int) {
 	// Any client read already in flight predates this switch and would bounce
 	// the bar back for a tick (the flicker); bumping the generation kills it.
 	m.clientGen++
+	// A switch is precisely when the lane must be fast again, however long it
+	// had been idle — this covers both the keys and the click (#727).
+	m.clientTick.reset()
 	switchClient(m.rows[i].session)
 }
 
