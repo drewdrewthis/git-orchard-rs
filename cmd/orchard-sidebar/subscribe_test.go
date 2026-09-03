@@ -9,9 +9,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -19,35 +16,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// wsScript is the server side of one connection, run after the upgrade.
-// Reading client frames is the script's job; returning closes the socket.
-type wsScript func(t *testing.T, conn *websocket.Conn)
-
 // streamResult carries streamTmux's returns out of its goroutine so every
 // assertion happens on the test goroutine, never after the test ends.
 type streamResult struct {
 	acked bool
 	err   error
-}
-
-// fakeGqlws points wsURL at an httptest server and shrinks readWait for the
-// test's duration — it owns both globals, and restores them only after the
-// caller's runStream cleanup has joined the client goroutine (LIFO order).
-func fakeGqlws(t *testing.T, wait time.Duration, script wsScript) {
-	t.Helper()
-	up := websocket.Upgrader{Subprotocols: []string{"graphql-transport-ws"}}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := up.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		script(t, conn)
-	}))
-	t.Cleanup(srv.Close)
-	oldURL, oldWait := wsURL, readWait
-	wsURL, readWait = "ws"+strings.TrimPrefix(srv.URL, "http"), wait
-	t.Cleanup(func() { wsURL, readWait = oldURL, oldWait })
 }
 
 // runStream starts streamTmux in a goroutine and returns its result struct

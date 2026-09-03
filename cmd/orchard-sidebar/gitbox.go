@@ -18,23 +18,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/x/ansi"
 )
-
-// boxItem is one line of the git box: what it says, and what clicking it
-// puts on the clipboard.
-type boxItem struct {
-	text string
-	copy string
-}
-
-// boxLine is one *rendered* line, carrying its own click-to-copy payload
-// ("" = border/decoration). Returning the pairing keeps the caller from
-// reconstructing it with index arithmetic against this file's layout.
-type boxLine struct {
-	text string
-	copy string
-}
 
 // stripCtl removes control characters from remote-sourced text (issue titles
 // come from GitHub). An embedded newline would add a rendered line the mouse
@@ -67,7 +51,7 @@ func ghURL(slug string) string {
 
 // gitBoxItems folds whatever git info the row has into box lines. Missing
 // facts are omitted, never placeholdered; an all-zero row yields no items
-// and the box doesn't render.
+// and the box body is blank.
 func gitBoxItems(r row) []boxItem {
 	var items []boxItem
 	if bl := branchLine(r); bl != "" {
@@ -100,34 +84,56 @@ func gitBoxItems(r row) []boxItem {
 	return items
 }
 
-// gitBoxRender draws the bordered panel: a title border, one line per item
-// with a right-aligned ⧉ copy affordance, a closing border. Every line is
-// clamped to width cells (the line()/lineToRow invariant — an overshooting
-// line soft-wraps and skews the mouse maps). flash swaps the title for a
-// short-lived "✓ copied" acknowledgment after a click.
-func gitBoxRender(items []boxItem, width int, flash bool) []boxLine {
-	inner := width - 5 // " │ " + content + " │"
-	title := "─ Git "
-	titleSty := styDim
+// gitBoxRows is how many body rows the box always draws. Four is what
+// gitBoxItems can produce at most (branch, directory, issue, PR), so a fixed
+// height never has to drop a fact to fit — the alternative, a 3-row box, would
+// silently hide the PR line for exactly the sessions that have the most going
+// on.
+const gitBoxRows = 4
+
+// gitBoxRender draws the panel as pane lines, each already carrying the
+// payload a click on it copies and a row of -1 (a box line copies, it never
+// selects). Returning viewLines is what keeps the footer from re-deriving
+// which rendered line carries which payload from this file's layout. flash
+// swaps the title for a short-lived "✓ copied" acknowledgment after a click.
+func gitBoxRender(items []boxItem, width int, flash bool) []viewLine {
+	title, sty := "Git", gitBoxStyle
 	if flash {
-		title = "─ ✓ copied "
-		titleSty = stySelBody
+		title, sty = "✓ copied", copiedStyle
 	}
-	// pad with exactly the dashes that fit — trunc would end the border in "…"
-	tw := ansi.StringWidth(title)
-	mid := title + strings.Repeat("─", max(0, width-3-tw))
-	if tw > width-3 {
-		mid = strings.Repeat("─", max(0, width-3))
+	// Always exactly gitBoxRows body rows, padded with empty ones. The box is
+	// the bottom half of a FIXED footer: if it grew and shrank with whatever
+	// the selected session happens to know, the list band above it would
+	// change height on every selection and the cards would jump under the
+	// cursor. Padding costs a few blank rows; a moving footer costs the user
+	// their place.
+	inner := boxInner(width)
+	body := make([]string, gitBoxRows)
+	for i := range body {
+		if i >= len(items) {
+			continue
+		}
+		if items[i].copy == "" {
+			body[i] = styDim.Render(trunc(items[i].text, max(1, inner)))
+			continue
+		}
+		// the ⧉ affordance is the promise that this line is takeable, so it
+		// is right-aligned against the border on every line that has a payload
+		body[i] = line(max(1, inner),
+			styDim.Render(trunc(items[i].text, max(1, inner-2))), stySelHead.Render("⧉"))
 	}
-	lines := []boxLine{{text: trunc(" "+styDim.Render("╭")+titleSty.Render(mid)+styDim.Render("╮"), width)}}
-	for _, it := range items {
-		body := line(max(1, inner), styDim.Render(trunc(it.text, max(1, inner-2))), stySelHead.Render("⧉"))
-		pipe := styDim.Render("│")
-		lines = append(lines, boxLine{text: trunc(" "+pipe+" "+body+" "+pipe, width), copy: it.copy})
+	lines := boxRender(title, body, width, sty)
+	out := make([]viewLine, len(lines))
+	for i, l := range lines {
+		out[i] = viewLine{text: l, row: -1}
+		// body line i sits one row below the title border, so an item's
+		// payload rides the line that draws it and nothing has to re-derive
+		// the offset
+		if bi := i - 1; bi >= 0 && bi < len(items) {
+			out[i].copy = items[bi].copy
+		}
 	}
-	bot := " ╰" + strings.Repeat("─", max(0, width-3)) + "╯"
-	lines = append(lines, boxLine{text: trunc(styDim.Render(bot), width)})
-	return lines
+	return out
 }
 
 // copiedMsg reports the pbcopy result; success flips the box title to

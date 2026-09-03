@@ -13,28 +13,9 @@ package main
 
 import (
 	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 )
-
-// fakeGraphQL points graphqlURL at an httptest server returning a fixed body
-// and restores it when the test ends. Mirrors fakeGqlws in subscribe_test.go,
-// which owns wsURL the same way.
-func fakeGraphQL(t *testing.T, status int, body string) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	prev := graphqlURL
-	graphqlURL = srv.URL
-	t.Cleanup(func() {
-		graphqlURL = prev
-		srv.Close()
-	})
-}
 
 // The wire shape observed on the box: every leaf resolved except the github
 // ones, which report the rate limit through errors[].

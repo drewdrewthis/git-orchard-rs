@@ -70,10 +70,12 @@ func TestGitBoxItems(t *testing.T) {
 	}
 }
 
-// The box renders items+2 border lines, no line ever exceeds the given width
+// The box is a CONSTANT gitBoxRows+2 lines tall no matter how many items it
+// was handed — the footer's height is fixed, so the list band above it never
+// changes size as the selection moves. No line ever exceeds the given width
 // (an overshooting line soft-wraps and skews the mouse maps), and each line
-// carries its own copy payload — borders "", item lines their item's copy —
-// so no caller ever reconstructs the pairing by index arithmetic.
+// carries its own copy payload — borders and padding "", item lines their
+// item's copy — so no caller reconstructs the pairing by index arithmetic.
 func TestGitBoxRenderWidth(t *testing.T) {
 	items := []boxItem{
 		{text: "🌿 a-very-long-branch-name-that-truncates ↑2", copy: "x"},
@@ -83,16 +85,32 @@ func TestGitBoxRenderWidth(t *testing.T) {
 	for _, w := range []int{8, 12, 20, 31, 42, 80} {
 		for _, flash := range []bool{false, true} {
 			lines := gitBoxRender(items, w, flash)
-			if len(lines) != len(items)+2 {
-				t.Fatalf("w=%d: got %d lines, want %d", w, len(lines), len(items)+2)
+			if len(lines) != gitBoxRows+2 {
+				t.Fatalf("w=%d: got %d lines, want %d", w, len(lines), gitBoxRows+2)
 			}
+			// every line the SAME width, not merely under it: a short body
+			// row leaves the closing │ floating mid-box (padding rows used to
+			// collapse to "│  │" because line() skips padding when it has no
+			// right-hand marker to place)
+			want := ansi.StringWidth(lines[0].text)
 			for i, l := range lines {
-				if got := ansi.StringWidth(l.text); got > w {
+				got := ansi.StringWidth(l.text)
+				if got > w {
 					t.Errorf("w=%d flash=%v line %d = %q — %d cells", w, flash, i, l.text, got)
+				}
+				if got != want {
+					t.Errorf("w=%d flash=%v line %d = %q — %d cells, borders are %d",
+						w, flash, i, l.text, got, want)
 				}
 			}
 			if lines[0].copy != "" || lines[len(lines)-1].copy != "" {
 				t.Errorf("w=%d: border lines carry copy payloads %q/%q", w, lines[0].copy, lines[len(lines)-1].copy)
+			}
+			// padding rows are inert: nothing to copy, nothing to click
+			for i := len(items); i < gitBoxRows; i++ {
+				if lines[i+1].copy != "" {
+					t.Errorf("w=%d: padding line %d carries copy %q", w, i+1, lines[i+1].copy)
+				}
 			}
 			for i, it := range items {
 				if lines[i+1].copy != it.copy {
@@ -132,14 +150,14 @@ func TestClickOnGitBoxCopies(t *testing.T) {
 		}},
 		cursor: 0,
 	}
-	m.View() // populates lineToRow / lineToCopy
+	viewOf(m) // populates lineToRow / lineToCopy
 
 	// the full mapping, not just existence: the box's item lines must carry
 	// exactly the payloads gitBoxItems computed, in order
 	wantCopies := []string{"main", "/tmp/x", "https://github.com/o/r/issues/3"}
 	var gotCopies []string
 	first, border := -1, -1
-	for i, cp := range m.lineToCopy {
+	for i, cp := range m.pane.lineToCopy {
 		if cp == "" {
 			continue
 		}
@@ -148,8 +166,8 @@ func TestClickOnGitBoxCopies(t *testing.T) {
 			border = i - 1 // the box's top border sits right above the first item
 		}
 		gotCopies = append(gotCopies, cp)
-		if m.lineToRow[i] != -1 {
-			t.Errorf("box item line %d maps to row %d, want -1", i, m.lineToRow[i])
+		if m.pane.lineToRow[i] != -1 {
+			t.Errorf("box item line %d maps to row %d, want -1", i, m.pane.lineToRow[i])
 		}
 	}
 	if first == -1 {
