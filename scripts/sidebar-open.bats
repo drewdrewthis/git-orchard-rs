@@ -8,6 +8,10 @@ setup() {
   STUB_DIR="$(mktemp -d)"
   export TMUX_STUB_LOG="$STUB_DIR/log"
   : > "$TMUX_STUB_LOG"
+  # argv-boundary log: args joined by "|" so a target that must arrive as one
+  # element (a spaced/metachar name) is distinguishable from a re-split one.
+  export TMUX_ARGV_LOG="$STUB_DIR/argv"
+  : > "$TMUX_ARGV_LOG"
 
   # scripted answers, overridable per test via env
   export STUB_WIDTH_OPTION="${STUB_WIDTH_OPTION:-38}"
@@ -17,6 +21,7 @@ setup() {
   cat > "$STUB_DIR/tmux" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$TMUX_STUB_LOG"
+( IFS='|'; printf '%s\n' "$*" >> "$TMUX_ARGV_LOG" )
 case "$1" in
   show-option)      echo "$STUB_WIDTH_OPTION" ;;
   list-panes)       printf '%s\n' "$STUB_PANES" ;;
@@ -86,4 +91,39 @@ teardown() {
   run bash "$SCRIPT" s1
   [ "$status" -eq 0 ]
   ! grep -q "set-option -g @orchard_sidebar_width" "$TMUX_STUB_LOG"
+}
+
+@test "spaced session name reaches tmux as a single -t argument (AC4)" {
+  run bash "$SCRIPT" "my session"
+  [ "$status" -eq 0 ]
+  grep -qF 'list-panes|-t|my session:' "$TMUX_ARGV_LOG"
+  grep -qF 'split-window|-hb|-d|-l|38|-t|my session:' "$TMUX_ARGV_LOG"
+}
+
+@test "shell-metachar session name arrives intact (AC5)" {
+  run bash "$SCRIPT" 'it'\''s a$;x'
+  [ "$status" -eq 0 ]
+  grep -qF "list-panes|-t|it's a\$;x:" "$TMUX_ARGV_LOG"
+  grep -qF "split-window|-hb|-d|-l|38|-t|it's a\$;x:" "$TMUX_ARGV_LOG"
+}
+
+@test "index-like session name targets 1: not a window index (AC6)" {
+  run bash "$SCRIPT" 1
+  [ "$status" -eq 0 ]
+  grep -qF 'split-window|-hb|-d|-l|38|-t|1:' "$TMUX_ARGV_LOG"
+}
+
+@test "spaced target already open: no second split (AC7)" {
+  export STUB_PANES="%7 /usr/local/bin/orchard-sidebar"
+  export STUB_PANE_WIDTH="40"
+  run bash "$SCRIPT" "my session"
+  [ "$status" -eq 0 ]
+  grep -qF 'list-panes|-t|my session:' "$TMUX_ARGV_LOG"
+  ! grep -q "split-window" "$TMUX_STUB_LOG"
+}
+
+@test "entrypoint hook passes the q-quoted session name, not the id form (AC2)" {
+  entry="$BATS_TEST_DIRNAME/../orchard-sidebar.tmux"
+  grep -qF '#{q:hook_session_name}' "$entry"
+  ! grep -qF '#{hook_session}' "$entry"
 }

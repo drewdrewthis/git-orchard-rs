@@ -27,8 +27,13 @@ fi
 [ -z "$bin" ] && exit 0
 
 win="${target:+$target:}"
-existing="$(tmux list-panes ${target:+-t "$win"} -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
-  | awk '/orchard-sidebar/ {print $1; exit}')"
+if [ -n "$target" ]; then
+  existing="$(tmux list-panes -t "$win" -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+    | awk '/orchard-sidebar/ {print $1; exit}')"
+else
+  existing="$(tmux list-panes -F '#{pane_id} #{pane_start_command}' 2>/dev/null \
+    | awk '/orchard-sidebar/ {print $1; exit}')"
+fi
 if [ -n "$existing" ]; then
   # already open: heal a pane that got squeezed under the floor (divider drag,
   # a later split, or a pane opened before the floor existed)

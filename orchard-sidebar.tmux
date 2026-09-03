@@ -19,5 +19,5 @@ tmux bind-key "$key" run-shell "$CURRENT_DIR/scripts/sidebar-toggle.sh"
 
 auto="$(get_opt @orchard_sidebar_auto)"
 if [ "${auto:-on}" != "off" ]; then
-  tmux set-hook -g session-created "run-shell '$CURRENT_DIR/scripts/sidebar-open.sh #{hook_session}'"
+  tmux set-hook -g session-created "run-shell '$CURRENT_DIR/scripts/sidebar-open.sh #{q:hook_session_name}'"
 fi
