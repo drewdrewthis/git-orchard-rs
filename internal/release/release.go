@@ -86,9 +86,37 @@ type Release struct {
 	Assets     []Asset `json:"assets"`
 }
 
-// Version strips the tag's leading "v" so it can be compared against the
-// version baked into a binary by -ldflags.
-func (r *Release) Version() string { return strings.TrimPrefix(r.TagName, "v") }
+// Version strips the tag's release-please component prefix ("orchard-",
+// release-please-config.json's manifest mode) and its leading "v", in that
+// order, so it can be compared against the version baked into a binary by
+// -ldflags. Real release tags look like "orchard-v1.2.3"; a bare "v1.2.3" or
+// "1.2.3" (as ORCHARD_RELEASE_REPO fixtures use) both come out the same way.
+func (r *Release) Version() string {
+	v := strings.TrimPrefix(r.TagName, "orchard-")
+	return strings.TrimPrefix(v, "v")
+}
+
+// NormalizeTag turns a user-supplied version — bare semver, v-prefixed, or
+// an already-complete tag — into the real release tag release-please
+// publishes: "orchard-v1.2.3" (manifest mode's component prefix; see
+// release-please-config.json). It is the inverse of Version, and exists so
+// callers that take a version from a person (cmd/orchard-upgrade's
+// --version pin) can hand Client.ByTag a tag that actually matches one,
+// instead of 404ing because "1.1.0" or "v1.1.0" isn't the real tag. Mirrors
+// scripts/install.sh's normalize_tag.
+//
+// Empty stays empty: "" is Resolve's and Client.ByTag's own sentinel for
+// "no pin, use the latest release", not a tag to normalize.
+func NormalizeTag(v string) string {
+	switch {
+	case v == "", strings.HasPrefix(v, "orchard-v"):
+		return v
+	case strings.HasPrefix(v, "v"):
+		return "orchard-" + v
+	default:
+		return "orchard-v" + v
+	}
+}
 
 // Asset returns the named asset. Names are exact — asset naming is a release
 // contract (see AssetName), not a fuzzy match.
@@ -167,8 +195,10 @@ func (c *Client) Latest(ctx context.Context) (*Release, error) {
 	return c.release(ctx, fmt.Sprintf("%s/repos/%s/releases/latest", c.API, c.Repo))
 }
 
-// ByTag returns one release by its exact tag (e.g. "v1.2.3"), which is how
-// `orchard upgrade --version` pins — including to an older version.
+// ByTag returns one release by its exact tag — e.g. "orchard-v1.2.3", the
+// real release-please tag. `orchard upgrade --version` pins this way,
+// including to an older version, after passing the user's input through
+// NormalizeTag.
 func (c *Client) ByTag(ctx context.Context, tag string) (*Release, error) {
 	if tag == "" {
 		return nil, fmt.Errorf("release tag is empty")

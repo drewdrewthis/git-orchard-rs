@@ -14,6 +14,14 @@ import (
 func upgrade(ctx context.Context, opts Options, dir, current string, out io.Writer) error {
 	client := release.NewClient()
 
+	// A person's --version pin ("1.1.0", "v1.1.0") is not itself a real
+	// release-please tag ("orchard-v1.1.0") — normalize it once here, before
+	// it reaches Resolve/ByTag (directly, or via check's --check path),
+	// rather than in flags.go: this is the one place that turns a parsed
+	// Option into a call against the release package, and flags.go has no
+	// business knowing the release package's tag shape.
+	opts.Target = release.NormalizeTag(opts.Target)
+
 	if opts.Check {
 		return check(ctx, client, opts.Target, current, out)
 	}

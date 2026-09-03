@@ -158,6 +158,47 @@ func TestLatest_ReadsTagAndAssetsFromFixture(t *testing.T) {
 	}
 }
 
+// AC: Version() strips both release-please's component prefix ("orchard-")
+// and the leading "v", for every tag shape orchard's real releases and test
+// fixtures use. "orchard-v1.1.0" is the real release-please manifest-mode
+// tag (release-please-config.json, confirmed against `gh release list`); a
+// naive TrimPrefix(tag, "v") leaves it untouched, which is the bug this
+// guards (doctor/upgrade reported "orchard-v1.1.0" as the latest version
+// instead of "1.1.0").
+func TestVersion_StripsComponentPrefixAndLeadingV(t *testing.T) {
+	cases := []struct{ tag, want string }{
+		{"orchard-v1.1.0", "1.1.0"}, // the real release-please tag shape
+		{"v1.1.0", "1.1.0"},
+		{"1.1.0", "1.1.0"},
+	}
+	for _, c := range cases {
+		rel := release.Release{TagName: c.tag}
+		if got := rel.Version(); got != c.want {
+			t.Errorf("Release{TagName: %q}.Version() = %q; want %q", c.tag, got, c.want)
+		}
+	}
+}
+
+// AC: NormalizeTag is Version's inverse — it turns a user-supplied version
+// into the real release-please tag, for every shape a person might type
+// (bare semver, v-prefixed, or already the full tag), mirroring
+// scripts/install.sh's normalize_tag. This is what lets `orchard upgrade
+// --version 1.1.0` resolve against a release actually tagged
+// "orchard-v1.1.0" instead of 404ing on Client.ByTag's exact-match lookup.
+func TestNormalizeTag(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"1.1.0", "orchard-v1.1.0"},
+		{"v1.1.0", "orchard-v1.1.0"},
+		{"orchard-v1.1.0", "orchard-v1.1.0"},
+		{"", ""}, // Resolve's/ByTag's own sentinel for "use the latest release"
+	}
+	for _, c := range cases {
+		if got := release.NormalizeTag(c.in); got != c.want {
+			t.Errorf("NormalizeTag(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}
+
 // AC7: ORCHARD_RELEASE_REPO is honoured — the real GitHub API is not
 // contacted, assertable by counting requests at the fixture.
 func TestLatest_OnlyTalksToTheConfiguredFixture(t *testing.T) {

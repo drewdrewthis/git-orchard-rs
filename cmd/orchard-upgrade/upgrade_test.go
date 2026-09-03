@@ -32,6 +32,32 @@ func TestCheck_ReportsWithoutWriting(t *testing.T) {
 	assertUnchanged(t, dir, before)
 }
 
+// AC: --check against the real release-please tag shape ("orchard-v1.1.0",
+// manifest mode's component-prefixed tag — see release-please-config.json
+// and internal/release.Release.Version) reports the bare semver, not the
+// tag verbatim. Regression test for the doctor/upgrade bug where "latest"
+// showed "orchard-v1.1.0" instead of "1.1.0".
+func TestCheck_RealReleasePleaseTagReportsBareVersion(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "orchard-v1.1.0", true, false)
+	dir := installDirWith(t, "v1", "orchard")
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--check", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--check) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"current: 1.0.0", "latest:  1.1.0", "an update is available"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--check output %q is missing %q", out, want)
+		}
+	}
+	if strings.Contains(out, "orchard-v1.1.0") {
+		t.Errorf("--check output %q leaks the raw release tag instead of the stripped version", out)
+	}
+}
+
 // AC: --check on a dev build hints that the comparison is not meaningful,
 // since "dev" always sorts older than any real release (see release.Compare)
 // and would otherwise read as a real, actionable update.
@@ -284,8 +310,12 @@ func TestUpgrade_ReadOnlyInstallDirIsRefusedByName(t *testing.T) {
 // AC7: --version pins, including to an older release.
 func TestUpgrade_PinnedVersionDowngrades(t *testing.T) {
 	f := newFixture(t)
-	f.publish(t, "v1.0.0", false, false)
-	f.publish(t, "v3.0.0", true, false)
+	// Real release-please tags carry the "orchard-" component prefix (see
+	// release-please-config.json); a v-prefixed --version pin goes through
+	// release.NormalizeTag before it reaches Client.ByTag, so the fixture
+	// must be published under the same real shape the pin resolves to.
+	f.publish(t, "orchard-v1.0.0", false, false)
+	f.publish(t, "orchard-v3.0.0", true, false)
 	dir := installDirWith(t, "v3", "orchard")
 	withVersion(t, "3.0.0")
 
@@ -294,8 +324,32 @@ func TestUpgrade_PinnedVersionDowngrades(t *testing.T) {
 		t.Fatalf("run(--version v1.0.0) = %d; want 0. stderr: %s", code, stderr.String())
 	}
 	got, _ := os.ReadFile(filepath.Join(dir, "orchard"))
-	if string(got) != "orchard@v1.0.0" {
-		t.Errorf("orchard = %q; want the pinned v1.0.0 build", got)
+	if string(got) != "orchard@orchard-v1.0.0" {
+		t.Errorf("orchard = %q; want the pinned orchard-v1.0.0 build", got)
+	}
+}
+
+// AC: --version accepts a bare semver or v-prefixed pin and resolves it
+// against the real release-please tag shape via release.NormalizeTag.
+// Before that fix, --version 1.1.0 (or v1.1.0) 404'd against a release
+// actually tagged "orchard-v1.1.0", because Client.ByTag matches tags
+// exactly and never saw the real tag.
+func TestUpgrade_BareVersionPinResolvesAgainstTheRealTagShape(t *testing.T) {
+	f := newFixture(t)
+	f.publish(t, "orchard-v1.1.0", true, false)
+	dir := installDirWith(t, "old", "orchard")
+	withVersion(t, "1.0.0")
+
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--version", "1.1.0", "--prefix", dir}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run(--version 1.1.0) = %d; want 0. stderr: %s", code, stderr.String())
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "orchard"))
+	if err != nil {
+		t.Fatalf("read orchard: %v", err)
+	}
+	if string(got) != "orchard@orchard-v1.1.0" {
+		t.Errorf("orchard = %q; want the pinned orchard-v1.1.0 build", got)
 	}
 }
 
