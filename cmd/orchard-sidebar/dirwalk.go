@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,7 +180,9 @@ func readDirNames(dir string) []string {
 // "known session cwds", whose shared parent becomes a root. A failure (daemon
 // down) yields nothing, and the walk falls back to $HOME.
 var knownCwds = func() []string {
-	out, err := env.innerCmd("list-panes", "-a", "-F", "#{pane_current_path}").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxOpTimeout)
+	defer cancel()
+	out, err := env.innerCmdContext(ctx, "list-panes", "-a", "-F", "#{pane_current_path}").Output()
 	if err != nil {
 		return nil
 	}
