@@ -147,19 +147,10 @@ mod tests {
     use super::*;
     use crate::global_config::{RemoteConfig, RepoConfig};
     use crate::remote_adapter::RemoteKind;
+    use crate::test_support::env_lock;
     use std::sync::Arc;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
-
-    /// Serialises tests that mutate process-global env vars (`HOME`,
-    /// `ORCHARD_EVENTS_PATH`). cargo runs lib tests in parallel by default;
-    /// without this lock two tests racing on `set_var` can land each other's
-    /// `proxy_failure` events in the wrong tempdir, producing concatenated
-    /// JSONL lines or false negatives.
-    ///
-    /// Resolves issue #347.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn remote(host: &str) -> RemoteConfig {
         RemoteConfig {
@@ -340,9 +331,10 @@ mod tests {
             return;
         }
 
-        // Hold ENV_LOCK so a sibling test's ORCHARD_EVENTS_PATH override
-        // doesn't catch our proxy_failure event (or vice versa).
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Hold the crate-wide env lock so a sibling test's
+        // ORCHARD_EVENTS_PATH override doesn't catch our proxy_failure event
+        // (or vice versa). Resolves issue #347.
+        let _guard = env_lock();
 
         let remote = crate::global_config::RemoteConfig {
             name: "orchard-proxy-test".to_string(),
@@ -380,10 +372,9 @@ mod tests {
             return;
         }
 
-        // Hold ENV_LOCK — see comment on ENV_LOCK. All OrchardProxy probes
-        // in this module must serialise so a sibling test's events.jsonl
-        // override doesn't catch our proxy_failure events.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // All OrchardProxy probes must serialise so a sibling test's
+        // events.jsonl override doesn't catch our proxy_failure events.
+        let _guard = env_lock();
 
         // Three distinct TEST-NET-1 addresses (RFC 5737) — unroutable, won't
         // accidentally hit a real host, guaranteed to time out rather than refuse.
@@ -492,11 +483,11 @@ mod tests {
         // redirect events.jsonl writes mid-call and we read an empty/wrong
         // file. ORCHARD_EVENTS_PATH is the events.rs override knob — use it
         // directly instead of mutating HOME so the path is unambiguous.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
 
         let events_dir = tempfile::TempDir::new().expect("create temp events dir");
         let events_path = events_dir.path().join("events.jsonl");
-        // SAFETY: protected by ENV_LOCK above.
+        // SAFETY: protected by the crate-wide env lock above.
         unsafe {
             std::env::set_var("ORCHARD_EVENTS_PATH", events_path.as_os_str());
         }
@@ -540,7 +531,7 @@ mod tests {
         );
 
         // Clear the env var so a later un-locked reader doesn't see our path.
-        // SAFETY: still under ENV_LOCK.
+        // SAFETY: still under the crate-wide env lock.
         unsafe {
             std::env::remove_var("ORCHARD_EVENTS_PATH");
         }
@@ -559,11 +550,11 @@ mod tests {
         // See `orchard_proxy_probe_failure_writes_event` for why this lock
         // exists. Same reasoning applies — we mutate ORCHARD_EVENTS_PATH and
         // would race with that sibling test if cargo runs them in parallel.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = env_lock();
 
         let events_dir = tempfile::TempDir::new().expect("create temp events dir");
         let events_path = events_dir.path().join("events.jsonl");
-        // SAFETY: protected by ENV_LOCK above.
+        // SAFETY: protected by the crate-wide env lock above.
         unsafe {
             std::env::set_var("ORCHARD_EVENTS_PATH", events_path.as_os_str());
         }
@@ -580,20 +571,27 @@ mod tests {
         let reachable = probe_reachability_for_remote(&remote);
         assert!(!reachable);
 
-        // The file may or may not exist (nothing else writes in this test);
-        // if it does, it must contain no proxy_failure line for this host.
+        // The file may or may not exist; if it does, it must contain no
+        // proxy_failure line *for our host*.
+        //
+        // The host filter is load-bearing, not cosmetic. `ORCHARD_EVENTS_PATH`
+        // is process-global and the crate-wide env lock only serialises tests
+        // that opt into it — the `remote_adapter` error-path tests write
+        // `remote_adapter.proxy_failure` events without taking it, so a
+        // foreign line can land in our tempdir. Scoping to `remote.host`
+        // (as the sibling `orchard_proxy_probe_failure_writes_event` already
+        // does) asserts what this test actually claims. Resolves issue #690.
         if let Ok(contents) = std::fs::read_to_string(&events_path) {
             for line in contents.lines() {
                 let v: serde_json::Value = serde_json::from_str(line).expect("valid JSONL");
-                assert_ne!(
-                    v["event"].as_str(),
-                    Some("remote_adapter.proxy_failure"),
-                    "Remmy probe failures must not emit proxy_failure events"
+                assert!(
+                    !(v["event"] == "remote_adapter.proxy_failure" && v["host"] == remote.host),
+                    "Remmy probe failures must not emit proxy_failure events; got: {line}"
                 );
             }
         }
 
-        // SAFETY: still under ENV_LOCK.
+        // SAFETY: still under the crate-wide env lock.
         unsafe {
             std::env::remove_var("ORCHARD_EVENTS_PATH");
         }

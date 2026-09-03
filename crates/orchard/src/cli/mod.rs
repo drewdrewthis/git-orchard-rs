@@ -11,7 +11,7 @@
 //!
 //! The CLI parses stdout only; stderr is free-form for human readers (L2).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
 use serde::Deserialize;
@@ -59,17 +59,31 @@ pub struct ScriptError {
 
 /// Resolves the absolute path to a domain script.
 ///
+/// Thin env-reading wrapper over [`resolve_script_inner`]: reads
+/// `$ORCHARD_SCRIPTS_DIR` and delegates. See the inner function for the search
+/// order and return contract.
+pub fn resolve_script(name: &str) -> Option<PathBuf> {
+    let override_dir = std::env::var_os("ORCHARD_SCRIPTS_DIR").map(PathBuf::from);
+    resolve_script_inner(name, override_dir.as_deref())
+}
+
+/// Inner implementation, accepting the `$ORCHARD_SCRIPTS_DIR` value directly.
+/// Extracted for hermetic unit testing without env-var manipulation — the
+/// same seam-via-injection shape as [`crate::tmux::current_session_name`].
+///
 /// Search order (first hit wins):
-/// 1. `$ORCHARD_SCRIPTS_DIR/<name>` — test / packaging override.
+/// 1. `<scripts_dir>/<name>` — test / packaging override, when `Some`.
 /// 2. `<cwd>/scripts/<name>` — running from a repo checkout.
 /// 3. `~/.orchard/scripts/<name>` — user-installed scripts.
 ///
 /// Returns `None` when the script cannot be found at any location. The caller
 /// prints a helpful error and exits non-zero.
-pub fn resolve_script(name: &str) -> Option<PathBuf> {
-    // 1. Env override (test harness, CI, custom packaging).
-    if let Ok(dir) = std::env::var("ORCHARD_SCRIPTS_DIR") {
-        let p = PathBuf::from(dir).join(name);
+///
+/// Resolves issue #690.
+pub(crate) fn resolve_script_inner(name: &str, scripts_dir: Option<&Path>) -> Option<PathBuf> {
+    // 1. Explicit override (test harness, CI, custom packaging).
+    if let Some(dir) = scripts_dir {
+        let p = dir.join(name);
         if p.exists() {
             return Some(p);
         }
@@ -225,9 +239,11 @@ mod tests {
         assert_eq!(err.message, "worktree gone");
     }
 
+    /// The override dir is passed as an argument, so this test mutates no
+    /// process-global state and cannot race a sibling test that reads or
+    /// clears `ORCHARD_SCRIPTS_DIR`. Regression for issue #690.
     #[test]
     fn resolve_script_env_override() {
-        // Point ORCHARD_SCRIPTS_DIR at a temp dir that has our target.
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("test-script.sh");
         std::fs::write(&script, "#!/bin/sh\necho ok").unwrap();
@@ -241,24 +257,25 @@ mod tests {
             std::fs::set_permissions(&script, perms).unwrap();
         }
 
-        unsafe {
-            std::env::set_var("ORCHARD_SCRIPTS_DIR", dir.path());
-        }
-        let found = resolve_script("test-script.sh");
-        unsafe {
-            std::env::remove_var("ORCHARD_SCRIPTS_DIR");
-        }
-        assert!(found.is_some());
-        assert_eq!(found.unwrap(), script);
+        let found = resolve_script_inner("test-script.sh", Some(dir.path()));
+        assert_eq!(found, Some(script));
+    }
+
+    /// An override dir that exists but does not contain the script falls
+    /// through to the later search locations rather than short-circuiting.
+    #[test]
+    fn resolve_script_override_dir_without_script_falls_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let found =
+            resolve_script_inner("__nonexistent_orchard_test_script__.sh", Some(dir.path()));
+        assert!(found.is_none());
     }
 
     #[test]
     fn resolve_script_missing_returns_none() {
-        // No env override, and this name won't exist anywhere.
-        unsafe {
-            std::env::remove_var("ORCHARD_SCRIPTS_DIR");
-        }
-        let found = resolve_script("__nonexistent_orchard_test_script__.sh");
+        // No override, and this name won't exist in <cwd>/scripts or
+        // ~/.orchard/scripts either.
+        let found = resolve_script_inner("__nonexistent_orchard_test_script__.sh", None);
         assert!(found.is_none());
     }
 }

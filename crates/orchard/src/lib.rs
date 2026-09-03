@@ -49,6 +49,8 @@ pub mod shell;
 pub mod signal;
 pub mod sources;
 pub mod swr;
+#[cfg(test)]
+mod test_support;
 pub mod tmux;
 pub mod transitive_walker;
 pub mod tui;

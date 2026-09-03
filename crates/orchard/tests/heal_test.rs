@@ -3,8 +3,8 @@
 /// These tests exercise the `heal::diagnose` pure function with realistic inputs,
 /// corresponding to acceptance criteria from `specs/features/orchard-heal.feature`.
 use orchard::heal::{
-    HealAction, HealCategory, HealInput, HealWorktree, Severity, apply_fixes, detect_self_error,
-    diagnose, format_report,
+    FixOutcome, HealAction, HealCategory, HealInput, HealWorktree, RecordingFixExecutor, Severity,
+    apply_fixes_with, detect_self_error, diagnose, format_report,
 };
 use orchard::types::TmuxSession;
 
@@ -256,16 +256,23 @@ fn fix_does_not_auto_delete_merged_pr_worktrees() {
         worktrees: &[wt],
         ..Default::default()
     });
-    let fix_results = orchard::heal::apply_fixes(&report.findings);
+    let exec = RecordingFixExecutor::new();
+    let fix_results = apply_fixes_with(&report.findings, &exec);
 
     // All results should be FlagForCleanup (not KillSession or DeleteFile).
     for r in &fix_results {
-        assert!(
-            r.message.starts_with("Flagged for manual cleanup"),
+        assert_eq!(
+            r.outcome,
+            FixOutcome::Flagged,
             "merged PR worktree should only be flagged, not deleted: {}",
             r.message
         );
     }
+    assert!(
+        exec.calls().is_empty(),
+        "no tmux kill or file delete may be issued for a merged-PR worktree; got: {:?}",
+        exec.calls()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -420,11 +427,11 @@ fn json_output_contains_findings_array() {
 /// goes through the kill path (not the skip path) for an otherwise-applicable
 /// KillSession action.
 ///
-/// Using a session name that cannot exist on the host so the kill is harmless.
+/// The kill is observed through a recording executor (issue #372), so no real
+/// tmux session is touched.
 #[test]
 fn outside_tmux_no_self_protection_applied() {
-    // Use a unique session name that will not exist on any test runner.
-    let session_name = "orchardist-test-issue361-no-such-session";
+    let session_name = "orchardist-test-issue361-orphan";
 
     // Session at /tmp — path exists but no matching worktree → OrphanedSession.
     let sessions = vec![session(session_name, "/tmp")];
@@ -452,14 +459,17 @@ fn outside_tmux_no_self_protection_applied() {
     );
 
     // apply_fixes must go through the kill path, not skip.
-    let fix_results = apply_fixes(&report.findings);
-    let kill_result = fix_results
-        .iter()
-        .find(|r| r.message.starts_with("Killed session"));
+    let exec = RecordingFixExecutor::new();
+    let fix_results = apply_fixes_with(&report.findings, &exec);
     assert!(
-        kill_result.is_some(),
+        fix_results.iter().any(|r| r.outcome == FixOutcome::Killed),
         "apply_fixes must attempt kill (not skip) when is_self=false; got: {:?}",
-        fix_results.iter().map(|r| &r.message).collect::<Vec<_>>()
+        fix_results.iter().map(|r| r.outcome).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        exec.killed_sessions(),
+        vec![session_name],
+        "the orphan session must be the one and only kill issued"
     );
 }
 
@@ -482,24 +492,24 @@ fn regression_heal_must_never_kill_invoking_session() {
         ..Default::default()
     });
 
-    let fix_results = orchard::heal::apply_fixes(&report.findings);
+    let exec = RecordingFixExecutor::new().with_current_session("orchardist");
+    let fix_results = apply_fixes_with(&report.findings, &exec);
 
-    // The invoking session must NOT be killed.
-    let killed = fix_results
-        .iter()
-        .any(|r| r.message.starts_with("Killed session \"orchardist\""));
+    // The invoking session must NOT be killed — asserted against the effects
+    // the executor actually received, not against a display string (#372).
     assert!(
-        !killed,
-        "heal --fix must not kill the invoking session \"orchardist\""
+        exec.calls().is_empty(),
+        "heal --fix must issue no effect at all for the invoking session \"orchardist\"; got: {:?}",
+        exec.calls()
     );
 
     // There must be at least one skip result for the invoking session.
-    let skipped = fix_results
-        .iter()
-        .any(|r| r.message.starts_with("Skipped session \"orchardist\""));
     assert!(
-        skipped,
-        "heal --fix must emit a skip result for the invoking session \"orchardist\""
+        fix_results
+            .iter()
+            .any(|r| r.outcome == FixOutcome::SkippedSelf),
+        "heal --fix must emit a skip result for the invoking session \"orchardist\"; got: {:?}",
+        fix_results.iter().map(|r| r.outcome).collect::<Vec<_>>()
     );
 }
 
@@ -584,7 +594,6 @@ fn json_output_exposes_is_self_field() {
 #[test]
 fn regression_full_pipeline_from_inside_named_tmux_session_never_kills_self() {
     // Both sessions point to /tmp (exists but not a worktree) → two OrphanedSession findings.
-    // Use a name that certainly does not exist on the test runner for the orphan.
     let orphan_name = "myrepo_old-feature-test-issue361";
     let sessions = vec![session("orchardist", "/tmp"), session(orphan_name, "/tmp")];
     let worktrees: Vec<HealWorktree> = vec![];
@@ -595,28 +604,25 @@ fn regression_full_pipeline_from_inside_named_tmux_session_never_kills_self() {
         current_session: Some("orchardist"),
         ..Default::default()
     });
-    let fix_results = apply_fixes(&report.findings);
+    let exec = RecordingFixExecutor::new().with_current_session("orchardist");
+    let fix_results = apply_fixes_with(&report.findings, &exec);
 
     // Self must be skipped, not killed.
-    let skipped = fix_results
-        .iter()
-        .any(|r| r.message.starts_with("Skipped session \"orchardist\""));
     assert!(
-        skipped,
+        fix_results
+            .iter()
+            .any(|r| r.outcome == FixOutcome::SkippedSelf),
         "must emit a skip result for the invoking session \"orchardist\"; got: {:?}",
-        fix_results.iter().map(|r| &r.message).collect::<Vec<_>>()
+        fix_results.iter().map(|r| r.outcome).collect::<Vec<_>>()
     );
 
-    // Non-self orphan must still go through the kill path.
-    let killed = fix_results.iter().any(|r| {
-        r.message
-            .starts_with(&format!("Killed session \"{}\"", orphan_name))
-    });
-    assert!(
-        killed,
-        "must attempt kill for non-self orphan \"{}\"; got: {:?}",
-        orphan_name,
-        fix_results.iter().map(|r| &r.message).collect::<Vec<_>>()
+    // Self-protection isolates only the invoking session: the non-self orphan
+    // is the one and only kill that reaches the executor.
+    assert_eq!(
+        exec.killed_sessions(),
+        vec![orphan_name],
+        "exactly the non-self orphan must be killed; got: {:?}",
+        exec.calls()
     );
 }
 
