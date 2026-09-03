@@ -110,7 +110,7 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.syncName()
 		return m, nil
 	case tea.KeyBackspace:
-		if !m.pick.backspaceFilter() {
+		if !m.pick.backspaceSearch() {
 			m.pick.parent()
 			m.syncName()
 		}
@@ -140,11 +140,11 @@ func (m *launchModel) pickKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if len(typed) > 0 {
-		m.pick.filterKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: typed})
+		m.pick.searchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: typed})
 		return m, nil
 	}
 	if msg.Type != tea.KeyRunes && msg.Type != tea.KeySpace {
-		m.pick.filterKey(msg) // ^U and the rest of the field's editing keys
+		m.pick.searchKey(msg) // ^U and the rest of the field's editing keys
 	}
 	return m, nil
 }
@@ -241,7 +241,7 @@ func (m *launchModel) View() string {
 		fmt.Fprintln(&b, " "+mark+sty.Render(trunc(label, w-5)))
 	}
 	fmt.Fprintln(&b, "")
-	fmt.Fprintln(&b, " "+styModLabel.Render("search  ")+m.pick.filterView(w-12))
+	fmt.Fprintln(&b, " "+styModLabel.Render("search  ")+m.pick.searchView(w-12))
 	fmt.Fprintln(&b, " "+m.field("command", &m.cmd, focusCmd, w))
 	fmt.Fprintln(&b, " "+m.field("name   ", &m.name, focusName, w)+m.renamedHint())
 	fmt.Fprintln(&b, "")

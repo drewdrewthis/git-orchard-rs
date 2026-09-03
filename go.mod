@@ -12,7 +12,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/graph-gophers/dataloader/v7 v7.1.3
-	github.com/sahilm/fuzzy v0.1.1
+	github.com/reinhrst/fzf-lib v0.9.0
 	github.com/spf13/cobra v1.10.2
 	github.com/vektah/gqlparser/v2 v2.5.33
 	golang.org/x/mod v0.33.0

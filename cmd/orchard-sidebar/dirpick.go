@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/sahilm/fuzzy"
+	"github.com/reinhrst/fzf-lib/algo"
+	"github.com/reinhrst/fzf-lib/util"
 )
 
 // The launch modal's directory picker. Everything here is a pure function of a
@@ -16,14 +17,13 @@ import (
 
 const parentEntry = ".."
 
-// searchDirs applies the two visibility rules to a directory listing: hidden
-// entries are out unless asked for, and a non-empty query keeps only names the
-// query is a fuzzy (subsequence) match of — fzf-style, so "ocs" finds
-// "orchard-codex-scripts". A blank query keeps everything in case-insensitive
-// alphabetical order; a real query orders by match score, best first, because
-// the closest match is the one you almost certainly meant. The parent entry is
-// prepended by the caller so it is never searched away: you can always go back
-// up, whatever you have typed.
+// searchDirs hides entries and orders the rest. Hidden entries are out unless
+// asked for. Everything else is sorted case-insensitive alphabetically first
+// — so score ties keep that order — then, with a query, re-ranked by fzf's
+// real match score (best first): a contiguous or prefix match outranks a
+// scattered one, so "ocs" puts "ocs-tools" above "orchard-codex-scripts". The
+// parent entry is prepended by the caller so it is never searched away: you
+// can always go back up, whatever you have typed.
 func searchDirs(names []string, showHidden bool, query string) []string {
 	visible := make([]string, 0, len(names))
 	for _, n := range names {
@@ -32,15 +32,33 @@ func searchDirs(names []string, showHidden bool, query string) []string {
 		}
 		visible = append(visible, n)
 	}
+	sort.Slice(visible, func(i, j int) bool {
+		return strings.ToLower(visible[i]) < strings.ToLower(visible[j])
+	})
 	if query == "" {
-		sort.Slice(visible, func(i, j int) bool {
-			return strings.ToLower(visible[i]) < strings.ToLower(visible[j])
-		})
 		return visible
 	}
-	out := make([]string, 0, len(visible))
-	for _, m := range fuzzy.Find(query, visible) { // already sorted by score desc
-		out = append(out, m.Str)
+
+	// FuzzyMatchV2's caseSensitive=false still expects a lowercased pattern —
+	// it lowercases the haystack but not the needle, so "DOC" would otherwise
+	// match nothing.
+	pat := []rune(strings.ToLower(query))
+	type hit struct {
+		name  string
+		score int
+	}
+	hits := make([]hit, 0, len(visible))
+	for _, n := range visible {
+		chars := util.ToChars([]byte(n))
+		res, _ := algo.FuzzyMatchV2(false, true, true, &chars, pat, false, nil)
+		if res.Start >= 0 {
+			hits = append(hits, hit{n, res.Score})
+		}
+	}
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	out := make([]string, len(hits))
+	for i, h := range hits {
+		out[i] = h.name
 	}
 	return out
 }
@@ -72,20 +90,20 @@ func readDirNames(dir string) []string {
 type picker struct {
 	dir     string
 	all     []string // every sub-directory, unfiltered
-	entries []string // ".." plus what the filter and hidden toggle leave
+	entries []string // ".." plus what the search and hidden toggle leave
 	cursor  int
-	filter  textField
+	search  textField
 	hidden  bool
 }
 
-// filterWidth is the visible width of the filter field; a directory name
+// searchWidth is the visible width of the search field; a directory name
 // longer than this scrolls under the cursor.
-const filterWidth = 40
+const searchWidth = 40
 
 func newPicker(dir string) *picker {
 	p := &picker{dir: cleanDir(dir)}
-	p.filter = newTextField("", filterWidth)
-	p.filter.placeholder("(type to search)")
+	p.search = newTextField("", searchWidth)
+	p.search.placeholder("(type to search)")
 	p.load()
 	return p
 }
@@ -113,14 +131,14 @@ func cleanDir(dir string) string {
 
 func (p *picker) load() {
 	p.all = readDirNames(p.dir)
-	p.refilter()
+	p.rebuild()
 }
 
-// refilter rebuilds the visible list and keeps the cursor in range. It is
-// called on every keystroke that changes the filter, so it must be cheap: no
+// rebuild recomputes the visible list and keeps the cursor in range. It is
+// called on every keystroke that changes the search, so it must be cheap: no
 // filesystem access, just the cached listing.
-func (p *picker) refilter() {
-	p.entries = append([]string{parentEntry}, searchDirs(p.all, p.hidden, p.filter.value())...)
+func (p *picker) rebuild() {
+	p.entries = append([]string{parentEntry}, searchDirs(p.all, p.hidden, p.search.value())...)
 	if p.cursor >= len(p.entries) {
 		p.cursor = len(p.entries) - 1
 	}
@@ -140,7 +158,7 @@ func (p *picker) move(d int) {
 }
 
 // enter descends into the highlighted entry (or climbs, on ".."). Moving
-// clears the filter: it described the directory you were in, not this one.
+// clears the search: it described the directory you were in, not this one.
 func (p *picker) enter() {
 	if p.cursor < 0 || p.cursor >= len(p.entries) {
 		return
@@ -160,40 +178,40 @@ func (p *picker) parent() {
 
 func (p *picker) goTo(dir string) {
 	p.dir, p.cursor = dir, 0
-	p.filter.set("")
+	p.search.set("")
 	p.load()
 }
 
 func (p *picker) toggleHidden() {
 	p.hidden = !p.hidden
-	p.refilter()
+	p.rebuild()
 }
 
-// filterKey hands one key to the filter field and re-derives the list. The
+// searchKey hands one key to the search field and re-derives the list. The
 // field is a textField like every other input here, so a coalesced burst of
 // keystrokes (or a paste) lands whole — reading one rune per message silently
 // swallowed most of what was typed.
-func (p *picker) filterKey(msg tea.KeyMsg) {
-	before := p.filter.value()
-	p.filter.key(msg)
-	if p.filter.value() == before {
+func (p *picker) searchKey(msg tea.KeyMsg) {
+	before := p.search.value()
+	p.search.key(msg)
+	if p.search.value() == before {
 		return
 	}
-	p.refilter()
+	p.rebuild()
 	p.restCursor()
 }
 
-// filterView renders the field, placeholder included.
-func (p *picker) filterView(w int) string { return p.filter.view(w) }
+// searchView renders the field, placeholder included.
+func (p *picker) searchView(w int) string { return p.search.view(w) }
 
-// backspaceFilter deletes the last filter character, reporting false when
+// backspaceSearch deletes the last search character, reporting false when
 // there was nothing to delete — the caller then reads the backspace as "go up
 // a directory" instead.
-func (p *picker) backspaceFilter() bool {
-	if p.filter.value() == "" {
+func (p *picker) backspaceSearch() bool {
+	if p.search.value() == "" {
 		return false
 	}
-	p.filterKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	p.searchKey(tea.KeyMsg{Type: tea.KeyBackspace})
 	return true
 }
 
@@ -218,12 +236,12 @@ func (p *picker) top(n int) int {
 	return p.cursor - n + 1
 }
 
-// restCursor parks the cursor where the next Enter should go. With a filter
+// restCursor parks the cursor where the next Enter should go. With a search
 // typed, that is the first match, not ".." — typing "cmd" and pressing enter
 // has to descend into cmd/, not climb to the parent.
 func (p *picker) restCursor() {
 	p.cursor = 0
-	if p.filter.value() != "" && len(p.entries) > 1 {
+	if p.search.value() != "" && len(p.entries) > 1 {
 		p.cursor = 1
 	}
 }
