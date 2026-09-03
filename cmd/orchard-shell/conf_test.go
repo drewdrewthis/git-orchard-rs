@@ -31,7 +31,7 @@ func TestEmbeddedConf_MatchesTheScriptsCopyByteForByte(t *testing.T) {
 }
 
 func TestEmbeddedConf_IsTheRealConfig(t *testing.T) {
-	for _, want := range []string{"set -g prefix None", "set -g mouse on", "set-hook -g window-resized"} {
+	for _, want := range []string{"set -g prefix None", "set -g mouse on", "set-hook -g window-resized", "set -s set-clipboard on"} {
 		if !strings.Contains(string(embeddedConf), want) {
 			t.Errorf("embedded outer.conf is missing %q", want)
 		}
