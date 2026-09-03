@@ -168,7 +168,7 @@ func clientAttached(tty clientTTY, live map[clientTTY]bool) bool {
 // so a test drives the retry loop with a no-op sleep instead of real time.
 var (
 	driftPollEvery    = 250 * time.Millisecond
-	driftPollAttempts = 12 // ~3s ceiling at 250ms between reads
+	driftPollAttempts = 40 // ~10s window: generous because a slow inner attach (>3s on detached outer server) must not trip the stale-launcher hint
 	driftSleep        = time.Sleep
 )
 
