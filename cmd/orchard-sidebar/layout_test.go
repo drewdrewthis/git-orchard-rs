@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -205,7 +206,7 @@ func TestCollapseButtonTogglesTheStrip(t *testing.T) {
 	}
 
 	// the layout the user chose is remembered, so it survives a restart
-	if first := spy.saved[0]; first != (sidebarState{Width: 42, Collapsed: true}) {
+	if first := spy.saved[0]; !reflect.DeepEqual(first, sidebarState{Width: 42, Collapsed: true}) {
 		t.Errorf("the collapse was persisted as %+v", first)
 	}
 

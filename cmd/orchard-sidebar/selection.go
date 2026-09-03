@@ -204,12 +204,25 @@ func (m *model) key(msg tea.KeyMsg) tea.Cmd {
 		m.moveSel(-1)
 	case tea.KeyEnter:
 		m.selectRow(m.railIndex(m.visibleRows()), true)
+	case tea.KeyShiftUp:
+		m.reorderSelectedPin(-1)
+	case tea.KeyShiftDown:
+		m.reorderSelectedPin(1)
 	case tea.KeyEsc:
 		// a filter left applied by Enter is still dismissed by Esc, from the
 		// list: otherwise the only way out is to reopen the field first
 		m.clearFilter()
 	}
 	return nil
+}
+
+// reorderSelectedPin moves the card the pane is describing within the pinned
+// block. Keyed to railRow, not the raw cursor, so it targets the card the user
+// sees the rail on; a no-op when that card is unpinned (reorderPin clamps).
+func (m *model) reorderSelectedPin(dir int) {
+	if r, ok := m.railRow(); ok {
+		m.reorderPin(r.session, dir)
+	}
 }
 
 // keyRune handles one printable key. Every rune here has a named-key twin in
@@ -227,6 +240,13 @@ func (m *model) keyRune(r rune) tea.Cmd {
 		m.openFilter()
 	case 'b':
 		m.toggleBell()
+	case 'P':
+		// pin/unpin the card the pane is describing. railRow, not the raw
+		// cursor, so a filtered-away selection pins the card the rail sits on;
+		// a fake scroll-test row names no tmux session, so it is not pinnable.
+		if r, ok := m.railRow(); ok && !r.fake {
+			m.togglePin(r.session)
+		}
 	}
 	return nil
 }

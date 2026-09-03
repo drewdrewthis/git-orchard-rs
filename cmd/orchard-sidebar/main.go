@@ -211,6 +211,7 @@ func main() {
 		desiredWidth: st.Width,
 		collapsed:    st.Collapsed,
 		bell:         st.Bell,
+		pinned:       st.Pinned,
 		// resolved once: addFakes ran fakeCount() twice a second, re-reading
 		// the environment and rebuilding the same synthetic list every time
 		fakes: fakeRows(fakeCount()),

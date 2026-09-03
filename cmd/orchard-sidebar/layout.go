@@ -78,6 +78,10 @@ type viewLine struct {
 	text string
 	row  int
 	copy string
+	// sep marks the pinned-block separator line: it maps to no row (row == -1),
+	// but compose records its final screen position so a drag release can be
+	// hit-tested above (into the block) or below (out of it).
+	sep bool
 }
 
 // paneLayout is the vertical division of the pane. headerY is always 0;

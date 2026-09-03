@@ -21,6 +21,7 @@ type paneFrame struct {
 	updateZone   clickZone // the header's update glyph: a click opens the overlay
 	menuBox      clickZone // the whole menu box: a click outside dismisses
 	menuRows     []clickZone
+	pinSep       int // screen line of the pinned separator, -1 when none is drawn
 }
 
 // rowAtLine is the click-to-row lookup, bounds-checked: a mouse event can
@@ -122,8 +123,12 @@ func (m *model) render(head, list, foot []viewLine, width, height int, zones hea
 		m.anchorDelta = off - firstLineOfRow(list, list[i].row)
 		break
 	}
+	pinSep := -1
 	for i := 0; i < lay.listH; i++ {
 		if off+i < len(list) {
+			if list[off+i].sep {
+				pinSep = len(out) // the separator's final on-screen line
+			}
 			out = append(out, list[off+i])
 			continue
 		}
@@ -156,5 +161,6 @@ func (m *model) render(head, list, foot []viewLine, width, height int, zones hea
 		updateZone:   zones.update,
 		menuBox:      box,
 		menuRows:     rows,
+		pinSep:       pinSep,
 	}
 }

@@ -35,6 +35,9 @@ type sidebarState struct {
 	// Bell is opt-in and off by default: a sidebar that starts making noise
 	// on its own is a sidebar people close.
 	Bell bool `json:"bell"`
+	// Pinned is the ordered set of pinned session names. Order is significant
+	// and preserved across restarts — it is the block's top-to-bottom order.
+	Pinned []string `json:"pinned,omitempty"`
 }
 
 func sidebarStatePath() string { return stateFile("sidebar-state.json") }

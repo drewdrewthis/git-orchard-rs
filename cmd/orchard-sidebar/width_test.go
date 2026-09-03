@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"reflect"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -99,15 +100,15 @@ func TestCollapseIsRememberedAndReopensAtTheDraggedWidth(t *testing.T) {
 
 	m := &model{desiredWidth: 52, width: 52, sized: true}
 	m.toggleCollapse()
-	if len(collapses) != 1 || collapses[0] != (sidebarState{Width: collapsedWidth, Collapsed: true}) {
+	if len(collapses) != 1 || !reflect.DeepEqual(collapses[0], sidebarState{Width: collapsedWidth, Collapsed: true}) {
 		t.Fatalf("collapse drove tmux with %+v", collapses)
 	}
-	if last := spy.saved[len(spy.saved)-1]; last != (sidebarState{Width: 52, Collapsed: true}) {
+	if last := spy.saved[len(spy.saved)-1]; !reflect.DeepEqual(last, sidebarState{Width: 52, Collapsed: true}) {
 		t.Fatalf("persisted %+v, want the collapsed flag beside the remembered width", last)
 	}
 
 	m.toggleCollapse()
-	if last := collapses[len(collapses)-1]; last != (sidebarState{Width: 52, Collapsed: false}) {
+	if last := collapses[len(collapses)-1]; !reflect.DeepEqual(last, sidebarState{Width: 52, Collapsed: false}) {
 		t.Fatalf("expand drove tmux with %+v, want the dragged 52", last)
 	}
 	if last := spy.saved[len(spy.saved)-1]; last.Collapsed {
@@ -121,22 +122,22 @@ func TestCollapseIsRememberedAndReopensAtTheDraggedWidth(t *testing.T) {
 func TestSidebarStateFileRoundTrip(t *testing.T) {
 	stateHome(t)
 
-	if got := loadSidebarState(); got != (sidebarState{}) {
+	if got := loadSidebarState(); !reflect.DeepEqual(got, sidebarState{}) {
 		t.Errorf("a missing file loaded as %+v, want the zero layout", got)
 	}
 	if err := saveSidebarState(sidebarState{Width: 52, Collapsed: true}); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadSidebarState(); got != (sidebarState{Width: 52, Collapsed: true}) {
+	if got := loadSidebarState(); !reflect.DeepEqual(got, sidebarState{Width: 52, Collapsed: true}) {
 		t.Errorf("round trip = %+v", got)
 	}
 
 	writeStateFile(t, "sidebar-state.json", `{"width": 52, "collapsed":`)
-	if got := loadSidebarState(); got != (sidebarState{}) {
+	if got := loadSidebarState(); !reflect.DeepEqual(got, sidebarState{}) {
 		t.Errorf("a truncated file loaded as %+v, want the zero layout", got)
 	}
 	writeStateFile(t, "sidebar-state.json", `not json at all`)
-	if got := loadSidebarState(); got != (sidebarState{}) {
+	if got := loadSidebarState(); !reflect.DeepEqual(got, sidebarState{}) {
 		t.Errorf("garbage loaded as %+v, want the zero layout", got)
 	}
 	// a width below the readable floor is dropped rather than restored: the

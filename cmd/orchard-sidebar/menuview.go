@@ -30,7 +30,7 @@ func (m *model) overlayMenu(out []viewLine, w, height int) (_ []viewLine, box cl
 	}
 	// only the body rows are items; the borders are decoration
 	if m.menu.mode == menuActions {
-		for i := range menuItems {
+		for i := range m.menuActionLabels() {
 			rows = append(rows, clickZone{x: 0, y: y0 + 1 + i, w: max(1, w-3), h: 1})
 		}
 	}
@@ -69,7 +69,7 @@ func (m *model) menuBody(inner int) []string {
 	case menuConfirm:
 		out = append(out, styAttn.Render(trunc("Close "+m.menu.sess+"? y/N", inner)))
 	default:
-		for i, it := range menuItems {
+		for i, it := range m.menuActionLabels() {
 			mark, sty := "  ", styDim
 			if i == m.menu.item {
 				mark, sty = "▸ ", stySelName
