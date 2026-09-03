@@ -72,9 +72,6 @@ func initRepoWithCommit(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	runGitT(t, "", "init", "--initial-branch=main", "-q", dir)
-	runGitT(t, dir, "config", "user.email", "test@example.com")
-	runGitT(t, dir, "config", "user.name", "Test")
-	runGitT(t, dir, "config", "commit.gpgsign", "false")
 	commitFile(t, dir, "README.md", "hello")
 	return dir
 }
@@ -88,9 +85,21 @@ func commitFile(t *testing.T, repo, name, body string) {
 	runGitT(t, repo, "commit", "-q", "-m", "add "+name)
 }
 
+// gitIdentityArgs ride on every git invocation rather than being written into
+// one repo's local config. A CI runner has no global user.name/user.email, and
+// `git clone` does not copy the source repo's local config — so seeding only
+// the origin left commits in the clone failing with "Author identity unknown".
+// Passing the identity per-command makes every helper hermetic regardless of
+// which repo it targets or what the ambient ~/.gitconfig holds.
+var gitIdentityArgs = []string{
+	"-c", "user.email=test@example.com",
+	"-c", "user.name=Test",
+	"-c", "commit.gpgsign=false",
+}
+
 func runGitT(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.CommandContext(context.Background(), "git", args...)
+	cmd := exec.CommandContext(context.Background(), "git", append(gitIdentityArgs, args...)...)
 	if dir != "" {
 		cmd.Dir = dir
 	}

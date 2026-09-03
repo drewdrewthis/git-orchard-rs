@@ -20,18 +20,18 @@ import (
 // It serves the minimum set of tmux sub-commands FetchAll needs.
 type fakeTmuxRunner struct {
 	hostID string
-	// paneLines are already-formatted pane rows in the nine-field \x01-sep format
-	// that listPanes expects.
+	// paneLines are already-formatted pane rows in the FieldSep-separated
+	// listAllFormat that listAll expects.
 	paneLines []string
 }
 
-// fieldSepTest must match the tmux adapter's fieldSep. #662 changed the real
-// separator from \x01 to \t (tmux 3.x discovery fix) without updating these
-// fakes, so every seeded pane row silently failed the 18-field parse and the
-// providers came up empty — the tests here have been asserting against an empty
-// provider ever since. CI never caught it: .github/workflows/ci.yml runs only
-// `cargo test -p orchard`, so no Go test in this repo runs in CI.
-const fieldSepTest = "\t"
+// fieldSepTest is the adapter's own separator, not a copy of it. #662 changed
+// the real separator from \x01 to \t (tmux 3.x discovery fix) without updating
+// these fakes, so every seeded pane row silently failed the 18-field parse and
+// the providers came up empty — the tests here asserted against an empty
+// provider. Binding to tmuxprovider.FieldSep makes that class of drift
+// impossible; the Go CI job added with #712 makes it loud if it recurs.
+const fieldSepTest = tmuxprovider.FieldSep
 
 func (f *fakeTmuxRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	if name != "tmux" {

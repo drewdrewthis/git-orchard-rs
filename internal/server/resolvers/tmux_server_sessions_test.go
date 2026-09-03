@@ -17,7 +17,7 @@ import (
 // the tmux adapter's listAll parser. We only care about the session-level
 // fields here; window/pane fields get safe defaults.
 func listAllRow(sessionName string, lastActivityUnix int64, paneID string, pid int) string {
-	const fs = "\x01"
+	const fs = tmuxprovider.FieldSep
 	return strings.Join([]string{
 		sessionName,                          // 0  session_name
 		"1700000000",                         // 1  session_created

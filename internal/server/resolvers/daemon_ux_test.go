@@ -69,10 +69,13 @@ func TestDaemonState_ReportsProvidersAndUptime(t *testing.T) {
 	if state.StartedAt == "" {
 		t.Errorf("startedAt empty")
 	}
+	// #666 collapsed contracts onto jsonl sentinels folded by
+	// scripts/fold-contracts.sh and deleted the daemon domain, so DaemonState
+	// no longer reports a "contracts" provider.
 	wantProviders := map[string]bool{
 		"host": true, "git": true, "ps": true, "tmux": true,
 		"claudeProjects": true, "claudeAccount": true, "claudeInstance": true,
-		"hostService": true, "contracts": true, "gh": true, "peerProxy": true,
+		"hostService": true, "gh": true, "peerProxy": true,
 	}
 	for _, p := range state.Providers {
 		if _, ok := wantProviders[p.Name]; !ok {

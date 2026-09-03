@@ -54,8 +54,9 @@ import (
 // ----------------------------------------------------------------------
 
 // e2eTmuxRunner is a CommandRunner for the tmux adapter. It serves
-// list-sessions, list-windows, list-panes, and the info probe using
-// the 0x01 field separator the tmux adapter expects.
+// list-sessions, list-windows, list-panes, and the alive probe. Rows are
+// joined with tmuxprovider.FieldSep — the adapter's own constant — so the
+// stub cannot drift from the wire format (#664, #712).
 type e2eTmuxRunner struct {
 	paneRows    []string
 	sessionRows []string
@@ -96,10 +97,10 @@ func e2eFirstNonFlagTmuxArg(args []string) string {
 }
 
 // e2ePaneRow builds a list-panes row in the tmux adapter's listAllFormat
-// (18 fields, U+0001-separated). The adapter consolidated list-sessions,
-// list-windows, and list-panes into a single `tmux list-panes -a -F
-// <listAllFormat>` call (#511 follow-up); session metadata is emitted on
-// every pane row.
+// (tmuxprovider.ListAllFieldCount fields, FieldSep-separated). The adapter
+// consolidated list-sessions, list-windows, and list-panes into a single
+// `tmux list-panes -a -F <listAllFormat>` call (#511 follow-up); session
+// metadata is emitted on every pane row.
 func e2ePaneRow(session, paneID string, pid int) string {
 	return e2ePaneRowAt(session, paneID, pid, 1700000000)
 }
@@ -127,7 +128,7 @@ func e2ePaneRowAt(session, paneID string, pid int, activityUnix int64) string {
 		"200",                                 // 15 pane_width
 		"50",                                  // 16 pane_height
 		"0",                                   // 17 pane_dead
-	}, "\x01")
+	}, tmuxprovider.FieldSep)
 }
 
 // e2eSessionRow builds a list-sessions row.
@@ -140,13 +141,13 @@ func e2eSessionRow(name string, activityUnix int64) string {
 		fmt.Sprintf("%d", activityUnix),
 		"1",
 		"0",
-	}, "\x01")
+	}, tmuxprovider.FieldSep)
 }
 
 // e2eWindowRow builds a list-windows row.
 // Fields: session, index, name, active, panes, curpane
 func e2eWindowRow(session string) string {
-	return strings.Join([]string{session, "0", "main", "1", "1", "%1"}, "\x01")
+	return strings.Join([]string{session, "0", "main", "1", "1", "%1"}, tmuxprovider.FieldSep)
 }
 
 // e2ePsRunner is a CommandRunner for the ps and lsof adapters.
