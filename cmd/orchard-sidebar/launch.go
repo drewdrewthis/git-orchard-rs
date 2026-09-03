@@ -130,12 +130,11 @@ func newSessionArgs(dir, name string) []string {
 //
 // Pane survival is timing-independent — the pane's process is the shell, so a
 // keystroke that races the shell's startup degrades to "an empty prompt in
-// DIR", never a dead pane. Delivery itself is best-effort: a shell that
-// flushes typeahead on startup can still drop the send-keys (outer.go
-// documents the same flake for outer boot), landing the user at a bare
-// prompt with no command run. A live probe on this machine: 10/10 launches
-// delivered. An empty command delivers nothing and the session simply opens
-// on its shell.
+// DIR", never a dead pane. Delivery itself can still race: a shell that flushes
+// typeahead on startup can drop the send-keys (cmd/orchard-shell/outer.go:233
+// documents the same flake for outer boot). launchSession closes that gap by
+// watching the pane and resending once (confirmDelivery). An empty command
+// delivers nothing and the session simply opens on its shell.
 func sendCommandArgs(name, cmd string) ([][]string, bool) {
 	c := strings.TrimSpace(cmd)
 	if c == "" {
@@ -160,13 +159,29 @@ var launchSession = func(dir, cmd, name string) error {
 		return fmt.Errorf("new-session: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	if argLists, ok := sendCommandArgs(name, cmd); ok {
-		for _, args := range argLists {
-			if out, err := env.innerCmd(args...).CombinedOutput(); err != nil {
-				// A failed send-keys leaves the empty-shell session in place — survivable
-				// and visible in the sidebar, so no cleanup needed here.
-				return fmt.Errorf("send-keys: %v: %s", err, strings.TrimSpace(string(out)))
+		// The pane's command right now is the shell — captured BEFORE delivery so
+		// the poll can tell "command took" from "still at a prompt" without
+		// guessing at $SHELL. Best-effort: an unreadable pane leaves shell empty
+		// and the watch degrades to at most one harmless resend.
+		shell, _ := paneCurrentCommand(name)
+		deliver := func() error {
+			for _, args := range argLists {
+				if out, err := env.innerCmd(args...).CombinedOutput(); err != nil {
+					return fmt.Errorf("send-keys: %v: %s", err, strings.TrimSpace(string(out)))
+				}
 			}
+			return nil
 		}
+		if err := deliver(); err != nil {
+			// A failed send-keys leaves the empty-shell session in place — survivable
+			// and visible in the sidebar, so no cleanup needed here.
+			return err
+		}
+		confirmDelivery(shell, deliverySeams{
+			command: func() (string, error) { return paneCurrentCommand(name) },
+			resend:  deliver,
+			wait:    func() { time.Sleep(deliverInterval) },
+		})
 	}
 	if err := switchClientTo(name); err != nil {
 		return fmt.Errorf("switch-client: %w", err)

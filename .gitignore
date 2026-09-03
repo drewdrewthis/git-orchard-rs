@@ -22,4 +22,5 @@ node_modules/
 .merge-helper-context/
 .claude/ralph-loop.local.md
 .prove-it-context/
-orchard-sidebar
+/cmd/orchard-sidebar/orchard-sidebar
+/orchard-sidebar
