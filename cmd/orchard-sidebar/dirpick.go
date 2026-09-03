@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -215,14 +216,17 @@ func (p *picker) top(n int) int {
 }
 
 // abbrevHome shortens a $HOME-rooted path to "~/…" and shifts the highlight
-// spans left by the characters it collapsed, so the underline still lands on
-// the right runes.
+// spans left by the runes it collapsed, so the underline still lands on the
+// right runes. spans are rune-indexed (matchSpans reads fzf's match positions
+// as rune offsets), so the shift must be counted in runes too — path[len(home):]
+// stays a byte slice (home is confirmed a byte-exact prefix above, so a byte
+// offset is the correct way to strip it), only delta needs the rune count.
 func abbrevHome(path string, spans []span) (string, []span) {
 	home := os.Getenv("HOME")
 	if home == "" || (path != home && !strings.HasPrefix(path, home+"/")) {
 		return path, spans
 	}
-	delta := len([]rune(home)) - 1 // the home runes become a single "~"
+	delta := utf8.RuneCountInString(home) - 1 // the home runes become a single "~"
 	short := "~" + path[len(home):]
 	var out []span
 	for _, s := range spans {

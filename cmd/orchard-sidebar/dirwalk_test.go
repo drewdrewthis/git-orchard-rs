@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -70,6 +71,23 @@ func TestWalkCandidatesSkipsAndBounds(t *testing.T) {
 	}
 }
 
+// The cap bounds descendants, not roots: a root must never be dropped just
+// because an earlier root's children already filled the cap.
+func TestWalkCandidatesCapNeverDropsRoots(t *testing.T) {
+	root1 := t.TempDir()
+	root2 := t.TempDir()
+	mkdirs(t, root1, "a", "b", "c")
+
+	got := walkCandidates(walkConfig{roots: []string{root1, root2}, cap: 1})
+
+	if !hasPath(got, root1) {
+		t.Errorf("walk dropped root %q under cap=1", root1)
+	}
+	if !hasPath(got, root2) {
+		t.Errorf("walk dropped root %q under cap=1", root2)
+	}
+}
+
 // AC7: with no session selected, the roots are the shared parent of the known
 // cwds plus $HOME, and a walk over them still reaches the fuzzy target.
 func TestResolveRootsNoSelection(t *testing.T) {
@@ -117,6 +135,30 @@ func TestCommonParent(t *testing.T) {
 		}
 		if got := commonParent(in); got != filepath.FromSlash(c.want) && !(c.want == "" && got == "") {
 			t.Errorf("commonParent(%v) = %q, want %q (sep %q)", c.in, got, c.want, sep)
+		}
+	}
+}
+
+// A symlink loop (a/b/loop -> a) must not send the walk descending forever —
+// it should stop at the loop entry and still surface the legitimate dirs.
+func TestWalkCandidatesSkipsSymlinkCycle(t *testing.T) {
+	root := t.TempDir()
+	mkdirs(t, root, "a/b", "a/c")
+	loop := filepath.Join(root, "a/b/loop")
+	if err := os.Symlink(filepath.Join(root, "a"), loop); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+
+	got := walkCandidates(walkConfig{roots: []string{root}, maxDepth: 6})
+
+	for _, x := range got {
+		if strings.HasPrefix(x, loop+string(os.PathSeparator)) {
+			t.Errorf("walk descended into the symlink loop: %q", x)
+		}
+	}
+	for _, in := range []string{"a", "a/b", "a/c"} {
+		if p := filepath.Join(root, filepath.FromSlash(in)); !hasPath(got, p) {
+			t.Errorf("walk missing legitimate dir %q (got %v)", p, got)
 		}
 	}
 }

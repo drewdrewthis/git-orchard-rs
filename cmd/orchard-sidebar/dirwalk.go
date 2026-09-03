@@ -115,22 +115,33 @@ func commonParent(paths []string) string {
 }
 
 // walkCandidates returns the absolute directory paths under the roots, the root
-// itself included, bounded by depth and count and pruned of the skip list and
-// (unless asked) hidden directories. Duplicates across overlapping roots — a
-// selected cwd nested under $HOME — are collapsed.
+// itself included, bounded by depth and count (the count cap applies to
+// descendants only, so every root is always emitted) and pruned of the skip
+// list and (unless asked) hidden directories. Duplicates across overlapping
+// roots — a selected cwd nested under $HOME — are collapsed.
 func walkCandidates(cfg walkConfig) []string {
-	// seen is keyed by path, not inode, so it dedups overlapping roots but
-	// cannot detect a symlink cycle (a link back to an ancestor gets a new
-	// path each hop); maxWalkDepth is the only thing that stops that walk.
+	// seen is keyed by path, not inode, so a plain symlink loop (a link back
+	// to an ancestor) would otherwise get a fresh path each hop and defeat
+	// this map; realSeen tracks every visited dir's resolved (symlink-free)
+	// path — including every ancestor, since they're recorded on the way
+	// down before their descendants are walked — so a symlinked entry whose
+	// real path is an ancestor or already visited is skipped before descent,
+	// rather than relying on maxWalkDepth to eventually stop it.
 	seen := map[string]bool{}
+	realSeen := map[string]bool{}
 	var out []string
 	var visit func(dir string, depth int)
 	visit = func(dir string, depth int) {
-		if len(out) >= cfg.capN() || seen[dir] {
+		if seen[dir] || (depth > 0 && len(out) >= cfg.capN()) {
 			return
 		}
 		seen[dir] = true
 		out = append(out, dir)
+		real := dir
+		if r, err := filepath.EvalSymlinks(dir); err == nil {
+			real = r
+		}
+		realSeen[real] = true
 		if depth >= cfg.depth() {
 			return
 		}
@@ -144,7 +155,14 @@ func walkCandidates(cfg walkConfig) []string {
 			if !cfg.showHidden && strings.HasPrefix(name, ".") {
 				continue
 			}
-			visit(filepath.Join(dir, name), depth+1)
+			child := filepath.Join(dir, name)
+			if fi, err := os.Lstat(child); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				childReal, err := filepath.EvalSymlinks(child)
+				if err != nil || realSeen[childReal] {
+					continue
+				}
+			}
+			visit(child, depth+1)
 		}
 	}
 	for _, r := range cfg.roots {
