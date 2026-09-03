@@ -58,6 +58,40 @@ const (
 	recapCmdName  = "<command-name>/recap</command-name>"
 )
 
+// RecapSource identifies which transcript record kind produced a recap.
+// Values mirror the GraphQL `RecapSource` enum wire form so the mapping
+// in Provider.ToGraphQL is a plain conversion.
+type RecapSource string
+
+const (
+	// RecapSourceCommand is an explicit `/recap` slash-command output.
+	RecapSourceCommand RecapSource = "RECAP_COMMAND"
+	// RecapSourceAwaySummary is an autonomous `away_summary` system record
+	// Claude Code writes between sessions without a slash command.
+	RecapSourceAwaySummary RecapSource = "AWAY_SUMMARY"
+)
+
+// recapResult is the recap text paired with the record kind it came from.
+type recapResult struct {
+	Text   string
+	Source RecapSource
+}
+
+// clipRecap trims s and clips it to maxRecapBytes, returning nil when the
+// trimmed text is empty. Shared trailer for every recap-candidate parser
+// (/recap stdout, away_summary content) so the size bound is enforced in
+// exactly one place.
+func clipRecap(s string) *string {
+	text := strings.TrimSpace(s)
+	if text == "" {
+		return nil
+	}
+	if len(text) > maxRecapBytes {
+		text = text[:maxRecapBytes]
+	}
+	return &text
+}
+
 // systemRecord is the partial shape of a `type=system` JSONL record. We
 // only care about `subtype` and `content` for recap matching.
 type systemRecord struct {
@@ -76,7 +110,8 @@ type userRecord struct {
 }
 
 // scanRecapInTail reads the tail-window of the file, splits on newlines,
-// and walks records in reverse looking for a recap pair.
+// and walks records in reverse looking for a recap candidate — either a
+// standalone away_summary record or a /recap command pair.
 func scanRecapInTail(path string, size int64) (*recapResult, bool, error) {
 	window := int64(maxLatestMarkersWindow)
 	if window > size {
@@ -227,15 +262,7 @@ func parseSystemLocalStdout(line []byte) *string {
 	if closeIdx == -1 || closeIdx <= openIdx {
 		return nil
 	}
-	text := s.Content[openIdx+len(recapOpenTag) : closeIdx]
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	if len(text) > maxRecapBytes {
-		text = text[:maxRecapBytes]
-	}
-	return &text
+	return clipRecap(s.Content[openIdx+len(recapOpenTag) : closeIdx])
 }
 
 // splitLines splits buf on newlines. A trailing partial line (no

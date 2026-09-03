@@ -73,14 +73,6 @@
 				>
 					RECAP
 				</span>
-				{#if conversation.recapSource === "AWAY_SUMMARY"}
-					<span
-						class="rounded px-1 text-[9px] font-semibold uppercase tracking-wide opacity-60"
-						title="Auto-generated away summary (no /recap was run)"
-					>
-						auto
-					</span>
-				{/if}
 				{#if !recapOpen}
 					<span class="chat-recap-peek dimer">{conversation.recap}</span>
 				{/if}

@@ -6,7 +6,27 @@ import (
 	"time"
 
 	"github.com/drewdrewthis/orchardist/internal/server/adapter"
+	"github.com/drewdrewthis/orchardist/internal/server/graphql"
 )
+
+// TestToGraphQLRecapSource_MapsToValidEnum asserts that every provider
+// RecapSource value maps, via toGraphQLRecapSource, to a graphql.RecapSource
+// for which IsValid() is true. toGraphQLRecapSource casts the provider's
+// string enum across packages unguarded, so a value added to one side
+// without the other would silently produce an invalid wire value.
+func TestToGraphQLRecapSource_MapsToValidEnum(t *testing.T) {
+	all := []RecapSource{RecapSourceCommand, RecapSourceAwaySummary}
+	for _, s := range all {
+		s := s
+		got := toGraphQLRecapSource(&s)
+		if got == nil {
+			t.Fatalf("toGraphQLRecapSource(%q) = nil; want non-nil", s)
+		}
+		if !graphql.RecapSource(*got).IsValid() {
+			t.Errorf("toGraphQLRecapSource(%q) = %q; not a valid graphql.RecapSource", s, *got)
+		}
+	}
+}
 
 // TestToGraphQL_JsonlPath asserts that ToGraphQL maps the in-memory
 // Conversation.Path field onto the wire-level JsonlPath. This is the

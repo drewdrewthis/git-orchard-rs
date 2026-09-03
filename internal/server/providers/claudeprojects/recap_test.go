@@ -239,3 +239,24 @@ func TestReadLatestRecap_AwaySummaryBeyondTailWindowFoundViaHead(t *testing.T) {
 		t.Errorf("got %q / %q; want FAR BACK AUTO / AWAY_SUMMARY", got.Text, got.Source)
 	}
 }
+
+func TestScanRecapInTail_FindsStandaloneAwaySummary(t *testing.T) {
+	// A standalone away_summary (no preceding /recap user record) that
+	// sits inside the tail window must be reported found by the tail
+	// scan itself, without falling back to the head scan.
+	path, size := writeJSONL(t, []string{
+		`{"type":"user","message":{"role":"user","content":"hello"}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":"hi"}}`,
+		`{"type":"system","subtype":"away_summary","content":"IN WINDOW AUTO","timestamp":"2026-09-03T00:00:00Z","uuid":"u5"}`,
+	})
+	got, found, err := scanRecapInTail(path, size)
+	if err != nil {
+		t.Fatalf("scanRecapInTail: %v", err)
+	}
+	if !found {
+		t.Fatal("expected found=true; away_summary is well within the tail window")
+	}
+	if got == nil || got.Text != "IN WINDOW AUTO" || got.Source != RecapSourceAwaySummary {
+		t.Errorf("got %+v; want IN WINDOW AUTO / AWAY_SUMMARY", got)
+	}
+}

@@ -3,27 +3,7 @@ package claudeprojects
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 )
-
-// RecapSource identifies which transcript record kind produced a recap.
-// Values mirror the GraphQL `RecapSource` enum wire form so the mapping
-// in Provider.ToGraphQL is a plain conversion.
-type RecapSource string
-
-const (
-	// RecapSourceCommand is an explicit `/recap` slash-command output.
-	RecapSourceCommand RecapSource = "RECAP_COMMAND"
-	// RecapSourceAwaySummary is an autonomous `away_summary` system record
-	// Claude Code writes between sessions without a slash command.
-	RecapSourceAwaySummary RecapSource = "AWAY_SUMMARY"
-)
-
-// recapResult is the recap text paired with the record kind it came from.
-type recapResult struct {
-	Text   string
-	Source RecapSource
-}
 
 // awaySummarySubtype is the `subtype` Claude Code stamps on the system
 // records it writes autonomously as a background recap.
@@ -48,12 +28,5 @@ func parseSystemAwaySummary(line []byte) *string {
 	if s.Type != "system" || s.Subtype != awaySummarySubtype {
 		return nil
 	}
-	text := strings.TrimSpace(s.Content)
-	if text == "" {
-		return nil
-	}
-	if len(text) > maxRecapBytes {
-		text = text[:maxRecapBytes]
-	}
-	return &text
+	return clipRecap(s.Content)
 }

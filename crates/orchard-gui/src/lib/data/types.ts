@@ -46,8 +46,6 @@ export interface Message {
 export interface Conversation {
 	itemId: string;
 	recap: string;
-	/** Which record kind produced `recap` — "RECAP_COMMAND" or "AWAY_SUMMARY". Null when no recap. */
-	recapSource?: string | null;
 	isChannel?: boolean;
 	messages: Message[];
 }
