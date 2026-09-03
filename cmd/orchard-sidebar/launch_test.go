@@ -41,18 +41,45 @@ func TestUniqueNameDedupesAndSanitises(t *testing.T) {
 	}
 }
 
-// The command is one argument. Splitting it on spaces would break every launch
-// with a flag in it, which is most of them.
-func TestNewSessionArgsKeepTheCommandWhole(t *testing.T) {
-	got := newSessionArgs("/w/x", "claude --resume abc", "x")
-	want := []string{"new-session", "-d", "-s", "x", "-c", "/w/x", "claude --resume abc"}
+// The session-creating call carries NO command (#783): the command is the
+// pane's process otherwise, and its exit kills pane → window → session. The
+// session must open on the user's shell so the pane survives the command.
+func TestNewSessionArgsCarryNoCommand(t *testing.T) {
+	got := newSessionArgs("/w/x", "x")
+	want := []string{"new-session", "-d", "-s", "x", "-c", "/w/x"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("newSessionArgs = %v, want %v", got, want)
 	}
-	// no command: tmux opens the default shell, and an empty trailing argument
-	// would be read as a command that isn't there
-	if got := newSessionArgs("/w/x", "   ", "x"); len(got) != 6 {
-		t.Errorf("empty command produced %v", got)
+	for _, a := range got {
+		if strings.Contains(a, "claude") || strings.Contains(a, "--") {
+			t.Errorf("new-session carried a command argument: %v", got)
+		}
+	}
+}
+
+// The command is delivered as a literal send-keys (-l), then Enter separately
+// — mirroring the daemon's own launchSession — so tmux never parses the
+// command text as key names. An empty command delivers nothing (ok == false),
+// so the session just opens on its shell.
+func TestSendCommandArgsDeliverTheWholeCommand(t *testing.T) {
+	got, ok := sendCommandArgs("x", "claude --resume abc")
+	if !ok {
+		t.Fatalf("sendCommandArgs reported nothing to send for a real command")
+	}
+	want := [][]string{
+		{"send-keys", "-t", "x", "-l", "claude --resume abc"},
+		{"send-keys", "-t", "x", "Enter"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sendCommandArgs = %v, want %v", got, want)
+	}
+	for i := range want {
+		if strings.Join(got[i], "|") != strings.Join(want[i], "|") {
+			t.Errorf("sendCommandArgs[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if _, ok := sendCommandArgs("x", "   "); ok {
+		t.Errorf("empty command should deliver nothing")
 	}
 }
 

@@ -53,6 +53,42 @@ Feature: outer shell new-session launch modal
     Given the command field contains "claude --resume x"
     When I launch
     Then tmux receives "claude --resume x" as a single command argument
+    And it arrives via the send-keys delivery, not as the new-session command
+
+  # orchardist#783 — the command must not be the pane's process, or its exit
+  # kills the pane/window/session and drops the sidebar row.
+  @e2e
+  Scenario: A launched command that exits drops the pane back to a shell
+    Given I launch command "claude" in a chosen directory
+    When the launched command exits
+    Then the pane shows a shell prompt in the chosen directory
+    And the session is still listed in the sidebar
+
+  @unit
+  Scenario: The session is created on the shell, with the command delivered separately
+    Given the command field contains "claude"
+    When I launch
+    Then the new-session call carries no command argument
+    And the command is delivered into the session's shell by send-keys
+
+  # The session opens on the inner server's default shell (tmux's own
+  # default-shell → $SHELL → /bin/sh chain), so an unset $SHELL still lands in
+  # an interactive shell — the launch never names a shell of its own.
+  @unit
+  Scenario: An unset $SHELL still lands in an interactive shell
+    Given $SHELL is unset in the environment
+    When I launch a session
+    Then the new-session call still carries no command
+    And the pane opens on the inner server's default interactive shell
+
+  # No fixed sleep gates delivery: the shell-first session already survives the
+  # command, so a raced keystroke degrades to an empty prompt, never a dead pane.
+  @unit
+  Scenario: Command delivery uses no fixed sleep
+    Given I launch a session with a command
+    When the command is delivered
+    Then no blocking sleep precedes the send-keys
+    And a keystroke that raced the shell startup leaves a live shell, not a dead pane
 
   @unit
   Scenario: A duplicate session name is deduplicated automatically
