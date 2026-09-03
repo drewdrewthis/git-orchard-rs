@@ -19,7 +19,7 @@ func TestDetachSplitClosesPane(t *testing.T) {
 	splitEnv(t)
 	var detached clientTTY
 	prev := detachClient
-	detachClient = func(tty clientTTY) { detached = tty }
+	detachClient = func(tty clientTTY, _ outerPane) { detached = tty }
 	t.Cleanup(func() { detachClient = prev })
 
 	m := splitModel()
@@ -44,7 +44,7 @@ func TestDetachSplitRefusedOnSolePane(t *testing.T) {
 	splitEnv(t)
 	called := false
 	prev := detachClient
-	detachClient = func(clientTTY) { called = true }
+	detachClient = func(clientTTY, outerPane) { called = true }
 	t.Cleanup(func() { detachClient = prev })
 
 	m := splitModel() // splitOpen defaults false
@@ -86,7 +86,7 @@ func TestActiveTargetsFollowWorkOverride(t *testing.T) {
 func TestClientReadRetargetsWorkAndDetachRestores(t *testing.T) {
 	splitEnv(t)
 	prev := detachClient
-	detachClient = func(clientTTY) {}
+	detachClient = func(clientTTY, outerPane) {}
 	t.Cleanup(func() { detachClient = prev })
 
 	m := splitModel()

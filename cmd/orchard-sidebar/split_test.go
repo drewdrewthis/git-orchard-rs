@@ -59,6 +59,17 @@ func TestSplitCommandArgs(t *testing.T) {
 			t.Errorf("detachClientArgs = %v", got)
 		}
 	})
+	t.Run("remainOffArgs turns pane remain-on-exit off", func(t *testing.T) {
+		got := remainOffArgs("%2")
+		if !equalStrings(got, []string{"set-option", "-p", "-t", "%2", "remain-on-exit", "off"}) {
+			t.Errorf("remainOffArgs = %v", got)
+		}
+	})
+	t.Run("killPaneArgs kills by pane id", func(t *testing.T) {
+		if got := killPaneArgs("%2"); !equalStrings(got, []string{"kill-pane", "-t", "%2"}) {
+			t.Errorf("killPaneArgs = %v", got)
+		}
+	})
 	t.Run("a spaced session stays one quoted argument", func(t *testing.T) {
 		if got := innerAttachCmd("default", "my session"); !strings.Contains(got, "attach -t 'my session'") {
 			t.Errorf("innerAttachCmd did not quote a spaced session: %q", got)
@@ -84,6 +95,33 @@ func TestSplitBlocked(t *testing.T) {
 				t.Errorf("splitBlocked refusal = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// The real doSplit disables the new pane's inherited remain-on-exit right after
+// split-window (so M-w closes it instead of leaving a dead pane), then pins the
+// layout. Emission order is asserted through the runOuterOut/runOuter seams.
+func TestDoSplitDisablesRemainOnExit(t *testing.T) {
+	splitEnv(t)
+	var split []string
+	var outer [][]string
+	po, poo := runOuter, runOuterOut
+	runOuterOut = func(args ...string) (string, error) { split = args; return "%2 /dev/ttys002", nil }
+	runOuter = func(args ...string) { outer = append(outer, args) }
+	t.Cleanup(func() { runOuter, runOuterOut = po, poo })
+
+	pane, ok := doSplit("%1", "default", "beta")
+	if !ok || pane.outer != "%2" || pane.client != "/dev/ttys002" {
+		t.Fatalf("doSplit = %+v ok=%v", pane, ok)
+	}
+	if !equalStrings(split, splitWindowArgs("%1", "default", "beta")) {
+		t.Errorf("split-window args = %v", split)
+	}
+	// remain-off is emitted after split-window and before the layout pin
+	if len(outer) != 2 ||
+		!equalStrings(outer[0], remainOffArgs("%2")) ||
+		!equalStrings(outer[1], mainVerticalArgs()) {
+		t.Errorf("outer commands = %v, want remain-off then main-vertical", outer)
 	}
 }
 
@@ -189,7 +227,7 @@ func TestSplitChordsRoute(t *testing.T) {
 		opened = true
 		return workPaneRef{outer: "%2", client: "/dev/ttys002"}, true
 	}
-	detachClient = func(clientTTY) { detached = true }
+	detachClient = func(clientTTY, outerPane) { detached = true }
 	t.Cleanup(func() { doSplit, detachClient = pd, pc })
 
 	m := splitModel()

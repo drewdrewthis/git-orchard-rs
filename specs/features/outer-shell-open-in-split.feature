@@ -26,7 +26,7 @@ Feature: outer shell open session in split
     Given the sidebar pane is 40 columns wide
     When I open a session in a split
     Then "main-vertical" is applied so the sidebar stays 40 columns
-    And the two work panes share the remaining width
+    And the two work panes stack in the right column, sharing its height
 
   @e2e
   Scenario: The attached bar follows the last-focused work pane without a click

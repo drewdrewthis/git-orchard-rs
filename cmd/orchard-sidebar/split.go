@@ -64,14 +64,32 @@ func splitWindowArgs(beside outerPane, inner innerSocket, session string) []stri
 }
 
 // mainVerticalArgs re-applies the layout that pins the sidebar at
-// main-pane-width while the work panes share the remainder — the same layout
-// outer.conf's resize hooks use, so the sidebar width survives both opening the
-// split and closing it.
+// main-pane-width as the main (left) pane while the work panes stack in the
+// right column, sharing its height — the same layout outer.conf's resize hooks
+// use, so the sidebar width survives both opening the split and closing it.
 func mainVerticalArgs() []string { return []string{"select-layout", "main-vertical"} }
 
-// detachClientArgs detaches the inner client in the split pane. The pane's
-// inner attach has no remain-on-exit, so the pane closes when its client exits,
-// which restores the two-pane layout.
+// remainOffArgs turns OFF remain-on-exit for the split's own outer pane,
+// overriding outer.conf's global `set -g remain-on-exit on` that the new pane
+// otherwise inherits. Without it the pane lingers as a DEAD pane once its inner
+// client detaches (M-w, or the user detaching from inside), the two-pane layout
+// is never restored, and a dead pane piles up on every open/close cycle. `-p`
+// scopes the option to just this pane, leaving the global (which the sidebar
+// pane relies on) untouched.
+func remainOffArgs(pane outerPane) []string {
+	return []string{"set-option", "-p", "-t", string(pane), "remain-on-exit", "off"}
+}
+
+// killPaneArgs force-closes the split's outer pane. Belt-and-braces after
+// detach-client: with remain-on-exit off the pane already closes when its
+// client exits, but this guarantees it even if that option did not take. tmux
+// tolerates the pane already being gone — the resulting error is logged and
+// ignored.
+func killPaneArgs(pane outerPane) []string { return []string{"kill-pane", "-t", string(pane)} }
+
+// detachClientArgs detaches the inner client in the split pane. With
+// remain-on-exit turned off on the pane (see remainOffArgs), the pane closes
+// when its client exits, which restores the two-pane layout.
 func detachClientArgs(tty clientTTY) []string { return []string{"detach-client", "-t", string(tty)} }
 
 // splitBlocked reports why a split for session must be refused, or "" to allow
@@ -113,20 +131,26 @@ var doSplit = func(beside outerPane, inner innerSocket, session string) (workPan
 		logf("split-window: unexpected -P output %q", out)
 		return workPaneRef{}, false
 	}
-	// pin the sidebar; the two work panes share the rest
+	// Disable the pane's inherited global remain-on-exit so it closes when its
+	// inner client detaches instead of lingering as a dead pane (see remainOffArgs).
+	runOuter(remainOffArgs(outerPane(id))...)
+	// pin the sidebar; the two work panes stack in the right column, sharing its height
 	runOuter(mainVerticalArgs()...)
 	return workPaneRef{outer: outerPane(id), client: clientTTY(tty)}, true
 }
 
-// detachClient detaches the split pane's inner client, then re-pins the layout
-// so the sidebar keeps its width once the pane closes. A var for the same
-// testing reason as doSplit. Off the UI goroutine — a tmux exec must never
-// stall a paint.
-var detachClient = func(tty clientTTY) {
+// detachClient detaches the split pane's inner client, kills its outer pane as
+// belt-and-braces, then re-pins the layout so the sidebar keeps its width once
+// the pane closes. A var for the same testing reason as doSplit. Off the UI
+// goroutine — a tmux exec must never stall a paint.
+var detachClient = func(tty clientTTY, pane outerPane) {
 	go func() {
 		if runTmux(detachClientArgs(tty)...) != nil {
 			return // runTmux already logged tmux's own message
 		}
+		// Belt-and-braces: remain-on-exit off already closes the pane when the
+		// client exits, but kill-pane guarantees it. tmux tolerates it already gone.
+		runOuter(killPaneArgs(pane)...)
 		runOuter(mainVerticalArgs()...)
 	}()
 }
@@ -177,7 +201,7 @@ func (m *model) detachSplit() {
 		m.setStatus(why)
 		return
 	}
-	detachClient(m.alt.client)
+	detachClient(m.alt.client, m.alt.outer)
 	m.splitOpen = false
 	m.alt = workPaneRef{}
 	m.workOverride = workPaneRef{} // drive the original pane again
@@ -227,7 +251,7 @@ func (m *model) statusText() string {
 
 // runOuterOut is runOuter that also returns stdout — split-window -P prints the
 // new pane's id and tty, which the sidebar needs to track it.
-func runOuterOut(args ...string) (string, error) {
+var runOuterOut = func(args ...string) (string, error) {
 	cmd := env.outerCmd(args...)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
