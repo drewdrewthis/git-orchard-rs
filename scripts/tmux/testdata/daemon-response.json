@@ -1,0 +1,16 @@
+{
+  "data": {
+    "repos": [
+      {
+        "slug": "orchardist",
+        "worktrees": [
+          {
+            "branch": "issue-900/tmux-plugin",
+            "path": "/tmp/orchard-bats-wt",
+            "host": "local"
+          }
+        ]
+      }
+    ]
+  }
+}
