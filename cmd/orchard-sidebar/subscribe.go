@@ -29,21 +29,25 @@ import (
 var wsURL = "ws://127.0.0.1:7777/graphql"
 
 // readWait bounds how long a read may sit with no frame at all. The server
-// pings every 10s, so a healthy connection always delivers well inside it —
-// only a half-open socket (daemon host gone without a FIN) goes silent this
-// long. Without the deadline that socket parks ReadJSON forever: no error,
-// no redial, and the push lane is dead while looking merely quiet. A var so
-// tests can shrink it.
+// sends graphql-transport-ws `ping` frames every 10s (gqlgen PingPongInterval,
+// #788), so a healthy connection always delivers well inside it — only a
+// half-open socket (daemon host gone without a FIN) goes silent this long.
+// Without the deadline that socket parks ReadJSON forever: no error, no redial,
+// and the push lane is dead while looking merely quiet. A var so tests can
+// shrink it.
 var readWait = 30 * time.Second
 
 const tmuxSubQuery = `subscription { tmuxSessionsChanged { name attached windows { panes { paneId } } } }`
 
 // tmuxSubMsg is one pushed snapshot. err set means the socket dropped; the
 // lane reconnects on its own, so the model only records it (subErr) to know
-// the push lane is stale and hand attach authority back to the poll.
+// the push lane is stale and hand attach authority back to the poll. idle is
+// the time since the last frame arrived on the dropped connection — surfaced
+// in the log so an i/o timeout shows how long the socket was silent (#788).
 type tmuxSubMsg struct {
 	sessions []tmuxSession
 	err      error
+	idle     time.Duration
 }
 
 // subscribeTmux runs for the life of the process, redialing with backoff.
@@ -53,14 +57,14 @@ type tmuxSubMsg struct {
 func subscribeTmux(ctx context.Context, send func(tea.Msg)) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		acked, err := streamTmux(ctx, send)
+		acked, idle, err := streamTmux(ctx, send)
 		if acked {
 			// a real connection happened; the next failure starts the climb
 			// from the bottom instead of wherever the last outage left it
 			backoff = time.Second
 		}
 		if err != nil && ctx.Err() == nil {
-			send(tmuxSubMsg{err: err})
+			send(tmuxSubMsg{err: err, idle: idle})
 		}
 		select {
 		case <-ctx.Done():
@@ -79,14 +83,14 @@ func subscribeTmux(ctx context.Context, send func(tea.Msg)) {
 // streamTmux holds one connection open, returning on the first error so the
 // caller can redial. acked reports whether the server completed the handshake
 // — the caller's signal to reset its backoff.
-func streamTmux(ctx context.Context, send func(tea.Msg)) (acked bool, _ error) {
+func streamTmux(ctx context.Context, send func(tea.Msg)) (acked bool, idle time.Duration, _ error) {
 	dialer := websocket.Dialer{
 		Subprotocols:     []string{"graphql-transport-ws"},
 		HandshakeTimeout: 5 * time.Second,
 	}
 	conn, _, err := dialer.DialContext(ctx, wsURL, http.Header{})
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer func() { _ = conn.Close() }()
 	go func() {
@@ -95,20 +99,26 @@ func streamTmux(ctx context.Context, send func(tea.Msg)) (acked bool, _ error) {
 	}()
 
 	if err := conn.WriteJSON(map[string]any{"type": "connection_init", "payload": map[string]any{}}); err != nil {
-		return false, err
+		return false, 0, err
 	}
+	// lastFrame is the arrival time of the most recent frame (data or the
+	// server's graphql-transport-ws `ping`). On a drop, time.Since(lastFrame)
+	// is the idle gap the log reports so an i/o timeout shows the silence (#788).
+	lastFrame := time.Now()
 	for {
 		var env struct {
 			Type    string          `json:"type"`
 			ID      string          `json:"id"`
 			Payload json.RawMessage `json:"payload"`
 		}
-		// each read gets a fresh deadline, so any frame — data or keepalive —
-		// re-arms it; only total silence trips it
+		// each read gets a fresh deadline, so any frame — data or the server's
+		// 10s ping (gqlgen PingPongInterval, #788) — re-arms it; only total
+		// silence trips it
 		_ = conn.SetReadDeadline(time.Now().Add(readWait))
 		if err := conn.ReadJSON(&env); err != nil {
-			return acked, err
+			return acked, time.Since(lastFrame), err
 		}
+		lastFrame = time.Now()
 		switch env.Type {
 		case "connection_ack":
 			if acked {
@@ -120,7 +130,7 @@ func streamTmux(ctx context.Context, send func(tea.Msg)) (acked bool, _ error) {
 				"type":    "subscribe",
 				"payload": map[string]any{"query": tmuxSubQuery},
 			}); err != nil {
-				return acked, err
+				return acked, time.Since(lastFrame), err
 			}
 		case "next":
 			var data struct {
@@ -135,7 +145,7 @@ func streamTmux(ctx context.Context, send func(tea.Msg)) (acked bool, _ error) {
 		case "error", "complete":
 			// server-side end of this operation: drop the socket and redial
 			// rather than sitting on a connection with no live subscription
-			return acked, errSubEnded
+			return acked, time.Since(lastFrame), errSubEnded
 		case "ping":
 			_ = conn.WriteJSON(map[string]any{"type": "pong"})
 		}

@@ -133,7 +133,7 @@ func (m *model) update(msg tea.Msg) tea.Cmd {
 			// The lane cannot trust attach signals it isn't receiving: pin the
 			// client lane at the fast rung until the push lane recovers (#727).
 			m.clientTick.observePushHealth(false)
-			logf("tmux subscription: %v", msg.err)
+			logf("tmux subscription: %v (idle %s)", msg.err, msg.idle.Round(time.Millisecond))
 			return nil
 		}
 		m.subErr = nil

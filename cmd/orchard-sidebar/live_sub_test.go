@@ -24,7 +24,7 @@ func TestLiveSubscriptionDelivers(t *testing.T) {
 
 	msgs := make(chan tmuxSubMsg, 16)
 	go func() {
-		_, _ = streamTmux(ctx, func(m tea.Msg) {
+		_, _, _ = streamTmux(ctx, func(m tea.Msg) {
 			if sm, ok := m.(tmuxSubMsg); ok {
 				select {
 				case msgs <- sm:
