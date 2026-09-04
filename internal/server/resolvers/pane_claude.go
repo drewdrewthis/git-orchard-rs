@@ -48,25 +48,17 @@ func (r *queryResolver) projectPanesToClaudeInstances(ctx context.Context, panes
 	// Build a production SnapshotReader for jsonl state derivation.
 	snapshotReader := claudeinstance.NewFsSnapshotReader("")
 
-	// Build cwd→sessionUUID index ONCE for the whole request — previously
-	// every pane re-fetched the conversation list and re-scanned linearly
-	// (N panes × M conversations). On a busy host this was ~10×500 = 5,000
-	// compares per request; now it's one fetch + one O(M) pass.
-	//
-	// "Deepest match" mattered to the inverse lookup (findWorktreeForCwd in
-	// worktree_claude.go); for pane→conversation the cwd is the conversation's
-	// own cwd, so an exact equality index is correct. Last-wins on duplicate
-	// cwds, mirroring the old "first hit, break" behavior in slice order
-	// (sliceorder isn't stable here anyway, so the contract is "some matching
-	// conversation," not a specific one).
-	cwdToSession := make(map[string]string)
+	// Build the ambiguity-aware cwd→sessionUUID index ONCE for the whole
+	// request — previously every pane re-fetched the conversation list and
+	// re-scanned linearly (N panes × M conversations); now it's one fetch +
+	// one O(M) pass. The index counts conversations per cwd (#743): a cwd
+	// shared by two or more REPLs is ambiguous, so the cwd fallback declines
+	// to guess and the registry-by-pid path (buildClaudeInstanceFromPane)
+	// carries the real disambiguation.
+	var cwdIndex map[string]cwdMatch
 	if r.ClaudeProjects != nil {
 		if convs, err := r.ClaudeProjects.List(ctx); err == nil {
-			for _, conv := range convs {
-				if conv.Cwd != nil && *conv.Cwd != "" {
-					cwdToSession[*conv.Cwd] = conv.ID.SessionUUID
-				}
-			}
+			cwdIndex = buildCwdIndex(convs)
 		}
 	}
 
@@ -84,7 +76,7 @@ func (r *queryResolver) projectPanesToClaudeInstances(ctx context.Context, panes
 		if pane == nil {
 			continue
 		}
-		inst := r.buildClaudeInstanceFromPane(ctx, pane, host, account, snapshotReader, cwdToSession, procTree)
+		inst := r.buildClaudeInstanceFromPane(ctx, pane, host, account, snapshotReader, cwdIndex, procTree)
 		out = append(out, inst)
 	}
 
@@ -94,16 +86,17 @@ func (r *queryResolver) projectPanesToClaudeInstances(ctx context.Context, panes
 }
 
 // buildClaudeInstanceFromPane constructs one ClaudeInstance from a TmuxPane.
-// cwdToSession is a pre-built index from projectPanesToClaudeInstances; it
-// turns the conversation lookup into an O(1) map hit instead of a per-pane
-// linear scan over r.ClaudeProjects.List(ctx).
+// cwdIndex is a pre-built ambiguity-aware index from projectPanesToClaudeInstances;
+// it turns the conversation lookup into an O(1) map hit instead of a per-pane
+// linear scan over r.ClaudeProjects.List(ctx). The single-pane caller passes
+// nil and we build a one-off index here.
 func (r *queryResolver) buildClaudeInstanceFromPane(
 	ctx context.Context,
 	pane *graphql1.TmuxPane,
 	host string,
 	account *graphql1.ClaudeAccount,
 	snapshotReader claudeinstance.SnapshotReader,
-	cwdToSession map[string]string,
+	cwdIndex map[string]cwdMatch,
 	procTree *psprovider.ProcTree,
 ) *graphql1.ClaudeInstance {
 	var pid int
@@ -155,26 +148,27 @@ func (r *queryResolver) buildClaudeInstanceFromPane(
 		}
 	}
 
-	// Look up the matching conversation by cwd.
-	//   - cwdToSession != nil: hot-path caller (projectPanesToClaudeInstances)
-	//     pre-built the index once; we hit it in O(1).
-	//   - cwdToSession == nil: single-pane caller (tmuxPane.claudeInstance
-	//     resolver) only needs one cwd; linear scan is fine and cheaper
-	//     than allocating a map of every conversation in the project tree.
+	// Resolve sessionUuid by the pane's own live pid via the claudesessions
+	// registry FIRST, then fall back to the cwd join (#743). Keying on the
+	// pane's resolved live pid is what distinguishes two REPLs sharing one
+	// worktree cwd; the cwd fallback returns "" when the cwd is ambiguous
+	// rather than a shared wrong guess.
+	//   - cwdIndex != nil: hot-path caller pre-built the index once.
+	//   - cwdIndex == nil: single-pane caller (tmuxPane.claudeInstance) —
+	//     build a one-off index so the ambiguity count is available here too.
 	var sessionUUID string
 	if cwd != "" {
-		if cwdToSession != nil {
-			sessionUUID = cwdToSession[cwd]
-		} else if r.ClaudeProjects != nil {
+		idx := cwdIndex
+		if idx == nil && r.ClaudeProjects != nil {
 			if convs, err := r.ClaudeProjects.List(ctx); err == nil {
-				for _, conv := range convs {
-					if conv.Cwd != nil && *conv.Cwd == cwd {
-						sessionUUID = conv.ID.SessionUUID
-						break
-					}
-				}
+				idx = buildCwdIndex(convs)
 			}
 		}
+		var reg paneSessionRegistry
+		if r.ClaudeSessions != nil {
+			reg = r.ClaudeSessions
+		}
+		sessionUUID = resolveSessionUUID(host, pid, cwd, reg, idx)
 	}
 
 	// Derive state from jsonl snapshot.

@@ -10,6 +10,7 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/server/loaders"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeaccount"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeprojects"
+	"github.com/drewdrewthis/orchardist/internal/server/providers/claudesessions"
 	configprovider "github.com/drewdrewthis/orchardist/internal/server/providers/config"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/gh"
 	gitprovider "github.com/drewdrewthis/orchardist/internal/server/providers/git"
@@ -40,6 +41,9 @@ type Resolver struct {
 	PS                  *ps.Provider
 	Tmux                *tmux.Provider
 	ClaudeProjects      *claudeprojects.Provider
+	// ClaudeSessions is the live-REPL registry (~/.claude/sessions/<pid>.json).
+	// When nil, sessionUuid resolution degrades to the cwd/nil fallback (#743).
+	ClaudeSessions      *claudesessions.Provider
 	ClaudeAccount       *claudeaccount.Provider
 	HostServiceProvider *hostservice.Provider
 	GH                  *gh.Provider
@@ -98,6 +102,12 @@ func (r *Resolver) WithTmux(p *tmux.Provider) *Resolver {
 // WithClaudeProjects wires the claudeprojects provider.
 func (r *Resolver) WithClaudeProjects(p *claudeprojects.Provider) *Resolver {
 	r.ClaudeProjects = p
+	return r
+}
+
+// WithClaudeSessions wires the claudesessions provider (live-REPL registry).
+func (r *Resolver) WithClaudeSessions(p *claudesessions.Provider) *Resolver {
+	r.ClaudeSessions = p
 	return r
 }
 

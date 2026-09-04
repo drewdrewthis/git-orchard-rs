@@ -34,6 +34,7 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/server"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeaccount"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeprojects"
+	"github.com/drewdrewthis/orchardist/internal/server/providers/claudesessions"
 	configprovider "github.com/drewdrewthis/orchardist/internal/server/providers/config"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/gh"
 	gitprovider "github.com/drewdrewthis/orchardist/internal/server/providers/git"
@@ -172,6 +173,9 @@ func runStart(parentCtx context.Context, addr string, version string, logLevel s
 	tmuxProvider := tmux.New(tmux.NewAdapter(localHostID()).WithLogger(logger), logger)
 	claudeProjectsRoot := claudeprojectsRoot()
 	claudeProjectsProvider := claudeprojects.New(claudeProjectsRoot, "local", logger)
+	// #743: live-REPL registry so ClaudeInstance.sessionUuid resolves by pid,
+	// not by cwd. Stateless (no watcher) — read fresh per request.
+	claudeSessionsProvider := claudesessions.New(claudeSessionsRoot(), logger)
 
 	// Hydrate the claudeprojects cache before discovery runs so the
 	// claudeprojects source can contribute repo roots from the first
@@ -253,6 +257,7 @@ func runStart(parentCtx context.Context, addr string, version string, logLevel s
 		server.WithPS(psProvider),
 		server.WithTmux(tmuxProvider),
 		server.WithClaudeProjects(claudeProjectsProvider),
+		server.WithClaudeSessions(claudeSessionsProvider),
 		server.WithConversationsJSONL(claudeProjectsProvider, claudeProjectsRoot),
 		server.WithClaudeAccount(claudeAccountProvider),
 		server.WithGh(ghProvider),
@@ -443,6 +448,20 @@ func claudeprojectsRoot() string {
 		return ".claude/projects"
 	}
 	return home + "/.claude/projects"
+}
+
+// claudeSessionsRoot returns the directory holding Claude Code's live-REPL
+// registry files (<pid>.json). CLAUDE_SESSIONS_ROOT overrides; default is
+// ~/.claude/sessions. Mirrors claudeprojectsRoot (#743).
+func claudeSessionsRoot() string {
+	if v := os.Getenv("CLAUDE_SESSIONS_ROOT"); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ".claude/sessions"
+	}
+	return home + "/.claude/sessions"
 }
 
 // orchardScriptsRoot returns the absolute path to the scripts/ directory.
