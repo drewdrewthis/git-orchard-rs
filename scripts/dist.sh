@@ -45,6 +45,10 @@ VERSION="${VERSION:-dev}"
 # vcs.revision stamp then fills in where it can.
 REVISION="${REVISION:-$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null || true)}"
 GO_LDFLAGS="-X main.version=$VERSION -X github.com/drewdrewthis/orchardist/internal/release.revision=$REVISION"
+# orchard-tui's build.rs reads ORCHARD_REVISION to stamp its --revision the same
+# way the Go binaries bake it (orchardist#807). Exported so every cargo build
+# (native, zigbuild, cross, and -e into docker) carries the pinned commit.
+export ORCHARD_REVISION="$REVISION"
 
 ONLY_TRIPLE=""
 while [ $# -gt 0 ]; do
@@ -156,6 +160,7 @@ build_via_docker() {
     -u "$(id -u):$(id -g)" \
     -e HOME=/tmp \
     -e CARGO_HOME=/repo/target/.cargo-home \
+    -e ORCHARD_REVISION \
     -v "$ROOT:/repo:ro" \
     -v "$cache:/repo/target" \
     -w /repo \

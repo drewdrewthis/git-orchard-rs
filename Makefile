@@ -82,7 +82,7 @@ generate:
 
 # Rust release builds — one target per crate.
 rust: dispatcher
-	cargo build --release -p orchard
+	ORCHARD_REVISION=$(REVISION) cargo build --release -p orchard
 	cargo build --release -p orchard-worktree
 
 dispatcher:

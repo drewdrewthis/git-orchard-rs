@@ -125,6 +125,10 @@ fn main() {
                 println!("orchard-tui {}", env!("CARGO_PKG_VERSION"));
                 return;
             }
+            "--revision" => {
+                println!("{}", env!("ORCHARD_REVISION"));
+                return;
+            }
             "--help" | "-h" => {
                 print_usage();
                 return;
@@ -780,6 +784,7 @@ Domain subcommands (L1/L6 — standalone, no daemon required):
 
 Options:
   --version, -V  Print version and exit
+  --revision     Print the VCS revision this binary was built from and exit
   --json         Output worktree data as JSON and exit. Live read — performs
                  the same refresh as `orchard-tui refresh` (SSH probes, remote
                  worktree + tmux fetches, local git/tmux re-stat, GitHub

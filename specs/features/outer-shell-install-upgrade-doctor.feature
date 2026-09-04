@@ -103,7 +103,7 @@ Feature: orchard install, upgrade, and doctor
     Given every Go suite binary reports the same VCS revision
     When I run "orchard shell doctor"
     Then the suite-revisions check passes
-    And its detail names "orchard" and "orchard-tui" as excluded because they are Rust
+    And its detail names "orchard" as excluded because it is Rust
 
   @unit
   Scenario: doctor warns, not fails, when a suite binary lacks --revision
@@ -117,6 +117,12 @@ Feature: orchard install, upgrade, and doctor
     Given six suite binaries on PATH where "orchard-upgrade" was built from a different commit than the rest
     When I run "orchard shell doctor"
     Then the suite-revisions check fails naming both revision groups and their binaries
+
+  @unit
+  Scenario: doctor fails suite-revisions when orchard-tui is stale
+    Given every Go suite binary reports the same revision but "orchard-tui" reports a different one
+    When I run "orchard shell doctor"
+    Then the suite-revisions check fails naming "orchard-tui"
 
   @unit
   Scenario: doctor's socket flags and $ORCHARD_TMUX_SOCKET default match orchard shell

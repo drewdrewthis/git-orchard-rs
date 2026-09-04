@@ -14,13 +14,14 @@ import (
 var revision string
 
 // UnstampedBinaries are the suite binaries that carry no VCS revision stamp:
-// the Rust pair. Go bakes vcs.revision into every binary automatically, while
-// stamping the Rust builds would mean running git at tarball-build time to
-// inject it, a dependency the release does not take. This is the single source
-// of the exclusion — RevisionBinaries derives from it, and doctor's
-// excludedSuffix names it directly, so the covered and excluded sets cannot
-// drift and a future Go binary added to SuiteBinaries is checked automatically.
-var UnstampedBinaries = []string{"orchard-tui", "orchard"}
+// the `orchard` dispatcher only. Go bakes vcs.revision into every binary
+// automatically; orchard-tui's build.rs stamps ORCHARD_REVISION so it answers
+// --revision too (orchardist#807), leaving the dispatcher as the sole binary
+// with no build stamp. This is the single source of the exclusion —
+// RevisionBinaries derives from it, and doctor's excludedSuffix names it
+// directly, so the covered and excluded sets cannot drift and a future Go
+// binary added to SuiteBinaries is checked automatically.
+var UnstampedBinaries = []string{"orchard"}
 
 // RevisionBinaries are the suite binaries that answer `--revision` with their
 // build-time VCS commit: SuiteBinaries minus UnstampedBinaries, in SuiteBinaries

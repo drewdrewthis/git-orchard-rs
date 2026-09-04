@@ -20,8 +20,8 @@ const unimplementedRevision = "(no --revision)"
 // report the same --version "dev" yet come from different commits — the exact
 // shape of the stale prototype launcher that silently broke sidebar clicks.
 // vcs.revision distinguishes them where the semver check (checkSuiteVersions)
-// cannot. It covers release.RevisionBinaries — the Go binaries only, since the
-// Rust pair carries no build stamp to compare.
+// cannot. It covers release.RevisionBinaries — the Go binaries plus
+// orchard-tui (#807); only the `orchard` dispatcher carries no build stamp.
 func checkRevisions(ctx context.Context, env doctorEnv) checkResult {
 	return evaluateRevisions(resolveSuiteRevisions(ctx, env))
 }
@@ -47,7 +47,8 @@ func resolveSuiteRevisions(ctx context.Context, env doctorEnv) []binaryVersion {
 // WARN, fix is a rebuild); one that fails --version too is broken → the same
 // unresolvedVersion FAIL as a missing binary, never masked as "predates the
 // flag". An empty ("") revision is a value like any other: a genuinely
-// unstamped build, distinct from both sentinels.
+// unstamped build, distinct from both sentinels. evaluateRevisions classifies
+// it as an unstamped-build FAIL.
 func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string {
 	if name == "orchard-shell" {
 		return env.selfRevision
@@ -68,11 +69,18 @@ func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string 
 
 // evaluateRevisions is the pure decision. Precedence, highest severity first:
 //
-//   - FAIL when the resolved revisions genuinely disagree, or any binary could
-//     not be found — the #787 skew signal must never read as a pass.
+//   - FAIL when every resolved binary reports an empty (unstamped) revision AND
+//     none is unimplemented — none of the suite is stampable, a distinct
+//     condition from a mismatch. If any binary is unimplemented, the mixed
+//     case falls through to the mismatch branch below, which names every
+//     group (including unimplemented ones) instead of miscounting them as
+//     unstamped.
+//   - FAIL when the resolved revisions genuinely disagree, any binary could not
+//     be found, or some (but not all) binaries report an empty (unstamped)
+//     revision — the #787 skew signal must never read as a pass.
 //   - WARN when every resolved revision agrees but ≥1 binary lacks --revision:
 //     the check cannot confirm those binaries, and the fix is a rebuild.
-//   - PASS when every binary reports the same revision (or all are unstamped).
+//   - PASS when every binary reports the same non-empty revision.
 //
 // It shares grouping and the mismatch listing with the version check
 // (groupSuite, suiteMismatch); every detail carries the excluded-Rust suffix.
@@ -80,26 +88,37 @@ func evaluateRevisions(revisions []binaryVersion) checkResult {
 	groups := groupSuite(revisions)
 
 	realGroups := map[string][]string{}
-	var unimplemented, unresolved []string
+	var unimplemented, unresolved, unstamped []string
 	for value, names := range groups {
 		switch value {
 		case unresolvedVersion:
 			unresolved = names
 		case unimplementedRevision:
 			unimplemented = names
+		case "":
+			// Every RevisionBinaries member is reliably stampable now that
+			// orchard-tui carries a build stamp (#807), so an empty revision is
+			// a broken/unstamped build — the exact skew-hiding shape the check
+			// exists to catch. It FAILs and is named, never read as a match.
+			unstamped = names
 		default:
-			realGroups[value] = names // an actual revision, or "" (unstamped)
+			realGroups[value] = names
 		}
 	}
 
 	suffix := excludedSuffix()
 
-	if len(realGroups) == 0 && len(unimplemented) == 0 {
+	if len(realGroups) == 0 && len(unimplemented) == 0 && len(unstamped) == 0 {
 		return checkResult{ID: "suite-revisions", Status: statusFail,
 			Detail: "none of the suite binaries could report a revision" + suffix,
 			Remedy: "reinstall orchard so its binaries are on $PATH or beside orchard-shell"}
 	}
-	if len(realGroups) > 1 || len(unresolved) > 0 {
+	if len(realGroups) == 0 && len(unresolved) == 0 && len(unimplemented) == 0 && len(unstamped) > 0 {
+		return checkResult{ID: "suite-revisions", Status: statusFail,
+			Detail: fmt.Sprintf("all %d suite binaries are unstamped (built without a VCS revision)%s", len(unstamped), suffix),
+			Remedy: "rebuild every orchard binary with VCS stamping (not -buildvcs=false; pass REVISION/ORCHARD_REVISION for tarball builds)"}
+	}
+	if len(realGroups) > 1 || len(unresolved) > 0 || len(unstamped) > 0 {
 		res := suiteMismatch("suite-revisions", "suite binaries built from different revisions: ",
 			"reinstall or rebuild every orchard binary from the same checkout so their revisions match", groups)
 		res.Detail += suffix
@@ -112,21 +131,19 @@ func evaluateRevisions(revisions []binaryVersion) checkResult {
 			Remedy: "rebuild the listed binaries from a checkout that answers `--revision` — they predate this check"}
 	}
 	// Exactly one real revision group remains (len(realGroups) == 1, guarded by
-	// the mismatch branch above), so this pass reads its single key and returns.
+	// the branches above; empties FAIL, so it is non-empty), so this pass reads
+	// its single key and returns.
 	var rev string
 	for rev = range realGroups {
-	}
-	if rev == "" {
-		return checkResult{ID: "suite-revisions", Status: statusPass,
-			Detail: fmt.Sprintf("all %d suite binaries carry no VCS revision (an unstamped build)%s", len(revisions), suffix)}
 	}
 	return checkResult{ID: "suite-revisions", Status: statusPass,
 		Detail: fmt.Sprintf("all %d suite binaries built from revision %s%s", len(revisions), rev, suffix)}
 }
 
 // excludedSuffix names the SuiteBinaries the revision check cannot cover — the
-// Rust binaries. It lists release.UnstampedBinaries directly (the single source
-// of the exclusion), so doctor's suffix and the covered set cannot drift apart.
+// unstamped Rust binary (the `orchard` dispatcher). It lists
+// release.UnstampedBinaries directly (the single source of the exclusion), so
+// doctor's suffix and the covered set cannot drift apart.
 func excludedSuffix() string {
 	if len(release.UnstampedBinaries) == 0 {
 		return ""
