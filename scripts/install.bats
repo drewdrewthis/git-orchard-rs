@@ -112,7 +112,8 @@ teardown() {
   [ -x "$PREFIX_DIR/orchard-daemon" ]
   grep -qF '"service_installed":true' <<<"$output"
   [ -f "$FAKE_HOME/.config/systemd/user/orchard.service" ]
-  grep -qF "ExecStart=$PREFIX_DIR/orchard daemon start" "$FAKE_HOME/.config/systemd/user/orchard.service"
+  grep -qF "ExecStart=$PREFIX_DIR/orchard-daemon daemon start" "$FAKE_HOME/.config/systemd/user/orchard.service"
+  ! grep -qF "ExecStart=$PREFIX_DIR/orchard daemon start" "$FAKE_HOME/.config/systemd/user/orchard.service"
   grep -qF "daemon-reload" "$SYSTEMCTL_LOG"
   ! grep -qF "restart" "$SYSTEMCTL_LOG"
 }

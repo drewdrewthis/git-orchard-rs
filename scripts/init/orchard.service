@@ -30,7 +30,15 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/orchard daemon start
+# ExecStart names orchard-daemon — the binary `make install-daemon` installs
+# and the one that owns the `daemon start` verb. The `orchard` dispatcher's
+# `daemon start` routes through a control script and is not a service entry
+# point. No template file is needed here: systemd expands %h itself (see
+# ReadWritePaths below) and logs go to the journal, not a redirect path —
+# don't re-add one.
+# Verbosity: set Environment=ORCHARD_LOG_LEVEL=info (debug|info|warn|error)
+# below, or append --log-level <level> to ExecStart. Default is info.
+ExecStart=/usr/local/bin/orchard-daemon daemon start
 Restart=on-failure
 RestartSec=2s
 KillSignal=SIGTERM
