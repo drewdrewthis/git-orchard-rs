@@ -121,3 +121,50 @@ func TestRecoveryHistoryAndLastHaltAt_SurviveRotation(t *testing.T) {
 		t.Errorf("recoveryHistory newest = %v; want %v", hist, haltAt)
 	}
 }
+
+// appendSidebarLog must cap sidebar.log the same way recovery.log is capped
+// (issue #802 follow-up): a crash loop appends this line once per pane death,
+// and an uncapped writer is a slow disk leak on the one machine least able to
+// notice it.
+func TestAppendSidebarLog_BoundsOverCapLogKeepingNewest(t *testing.T) {
+	path := t.TempDir() + "/sidebar.log"
+
+	// One bulk write over the cap, so the test pays for exactly one append
+	// (appendSidebarLogAt itself) rather than looping calls to build up size.
+	line := "2024-01-01T00:00:00Z pre-existing sidebar diagnostic line\n"
+	var buf bytes.Buffer
+	for buf.Len() <= sidebarLogMaxBytes {
+		buf.WriteString(line)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatalf("seed sidebar.log: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if before.Size() <= sidebarLogMaxBytes {
+		t.Fatalf("seed log is %d bytes; want it over the %d cap", before.Size(), sidebarLogMaxBytes)
+	}
+
+	appendSidebarLogAt(path, "sidebar exited (status 1)")
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after append: %v", err)
+	}
+	if after.Size() > sidebarLogMaxBytes {
+		t.Errorf("sidebar.log is %d bytes after append; want <= cap %d", after.Size(), sidebarLogMaxBytes)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !strings.Contains(string(got), "sidebar exited (status 1)") {
+		t.Errorf("sidebar.log after rotation = %q; want it to contain the newest line", got)
+	}
+	if strings.Contains(string(got), "pre-existing sidebar diagnostic line") {
+		t.Errorf("sidebar.log after rotation still contains pre-cap content; want it truncated")
+	}
+}

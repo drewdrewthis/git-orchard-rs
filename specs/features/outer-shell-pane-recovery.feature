@@ -87,9 +87,11 @@ Feature: outer shell pane recovery
   # respawn it, because the split pane is sidebar-owned state (cmd/orchard-sidebar/
   # split.go: m.alt / m.splitOpen), and a respawn would orphan a pane the sidebar
   # can no longer close with M-w.
+  # pane-died only fires for remain-on-exit on panes; a split pane whose per-pane
+  # 'off' has landed is removed by tmux itself and never reaches recover-pane.
   @integration
   Scenario: A died split work pane at index >= 2 is closed cleanly and the layout restored
-    Given a third outer work pane at index 2 was opened via open-in-split (#777)
+    Given a split pane at index 2 whose remain-on-exit is still on (the window before the sidebar's per-pane remain-on-exit off lands, or when that set-option did not take)
     And that pane's inner client process has exited, leaving it dead
     When orchard-shell's pane-died hook fires for pane index 2
     Then pane index 2 is closed with kill-pane rather than left dead

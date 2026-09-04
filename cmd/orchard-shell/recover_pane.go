@@ -4,14 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/drewdrewthis/orchardist/internal/orchpaths"
 )
 
 // recover_pane.go — the imperative shell for `orchard-shell recover-pane`.
@@ -276,23 +272,4 @@ func (w *wrapper) innerSessionCount() int {
 // holds the pane forever on both BSD and GNU sleep.
 func haltCommand(msg string) string {
 	return fmt.Sprintf("printf '%%s\\n' %s; while :; do sleep 3600; done", shellQuote(msg))
-}
-
-// appendSidebarLog records a sidebar exit line in the sidebar's own log,
-// alongside its runtime diagnostics (cmd/orchard-sidebar/log.go). Best-effort
-// — a recovery that cannot open the log still respawns the pane.
-func appendSidebarLog(reason string) {
-	dir, err := orchpaths.StateDir()
-	if err != nil {
-		return
-	}
-	if os.MkdirAll(dir, 0o755) != nil {
-		return
-	}
-	f, err := os.OpenFile(filepath.Join(dir, "sidebar.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), reason)
 }

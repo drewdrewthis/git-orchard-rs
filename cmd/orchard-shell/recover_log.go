@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,6 +12,53 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/orchpaths"
 	"github.com/drewdrewthis/orchardist/internal/release"
 )
+
+// sidebarLogMaxBytes bounds sidebar.log the same way logMax bounds it in
+// cmd/orchard-sidebar/log.go — the sidebar's own runtime diagnostics and this
+// recovery-exit line are the two writers of that one file, so they must agree
+// on when it rolls over. Keep this value identical to logMax there.
+const sidebarLogMaxBytes = 1 << 20
+
+// appendSidebarLog records a sidebar exit line in the sidebar's own log,
+// alongside its runtime diagnostics. Best-effort — a recovery that cannot
+// open the log still respawns the pane.
+//
+// cmd/orchard-shell and cmd/orchard-sidebar are both package main, so this
+// cannot import cmd/orchard-sidebar/log.go's logf; it duplicates log.go's cap
+// policy instead — that file is the source of truth: once the next line would
+// push the file over the cap, truncate to empty first, so the newest failures
+// are the ones kept.
+func appendSidebarLog(reason string) {
+	dir, err := orchpaths.StateDir()
+	if err != nil {
+		return
+	}
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	appendSidebarLogAt(filepath.Join(dir, "sidebar.log"), reason)
+}
+
+// appendSidebarLogAt is appendSidebarLog's bounded-write logic, split out so
+// it is exercised against a temp path without StateDir's real ~/.orchard.
+func appendSidebarLogAt(path, reason string) {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	line := fmt.Sprintf("%s %s\n", time.Now().Format(time.RFC3339), reason)
+
+	var size int64
+	if fi, err := f.Stat(); err == nil {
+		size = fi.Size()
+	}
+	if size+int64(len(line)) > sidebarLogMaxBytes {
+		_ = f.Truncate(0)
+	}
+	_, _ = f.WriteString(line)
+}
 
 // recoveryLogMaxBytes / recoveryLogKeep bound recovery.log. A hold command
 // misbehaving can grow the log without limit (a live run once wrote 1442 halt
