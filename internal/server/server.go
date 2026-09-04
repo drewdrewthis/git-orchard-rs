@@ -39,6 +39,7 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeaccount"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeinstance"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeprojects"
+	"github.com/drewdrewthis/orchardist/internal/server/providers/claudesessions"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/gh"
 	gitprovider "github.com/drewdrewthis/orchardist/internal/server/providers/git"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/host"
@@ -146,6 +147,15 @@ func WithClaudeProjects(p *claudeprojects.Provider) Option {
 func WithConversationsJSONL(p PathLookup, projectsRoot string) Option {
 	return func(s *Server, _ *resolvers.Resolver) {
 		s.convoJSONL = &convoJSONLConfig{provider: p, root: projectsRoot}
+	}
+}
+
+// WithClaudeSessions attaches a claudesessions provider (live-REPL registry).
+// The provider is stateless (no watcher), so it needs no Start/Stop wiring on
+// the Server — the Option only injects it into the resolver.
+func WithClaudeSessions(p *claudesessions.Provider) Option {
+	return func(_ *Server, r *resolvers.Resolver) {
+		r.WithClaudeSessions(p)
 	}
 }
 

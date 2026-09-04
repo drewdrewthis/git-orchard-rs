@@ -10,6 +10,7 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/server/loaders"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeaccount"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/claudeprojects"
+	"github.com/drewdrewthis/orchardist/internal/server/providers/claudesessions"
 	configprovider "github.com/drewdrewthis/orchardist/internal/server/providers/config"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/gh"
 	gitprovider "github.com/drewdrewthis/orchardist/internal/server/providers/git"
@@ -33,13 +34,16 @@ type Resolver struct {
 	// Version) to avoid shadowing the Query.Version resolver method on
 	// the embedded queryResolver. Defaults to "dev" when no ldflags
 	// were used (plain `go build`).
-	DaemonVersion       string
-	HostProvider        *host.Provider
-	ReposProvider       ReposLister
-	Git                 *gitprovider.Provider
-	PS                  *ps.Provider
-	Tmux                *tmux.Provider
-	ClaudeProjects      *claudeprojects.Provider
+	DaemonVersion  string
+	HostProvider   *host.Provider
+	ReposProvider  ReposLister
+	Git            *gitprovider.Provider
+	PS             *ps.Provider
+	Tmux           *tmux.Provider
+	ClaudeProjects *claudeprojects.Provider
+	// ClaudeSessions is the live-REPL registry (~/.claude/sessions/<pid>.json).
+	// When nil, sessionUuid resolution degrades to the cwd/nil fallback (#743).
+	ClaudeSessions      *claudesessions.Provider
 	ClaudeAccount       *claudeaccount.Provider
 	HostServiceProvider *hostservice.Provider
 	GH                  *gh.Provider
@@ -98,6 +102,12 @@ func (r *Resolver) WithTmux(p *tmux.Provider) *Resolver {
 // WithClaudeProjects wires the claudeprojects provider.
 func (r *Resolver) WithClaudeProjects(p *claudeprojects.Provider) *Resolver {
 	r.ClaudeProjects = p
+	return r
+}
+
+// WithClaudeSessions wires the claudesessions provider (live-REPL registry).
+func (r *Resolver) WithClaudeSessions(p *claudesessions.Provider) *Resolver {
+	r.ClaudeSessions = p
 	return r
 }
 
@@ -197,7 +207,7 @@ func (a *ghPRStateAdapter) PRStateByBranch(ctx context.Context, repoSlug, branch
 // dataloaders need. Used as a fallback when no middleware-installed
 // Loaders is on the context (e.g. internal subscription emissions).
 func (r *Resolver) LoaderBundle() *loaders.ProvidersBundle {
-	return &loaders.ProvidersBundle{
+	b := &loaders.ProvidersBundle{
 		Host:       r.HostProvider,
 		Git:        r.Git,
 		Ps:         r.PS,
@@ -206,4 +216,11 @@ func (r *Resolver) LoaderBundle() *loaders.ProvidersBundle {
 		GH:         r.GH,
 		GHEnricher: r.GH,
 	}
+	// Assign only when non-nil so the interface field stays a true nil (a
+	// typed-nil *Provider would make loadSessionsByPid's nil check miss and
+	// panic dereferencing the registry root).
+	if r.ClaudeSessions != nil {
+		b.ClaudeSessions = r.ClaudeSessions
+	}
+	return b
 }

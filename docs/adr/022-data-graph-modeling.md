@@ -96,3 +96,9 @@ The tmux provider already exposes `Sessions()`, `Windows()`, `Panes()`, `Clients
 - **`claudeinstance` is the canonical follow-up refactor** — collapse `Provider`, `Composer`, `Reader`, `Watcher`, `Heartbeat`, `TmuxSeeder` into a resolver over `Pane` + jsonl-keyed transcript state. Out of scope for this ADR; tracked separately.
 
 See ADR-016 (GraphQL as protocol), ADR-017 (layer responsibilities), ADR-019 (no client-side cache layers — the GUI counterpart of this rule).
+
+## Amendments
+
+- 2026-09-04: applied the gate to `ClaudeInstance` (node), `SessionByPid` (axis
+  resolving `ClaudeInstance.sessionUuid` from Claude Code's `~/.claude/sessions`
+  registry by the pane's own live pid), provider → dataloader → resolver (#743).
