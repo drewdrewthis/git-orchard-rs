@@ -64,14 +64,18 @@ func (m *model) header(w int) ([]viewLine, headZones) {
 	// assume, so its zone is computed from the strip's own final width
 	// rather than hardcoded. Suppressed first on a narrowing pane: dropped
 	// below ~24 inner columns, well before the badge (18) or the buttons
-	// (never), so it can never crowd either. The click zone is set only when
-	// an upgrade is actually available: a dev build shows its ident here too
-	// (dev@<rev>), but that is a label, not a click-to-upgrade target (#789).
+	// (never), so it can never crowd either. It also yields to an open
+	// filter that could not keep filterMinWidth (#801). The click zone is
+	// set only when an upgrade is actually available: a dev build shows its
+	// ident here too (dev@<rev>), but that is a label, not a
+	// click-to-upgrade target (#789).
 	var updateZone clickZone
 	if u := m.updateHint(); u != "" && iw >= updateMinWidth {
-		right = u + "  " + right
-		if m.updateAvailable() {
-			updateZone = clickZone{x: max(0, 1+iw-cellWidth(right)), y: 0, w: cellWidth(u), h: 1}
+		if withHint := u + "  " + right; m.hintFits(iw - cellWidth(withHint) - 1) {
+			right = withHint
+			if m.updateAvailable() {
+				updateZone = clickZone{x: max(0, 1+iw-cellWidth(right)), y: 0, w: cellWidth(u), h: 1}
+			}
 		}
 	}
 	// the filter takes the title's place rather than a line of its own: an
