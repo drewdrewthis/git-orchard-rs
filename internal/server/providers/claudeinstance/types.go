@@ -49,9 +49,9 @@ type OSLivenessChecker struct{}
 // necessarily same-user (e.g. a sidecar owned by another account, or
 // launchd/pid 1): EPERM means "a process with this pid exists and
 // answered the kernel" — it is alive, just not signalable by us.
-// Misreading EPERM as dead would delete a live sidecar (#826). Only
-// ESRCH (no such process) proves death; any other unexpected error is
-// treated as "can't prove death" too, per fail-safe-keep.
+// Misreading EPERM as dead would delete a live sidecar (#826). Any other
+// error is reported as not-alive; the janitor's own missing/zero-pid guard
+// is the fail-safe layer above this.
 // Returns false for pid<=0.
 func (OSLivenessChecker) IsAlive(pid int) bool {
 	if pid <= 0 {
