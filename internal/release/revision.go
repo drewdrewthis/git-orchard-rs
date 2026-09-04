@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"slices"
 )
 
 // revision is overridden via -ldflags "-X ...release.revision=<sha>" at build
@@ -12,17 +13,28 @@ import (
 // absent, and so the Rust and Go binaries can be pinned to one commit.
 var revision string
 
+// UnstampedBinaries are the suite binaries that carry no VCS revision stamp:
+// the Rust pair. Go bakes vcs.revision into every binary automatically, while
+// stamping the Rust builds would mean running git at tarball-build time to
+// inject it, a dependency the release does not take. This is the single source
+// of the exclusion — RevisionBinaries derives from it, and doctor's
+// excludedSuffix names it directly, so the covered and excluded sets cannot
+// drift and a future Go binary added to SuiteBinaries is checked automatically.
+var UnstampedBinaries = []string{"orchard-tui", "orchard"}
+
 // RevisionBinaries are the suite binaries that answer `--revision` with their
-// build-time VCS commit — the Go binaries only, in SuiteBinaries order. The
-// Rust pair (orchard, orchard-tui) is excluded: Go bakes vcs.revision into
-// every binary automatically, while stamping the Rust builds would mean running
-// git at tarball-build time to inject it, a dependency the release does not
-// take. orchard-shell's doctor iterates this set, not SuiteBinaries.
-var RevisionBinaries = []string{
-	"orchard-daemon",
-	"orchard-sidebar",
-	"orchard-shell",
-	"orchard-upgrade",
+// build-time VCS commit: SuiteBinaries minus UnstampedBinaries, in SuiteBinaries
+// order. orchard-shell's doctor iterates this set, not SuiteBinaries.
+var RevisionBinaries = revisionBinaries()
+
+func revisionBinaries() []string {
+	out := make([]string, 0, len(SuiteBinaries))
+	for _, name := range SuiteBinaries {
+		if !slices.Contains(UnstampedBinaries, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // HandleRevisionFlag answers a bare `--revision` invocation: when args[0] is

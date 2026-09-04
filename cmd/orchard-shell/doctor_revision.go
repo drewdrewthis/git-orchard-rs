@@ -40,10 +40,14 @@ func resolveSuiteRevisions(ctx context.Context, env doctorEnv) []binaryVersion {
 //
 // orchard-shell is read in-process (env.selfRevision) for the same reason
 // resolveOneVersion special-cases it: self-exec would just rerun this binary.
-// A binary that cannot be found returns unresolvedVersion (a FAIL); one that is
-// found but errors on --revision returns unimplementedRevision (a WARN — it
-// predates the flag). An empty ("") revision is a value like any other: a
-// genuinely unstamped build, distinct from both sentinels.
+// A binary that cannot be found returns unresolvedVersion (a FAIL). When
+// --revision errors we must distinguish a healthy older build that predates the
+// flag from a crashed binary: we probe --version. A binary that answers
+// --version is alive and merely lacks --revision → unimplementedRevision (a
+// WARN, fix is a rebuild); one that fails --version too is broken → the same
+// unresolvedVersion FAIL as a missing binary, never masked as "predates the
+// flag". An empty ("") revision is a value like any other: a genuinely
+// unstamped build, distinct from both sentinels.
 func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string {
 	if name == "orchard-shell" {
 		return env.selfRevision
@@ -54,6 +58,9 @@ func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string 
 	}
 	out, err := env.run(ctx, path, "--revision")
 	if err != nil {
+		if _, verr := env.run(ctx, path, "--version"); verr != nil {
+			return unresolvedVersion
+		}
 		return unimplementedRevision
 	}
 	return strings.TrimSpace(out)
@@ -104,33 +111,25 @@ func evaluateRevisions(revisions []binaryVersion) checkResult {
 			Detail: fmt.Sprintf("these suite binaries do not answer --revision: %s%s", strings.Join(unimplemented, ", "), suffix),
 			Remedy: "rebuild the listed binaries from a checkout that answers `--revision` — they predate this check"}
 	}
-	for rev := range realGroups {
-		if rev == "" {
-			return checkResult{ID: "suite-revisions", Status: statusPass,
-				Detail: fmt.Sprintf("all %d suite binaries carry no VCS revision (an unstamped build)%s", len(revisions), suffix)}
-		}
-		return checkResult{ID: "suite-revisions", Status: statusPass,
-			Detail: fmt.Sprintf("all %d suite binaries built from revision %s%s", len(revisions), rev, suffix)}
+	// Exactly one real revision group remains (len(realGroups) == 1, guarded by
+	// the mismatch branch above), so this pass reads its single key and returns.
+	var rev string
+	for rev = range realGroups {
 	}
-	return checkResult{ID: "suite-revisions", Status: statusPass, Detail: "no suite binaries to check" + suffix}
+	if rev == "" {
+		return checkResult{ID: "suite-revisions", Status: statusPass,
+			Detail: fmt.Sprintf("all %d suite binaries carry no VCS revision (an unstamped build)%s", len(revisions), suffix)}
+	}
+	return checkResult{ID: "suite-revisions", Status: statusPass,
+		Detail: fmt.Sprintf("all %d suite binaries built from revision %s%s", len(revisions), rev, suffix)}
 }
 
 // excludedSuffix names the SuiteBinaries the revision check cannot cover — the
-// Rust binaries, derived as SuiteBinaries minus RevisionBinaries rather than
-// hardcoded, so the two lists cannot silently drift apart.
+// Rust binaries. It lists release.UnstampedBinaries directly (the single source
+// of the exclusion), so doctor's suffix and the covered set cannot drift apart.
 func excludedSuffix() string {
-	covered := map[string]bool{}
-	for _, name := range release.RevisionBinaries {
-		covered[name] = true
-	}
-	var excluded []string
-	for _, name := range release.SuiteBinaries {
-		if !covered[name] {
-			excluded = append(excluded, name)
-		}
-	}
-	if len(excluded) == 0 {
+	if len(release.UnstampedBinaries) == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" (%s excluded: Rust, not stamped)", strings.Join(excluded, ", "))
+	return fmt.Sprintf(" (%s excluded: Rust, not stamped)", strings.Join(release.UnstampedBinaries, ", "))
 }

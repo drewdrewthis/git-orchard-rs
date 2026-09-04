@@ -2,9 +2,29 @@ package release
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
+
+// RevisionBinaries and UnstampedBinaries must partition SuiteBinaries exactly:
+// their union is SuiteBinaries with no overlap. This is the anti-drift guard —
+// a Go binary added to SuiteBinaries lands in RevisionBinaries automatically,
+// and no binary is both covered and excluded.
+func TestRevisionAndUnstampedPartitionSuite(t *testing.T) {
+	union := append(slices.Clone(RevisionBinaries), UnstampedBinaries...)
+	slices.Sort(union)
+	want := slices.Clone(SuiteBinaries)
+	slices.Sort(want)
+	if !slices.Equal(union, want) {
+		t.Errorf("RevisionBinaries ∪ UnstampedBinaries = %v; want SuiteBinaries %v", union, want)
+	}
+	for _, name := range RevisionBinaries {
+		if slices.Contains(UnstampedBinaries, name) {
+			t.Errorf("%q is in both RevisionBinaries and UnstampedBinaries", name)
+		}
+	}
+}
 
 // The -ldflags override wins over the build-info fallback, so a release build
 // reports the commit stamped into it (orchardist#803).

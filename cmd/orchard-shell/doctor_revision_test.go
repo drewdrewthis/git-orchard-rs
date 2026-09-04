@@ -138,6 +138,8 @@ func TestCheckRevisions_MismatchedSidebarIsDetected(t *testing.T) {
 
 // A suite whose binaries all report the same revision passes, and the pass
 // detail still names the excluded Rust binaries.
+//
+// @scenario doctor passes suite-revisions on a single-checkout install
 func TestCheckRevisions_MatchingSuitePasses(t *testing.T) {
 	pathDir := t.TempDir()
 	const rev = "sameREV"
@@ -158,8 +160,8 @@ func TestCheckRevisions_MatchingSuitePasses(t *testing.T) {
 	if got.Status != statusPass {
 		t.Errorf("Status = %v; want pass (detail: %s)", got.Status, got.Detail)
 	}
-	if !strings.Contains(got.Detail, "orchard") || !strings.Contains(got.Detail, "Rust") {
-		t.Errorf("Detail = %q; want it to name the excluded Rust binaries", got.Detail)
+	if !strings.Contains(got.Detail, "orchard-tui") || !strings.Contains(got.Detail, "excluded") {
+		t.Errorf("Detail = %q; want it to name orchard-tui as excluded", got.Detail)
 	}
 }
 
@@ -208,6 +210,38 @@ func TestCheckRevisions_MissingBinaryFails(t *testing.T) {
 	}
 }
 
+// A present-but-broken binary that fails BOTH --revision and --version fails
+// the check (unresolvedVersion), never masked as a healthy build that merely
+// predates the flag.
+func TestCheckRevisions_DeadBinaryFails(t *testing.T) {
+	pathDir := t.TempDir()
+	const rev = "sameREV"
+	for _, name := range release.RevisionBinaries {
+		if name == "orchard-shell" {
+			continue
+		}
+		if name == "orchard-upgrade" {
+			writeDeadRevisionBinary(t, pathDir, name)
+			continue
+		}
+		writeFakeRevisionBinary(t, pathDir, name, rev)
+	}
+	t.Setenv("PATH", pathDir)
+
+	env := doctorEnv{
+		self:         filepath.Join(t.TempDir(), "orchard-shell"),
+		selfRevision: rev,
+		run:          runCommand,
+	}
+	got := checkRevisions(context.Background(), env)
+	if got.Status != statusFail {
+		t.Errorf("Status = %v; want fail — a binary failing both --revision and --version is broken (detail: %s)", got.Status, got.Detail)
+	}
+	if !strings.Contains(got.Detail, "not found") {
+		t.Errorf("Detail = %q; want the broken binary labelled not found (unresolvedVersion)", got.Detail)
+	}
+}
+
 // writeFakeRevisionBinary writes an executable that prints revision regardless
 // of its arguments — enough for resolveOneRevision's `--revision` exec.
 func writeFakeRevisionBinary(t *testing.T, dir, name, revision string) {
@@ -220,11 +254,25 @@ func writeFakeRevisionBinary(t *testing.T, dir, name, revision string) {
 }
 
 // writeUnimplementedRevisionBinary writes an executable that rejects --revision
-// with a nonzero exit — an older build that predates the flag.
+// with a nonzero exit but answers --version — an older, healthy build that
+// predates the flag. resolveOneRevision must WARN, not FAIL, on it.
 func writeUnimplementedRevisionBinary(t *testing.T, dir, name string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	script := "#!/bin/sh\necho \"unknown flag: --revision\" >&2\nexit 2\n"
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"orchard dev\"; exit 0; fi\necho \"unknown flag: $1\" >&2\nexit 2\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeDeadRevisionBinary writes an executable that fails both --revision and
+// --version — a broken binary, not merely one predating the flag.
+// resolveOneRevision must FAIL (unresolvedVersion) on it, never mask it as a
+// warn.
+func writeDeadRevisionBinary(t *testing.T, dir, name string) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	script := "#!/bin/sh\necho \"boom\" >&2\nexit 2\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -113,6 +113,12 @@ Feature: orchard install, upgrade, and doctor
     And its remedy says to rebuild the binary, not to reinstall
 
   @unit
+  Scenario: doctor detects a suite built from different revisions
+    Given six suite binaries on PATH where "orchard-upgrade" was built from a different commit than the rest
+    When I run "orchard shell doctor"
+    Then the suite-revisions check fails naming both revision groups and their binaries
+
+  @unit
   Scenario: doctor's socket flags and $ORCHARD_TMUX_SOCKET default match orchard shell
     Given $ORCHARD_TMUX_SOCKET is set to "from-env"
     When I run "orchard shell doctor" with no socket flags
