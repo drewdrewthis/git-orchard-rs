@@ -90,3 +90,25 @@ url = https://github.com/carol/something.git
 		}
 	})
 }
+
+// TestResolveGitDirForWorktree_BareRoot covers #701 #4: a bare repository
+// root (HEAD + objects/, no `.git` entry) must resolve to itself without
+// error. The pre-fix hand-rolled resolver stat'd `.git` and errored on a
+// bare root, which broke the default-branch resolver once D1 began
+// enumerating bare repos. Delegation to git.ResolveGitDirInfo fixes it.
+func TestResolveGitDirForWorktree_BareRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "objects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := gh.ResolveGitDirForWorktree(dir)
+	if err != nil {
+		t.Fatalf("bare root should resolve without error, got: %v", err)
+	}
+	if got != filepath.Clean(dir) {
+		t.Errorf("got %q, want %q", got, filepath.Clean(dir))
+	}
+}

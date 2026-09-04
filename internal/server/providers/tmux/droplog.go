@@ -28,21 +28,38 @@ func (a *Adapter) log() *slog.Logger {
 	return slog.Default()
 }
 
-// warnDroppedRows emits ONE WARN per parse pass when a `-F` response had rows
-// whose field count did not match the format's field count. It reports counts
-// only — never raw row content, which can carry pane titles or cwd paths.
+// dropCounter tallies rows dropped in one `-F` parse pass because their
+// field count did not match the format's. It records the first mismatching
+// row's field count (the D3 case collapses a row to 1 field) so the WARN
+// can report what was actually seen. Shared by listAll and listClients so
+// the two drop loops stay identical.
+type dropCounter struct {
+	dropped  int
+	firstGot int
+}
+
+// skip records one dropped row whose split produced got fields.
+func (c *dropCounter) skip(got int) {
+	if c.dropped == 0 {
+		c.firstGot = got
+	}
+	c.dropped++
+}
+
+// warnDroppedRows emits ONE WARN per parse pass when c recorded any drop.
+// It reports counts only — never raw row content, which can carry pane
+// titles or cwd paths.
 //
 // cmd names the tmux subcommand (e.g. "list-panes -a"); expected is the
-// format's field count; got is the field count of the first mismatching row
-// (the D3 case collapses a row to 1 field).
-func (a *Adapter) warnDroppedRows(cmd string, dropped, expected, got int) {
-	if dropped == 0 {
+// format's field count.
+func (a *Adapter) warnDroppedRows(cmd string, c dropCounter, expected int) {
+	if c.dropped == 0 {
 		return
 	}
 	a.log().Warn("tmux: dropped rows with unexpected field count",
 		"cmd", cmd,
-		"dropped", dropped,
+		"dropped", c.dropped,
 		"expected_fields", expected,
-		"got_fields", got,
+		"got_fields", c.firstGot,
 	)
 }

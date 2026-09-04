@@ -1,44 +1,14 @@
 package git
 
 import (
-	"bytes"
 	"context"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// runGitBare shells out to git and fails the test on non-zero exit.
-// Shell-outs are permitted for fixture setup only.
-func runGitBare(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, stderr.String())
-	}
-}
-
-// makeSourceRepo builds a normal repo with one commit and returns its path.
-func makeSourceRepo(t *testing.T) string {
-	t.Helper()
-	repo := t.TempDir()
-	runGitBare(t, repo, "init", "-b", "main")
-	runGitBare(t, repo, "config", "user.email", "i701@example.com")
-	runGitBare(t, repo, "config", "user.name", "i701")
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# fixture\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
-	}
-	runGitBare(t, repo, "add", "README.md")
-	runGitBare(t, repo, "commit", "-m", "initial")
-	return repo
-}
-
-// requireGit skips when git is unavailable.
+// requireGit skips when git is unavailable. Fixtures come from the
+// package-shared runGitT / initRepoWithCommit helpers (adapter_ahead_behind_test.go).
 func requireGit(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -50,9 +20,9 @@ func requireGit(t *testing.T) {
 // working dir IS its gitdir and is flagged bare.
 func TestResolveGitDirInfo_Bare(t *testing.T) {
 	requireGit(t)
-	src := makeSourceRepo(t)
+	src := initRepoWithCommit(t)
 	bare := filepath.Join(t.TempDir(), "bare.git")
-	runGitBare(t, ".", "clone", "--bare", src, bare)
+	runGitT(t, "", "clone", "--bare", src, bare)
 
 	gd, err := resolveGitDirInfo(bare)
 	if err != nil {
@@ -71,15 +41,15 @@ func TestResolveGitDirInfo_Bare(t *testing.T) {
 // (Bare=true, Branch="") plus the 2 linked checkouts.
 func TestFetchAll_BareWithLinkedWorktrees(t *testing.T) {
 	requireGit(t)
-	src := makeSourceRepo(t)
+	src := initRepoWithCommit(t)
 	bareParent := t.TempDir()
 	bare := filepath.Join(bareParent, "bare.git")
-	runGitBare(t, ".", "clone", "--bare", src, bare)
+	runGitT(t, "", "clone", "--bare", src, bare)
 
 	wt1 := filepath.Join(bareParent, "bare-wt1")
 	wt2 := filepath.Join(bare, "worktrees-checkout", "bwt2")
-	runGitBare(t, bare, "worktree", "add", "-b", "feat/a", wt1)
-	runGitBare(t, bare, "worktree", "add", "-b", "feat/b", wt2)
+	runGitT(t, bare, "worktree", "add", "-b", "feat/a", wt1)
+	runGitT(t, bare, "worktree", "add", "-b", "feat/b", wt2)
 
 	a := NewGitWorktreeAdapter(func() []Project {
 		return []Project{{ID: "barep", Dir: bare}}
@@ -138,9 +108,9 @@ func resolvePath(t *testing.T, p string) string {
 // plus its linked worktrees.
 func TestFetchAll_NormalRepoUnchanged(t *testing.T) {
 	requireGit(t)
-	repo := makeSourceRepo(t)
+	repo := initRepoWithCommit(t)
 	wt := filepath.Join(t.TempDir(), "wt")
-	runGitBare(t, repo, "worktree", "add", "-b", "feature/x", wt)
+	runGitT(t, repo, "worktree", "add", "-b", "feature/x", wt)
 
 	a := NewGitWorktreeAdapter(func() []Project {
 		return []Project{{ID: "demo", Dir: repo}}

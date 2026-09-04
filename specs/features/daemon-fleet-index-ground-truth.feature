@@ -82,7 +82,7 @@ Feature: Daemon fleet index reflects git/tmux ground truth (#701)
   # AC5 / AC6 — D1: bare clones
   # =======================================================================
 
-  @unit @issue-701
+  @integration @issue-701
   Scenario: resolveGitDir treats a bare repository's working dir as the gitdir
     Given a directory holding `HEAD` and `objects/` but no `.git` entry (a bare clone root)
     When `resolveGitDir` resolves it
