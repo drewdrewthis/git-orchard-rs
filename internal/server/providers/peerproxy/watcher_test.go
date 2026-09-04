@@ -580,11 +580,12 @@ func TestConfigWatcher_BurstCoalesced(t *testing.T) {
 		writeConfig(t, cfgPath, twoPeerConfig)
 	}
 
-	// 6. Fire the debounce exactly once, then wait for that single reload to
-	// complete. Because the fake clock only fires on demand, no straggler
-	// event can trigger a second reload.
-	clk.FireAfterArmed()
-	<-reloaded
+	// 6. Fire every live debounce timer, serialising on the reload hook. The
+	// invariant is now enforced by CANCELLATION, not by a single fn slot: each
+	// burst event Stops the prior timer before arming the next, so a correct
+	// debouncer leaves exactly one live timer (→ one reload), while a debouncer
+	// that dropped stopTimer would leave all five live (→ five reloads → fail).
+	clk.FireAll(reloaded)
 
 	// 7. ReloadCount must be exactly 1 — all 5 events coalesced.
 	if got := cw.ReloadCount(); got != 1 {

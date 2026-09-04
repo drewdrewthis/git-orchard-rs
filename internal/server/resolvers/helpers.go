@@ -67,12 +67,22 @@ var enrichmentFieldNames = map[string]struct{}{
 // spread across gqlgen's per-item goroutines; routing the warm-up through the
 // DataLoader would depend on its wall-clock wait window, so under scheduling
 // jitter the keys split across batches and fire more than one GraphQL request
-// (a latent N+1 — issue #773). Instead this issues ONE direct
-// BatchEnrichPullRequests call with every key, deterministically one HTTP round
-// trip, warming the provider's per-key cache. The field resolvers then read
-// that cache through the DataLoader at zero additional network cost, regardless
-// of how their Loads batch. No-op when no enrichment field is selected, so a
-// bare `{ number }` query still pays nothing.
+// (a latent N+1 — issue #773).
+//
+// Two warm-up steps run here, and both are load-bearing:
+//
+//  1. ONE direct BatchEnrichPullRequests call with every key — a single
+//     deterministic HTTP round trip that warms the provider's per-key cache.
+//  2. Prime the request DataLoader with every returned value. The provider
+//     cache DECLINES to store UNKNOWN-mergeable entries on open PRs
+//     (gh.shouldCacheEnrichment), so step 1 alone would leave those keys cold
+//     and the field resolvers' Loads would refetch them — a second HTTP call
+//     in production. Priming the loader memo makes the field resolvers
+//     deterministic regardless of the provider cache policy: their Loads read
+//     the memo, never the network.
+//
+// No-op when no enrichment field is selected, so a bare `{ number }` query
+// still pays nothing.
 func primeEnrichment(ctx context.Context, provider *gh.Provider, prs []gh.PullRequest) {
 	if provider == nil || len(prs) == 0 || !enrichmentSelected(ctx) {
 		return
@@ -81,8 +91,14 @@ func primeEnrichment(ctx context.Context, provider *gh.Provider, prs []gh.PullRe
 	for _, p := range prs {
 		keys = append(keys, gh.PullRequestKey{Owner: p.RepoOwner, Name: p.RepoName, Number: p.Number})
 	}
-	// Best-effort warm-up; the field resolvers surface any real error.
-	_, _ = provider.BatchEnrichPullRequests(ctx, keys)
+	// Best-effort warm-up; the field resolvers surface any real error. Partial
+	// results are still returned on error, so prime whatever came back.
+	enriched, _ := provider.BatchEnrichPullRequests(ctx, keys)
+	if l := loaders.FromContext(ctx); l != nil && l.PullRequestEnrichment != nil {
+		for key, pr := range enriched {
+			l.PullRequestEnrichment.Prime(ctx, key, pr)
+		}
+	}
 }
 
 // enrichmentSelected reports whether the PullRequest selection set for the
