@@ -34,7 +34,7 @@
 
 **Rust** (`crates/orchard/`) — flat-dispatch CLI: `init`, `upgrade`, `setup-remote`, `heal`, `chat`, `watch`, `refresh`, `hook-enrich`, `webhook-serve`, `list-remotes`, `sessions`, `--json`, plus the TUI as default. Worktree mutation lives only inside `tui/dialogs.rs` (628 lines) backed by `git.rs` (325 lines). No scriptable mutation surface.
 
-**Go** (`cmd/orchard/`) — Cobra hierarchy: `daemon {start,stop,status}`, `config {init,add-repo}`, `query {projects,pull-requests,issues,workflow-runs,host,panes,claude-instances,processes,claude-account,host-services,contracts,conversations}`. Read-only via GraphQL. PR #413 lands `config add-peer`.
+**Go** (`cmd/orchard/`) — Cobra hierarchy: `daemon {start,stop,status}`, `config {init,add-repo}`, `query {projects,pull-requests,issues,workflow-runs,host,panes,claude-instances,processes,claude-account,host-services,conversations}`. Read-only via GraphQL. PR #413 lands `config add-peer`.
 
 PR #409 (in flight) renames Rust → `orchard-tui`. Currently under reconsideration because the Rust binary owns far more than the TUI.
 
@@ -118,7 +118,7 @@ orchard remote   {setup, ls, rm}
 orchard config   {init, add-repo, add-peer, ls}
 orchard query    {projects, pull-requests, issues, workflow-runs, host, panes,
                   claude-instances, processes, claude-account, host-services,
-                  contracts, conversations}
+                  conversations}
 orchard hook     {ingest}                          (--transcript ...)
 orchard webhook  {serve, send}                     (send = stripe-style simulator)
 orchard daemon   {start, stop, status, reload, logs}
