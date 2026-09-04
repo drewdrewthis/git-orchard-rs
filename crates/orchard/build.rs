@@ -66,10 +66,8 @@ fn emit_revision() {
 ///     has uncommitted changes (Go's `vcs.modified`);
 ///   - else empty (no git, no override).
 fn revision_value() -> String {
-    if let Ok(v) = env::var("ORCHARD_REVISION") {
-        if !v.is_empty() {
-            return v;
-        }
+    if let Some(v) = env::var("ORCHARD_REVISION").ok().filter(|v| !v.is_empty()) {
+        return v;
     }
     let head = match git(&["rev-parse", "HEAD"]) {
         Some(h) if !h.is_empty() => h,
@@ -110,11 +108,10 @@ fn emit_git_rerun() {
     }
     // `symbolic-ref` exits non-zero (→ None) on a detached HEAD, which has no
     // ref file to watch.
-    if let Some(ref_name) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
-        if !ref_name.is_empty() {
-            if let Some(ref_path) = git(&["rev-parse", "--git-path", &ref_name]) {
-                println!("cargo:rerun-if-changed={ref_path}");
-            }
-        }
+    if let Some(ref_path) = git(&["symbolic-ref", "--quiet", "HEAD"])
+        .filter(|r| !r.is_empty())
+        .and_then(|r| git(&["rev-parse", "--git-path", &r]))
+    {
+        println!("cargo:rerun-if-changed={ref_path}");
     }
 }
