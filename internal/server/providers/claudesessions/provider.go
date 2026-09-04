@@ -80,6 +80,8 @@ func (p *Provider) SessionByPid(pid int) (Session, bool) {
 	if err != nil {
 		return Session{}, false // missing dir/file, or unreadable
 	}
+	// On-disk "sessionId", struct field SessionUUID, and GraphQL sessionUuid
+	// are the same value under three spellings — no transform happens here.
 	var sf sessionFile
 	if err := json.Unmarshal(raw, &sf); err != nil {
 		p.logger.Debug("claudesessions: malformed registry file, ignoring", "path", path, "err", err)

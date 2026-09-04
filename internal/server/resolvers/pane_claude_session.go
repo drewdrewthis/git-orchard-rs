@@ -79,6 +79,14 @@ func buildCwdIndex(convs []claudeprojects.Conversation) map[string]cwdMatch {
 //
 // Remote panes (host != tmux.LocalHostID) skip step 1 entirely — a local
 // registry file can never describe a REPL on another host.
+// One os.ReadFile per claude pane per request (via reg.SessionByPid) — pane
+// counts run single digits per host, so this skips a dataloader/cache
+// (ADR-022 amendment) rather than batching a call this cheap.
+//
+// Accepted residual (pid reuse): a stale <pid>.json for a dead REPL, reused
+// by a new REPL in the SAME cwd, still passes the cwd guard below until the
+// new REPL overwrites its own <pid>.json — a window bounded to the new
+// REPL's own startup.
 func resolveSessionUUID(host string, pid int, cwd string, reg paneSessionRegistry, cwdIndex map[string]cwdMatch) string {
 	if cwd == "" {
 		return ""

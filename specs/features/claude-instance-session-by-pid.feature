@@ -5,18 +5,20 @@ Feature: ClaudeInstance sessionUuid resolved by pid, not cwd
   # one shared sessionUuid, even though each has a distinct live pid and transcript.
   #
   # Fix shape: new claudesessions provider exposing a SessionByPid axis over
-  # ~/.claude/sessions/<pid>.json (liveness-filtered, same as claudeinstance's
-  # LivenessChecker), wired provider -> resolver per ADR-022. Resolution order per
-  # pane: (1) registry entry for the pane's own live pid, cwd-cross-checked against
-  # the registry entry's recorded cwd; (2) cwd fallback (existing cwdToSession); (3)
-  # nil when neither is unambiguous. Node ID stays pid-based (#711); only sessionUuid
-  # resolution changes.
+  # ~/.claude/sessions/<pid>.json. Liveness comes not from a LivenessChecker
+  # filter but from the lookup key itself: it is keyed on the pane's own live
+  # pid (from the ps snapshot), plus a cwd cross-check against the registry
+  # entry's recorded cwd, wired provider -> resolver per ADR-022. Resolution
+  # order per pane: (1) registry entry for the pane's own live pid,
+  # cwd-cross-checked against the registry entry's recorded cwd; (2) cwd
+  # fallback (existing cwdToSession); (3) nil when neither is unambiguous.
+  # Node ID stays pid-based (#711); only sessionUuid resolution changes.
 
   Background:
     Given the daemon serves a GraphQL schema at 127.0.0.1:7777
     And the ClaudeInstance type exposes fields (id, sessionUuid, ...)
     And ClaudeInstance.id remains pid-based per #711
-    And a claudesessions provider exposes SessionByPid(host, pid) over ~/.claude/sessions/<pid>.json
+    And a claudesessions provider exposes SessionByPid(pid) over ~/.claude/sessions/<pid>.json, with the host guard (tmux.LocalHostID) applied by the resolver, not the provider
 
   # ===================================================================
   # AC 1 — Registry-first resolution
@@ -151,6 +153,10 @@ Feature: ClaudeInstance sessionUuid resolved by pid, not cwd
   # ===================================================================
   # AC 12 — Pid reuse rejected
   # ===================================================================
+  # Accepted residual: a stale <pid>.json from a dead REPL, whose pid gets
+  # reassigned to a new REPL in the SAME cwd, still passes the cwd guard
+  # until the new REPL overwrites its own <pid>.json (same filename). The
+  # window is the new REPL's own startup only.
 
   @unit
   Scenario: A live pid whose registry cwd mismatches the pane's cwd is not attributed
