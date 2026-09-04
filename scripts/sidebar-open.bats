@@ -137,7 +137,7 @@ teardown() {
 # lived. A '$'-bearing session name must reach sidebar-open.sh intact and get
 # exactly one sidebar pane; a pre-existing session must not (#734).
 @test "live session-created hook auto-opens a sidebar for a \$-named session (#734)" {
-  command -v tmux >/dev/null || skip "tmux not installed"
+  [ -n "$REAL_TMUX" ] || skip "tmux not installed"
   unset TMUX  # never let a real client's socket leak in
 
   SOCK="t734-$$-$BATS_TEST_NUMBER"
