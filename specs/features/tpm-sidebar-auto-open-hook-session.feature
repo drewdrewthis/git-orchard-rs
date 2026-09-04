@@ -8,8 +8,7 @@ Feature: auto-open the orchard sidebar in a newly created tmux session
   # run-shell hands its argument to /bin/sh, which expands the leading "$" as an empty
   # positional parameter, so scripts/sidebar-open.sh receives an EMPTY target and does an
   # untargeted split — a silent no-op. Fix: substitute #{q:hook_session_name} (the session
-  # NAME, q-quoted so it survives the run-shell -> /bin/sh hop intact), and harden
-  # sidebar-open.sh's idempotency-check target so spaced/metachar names pass as one argument.
+  # NAME, q-quoted so it survives the run-shell -> /bin/sh hop intact).
   # tmux sanitizes ':' and '.' out of session names at creation, so those cannot occur.
 
   Background:
