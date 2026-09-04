@@ -23,13 +23,16 @@ case "$(go env GOOS)/$(go env GOARCH)" in
 esac
 
 fail=0
+expected_rev=""
 for tarball in "$@"; do
   echo "== $tarball =="
   work="$(mktemp -d)"
   trap 'rm -rf "$work"' EXIT
   tar xzf "$tarball" -C "$work"
   printf '  %-18s %-14s %s\n' BINARY VCS.MODIFIED REVISION
-  seen_rev=""
+  # Seed with the revision established by prior tarballs so a mismatch
+  # ACROSS tarballs fails too, not just within one (#817 skew case).
+  seen_rev="$expected_rev"
   for bin in $GO_BINS; do
     path="$work/$bin"
     [ -f "$path" ] || continue
@@ -45,6 +48,7 @@ for tarball in "$@"; do
     fi
     [ -n "$rev" ] && seen_rev="$rev"
   done
+  [ -z "$expected_rev" ] && expected_rev="$seen_rev"
 
   # If this tarball is for the host platform, execute --revision too.
   if [ -n "$HOST_TRIPLE" ] && printf '%s' "$tarball" | grep -q "$HOST_TRIPLE"; then
