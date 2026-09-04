@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/drewdrewthis/orchardist/internal/server/providers/git"
 )
 
 // ReadOriginURL reads `.git/config` for a working tree and returns the
@@ -117,44 +119,31 @@ func splitOwnerName(s string) (string, string, bool) {
 	return parts[0], parts[1], true
 }
 
-// ResolveGitDirForWorktree mirrors the git provider's logic so this
-// package doesn't need to depend on it. Handles both `.git` as a
-// directory and as a file pointing at the actual git directory
-// (linked-worktree case).
+// ResolveGitDirForWorktree resolves the git directory that owns the
+// checkout at workdir, then follows the linked-worktree `commondir` so
+// callers (notably ReadOriginURL and the default-branch resolver) read
+// `config`/`HEAD` from the project root rather than the per-worktree
+// directory.
 //
-// For linked worktrees, git writes a `gitdir` file in the checkout
-// pointing at `<project>/.git/worktrees/<name>/`. That directory in
-// turn contains a `commondir` file whose content is a relative or
-// absolute path back to the project's bare `.git` directory where
-// `config` lives. This function follows `commondir` so that callers
-// (notably ReadOriginURL) always read `config` from the project root
-// rather than from the per-worktree directory.
+// Base layout resolution — `.git` directory, `.git` gitfile, or a bare
+// root — is delegated to git.ResolveGitDirInfo so this package no longer
+// duplicates it. That delegation is also the bare-repo fix: the old
+// hand-rolled logic here errored on a bare root (no `.git` entry), which
+// now surfaces from D1's enumeration and is called for every worktree via
+// the default-branch resolver (#701 D1/#4).
+//
+// For a linked worktree, git.ResolveGitDirInfo returns
+// `<project>/.git/worktrees/<name>/`, which holds a `commondir` file whose
+// content is a relative or absolute path back to the project's git dir.
 func ResolveGitDirForWorktree(workdir string) (string, error) {
-	candidate := filepath.Join(workdir, ".git")
-	info, err := os.Stat(candidate)
+	gd, _, err := git.ResolveGitDirInfo(workdir)
 	if err != nil {
 		return "", err
 	}
-	if info.IsDir() {
-		return candidate, nil
-	}
-	body, err := os.ReadFile(candidate) //nolint:gosec // trusted internal path
-	if err != nil {
-		return "", err
-	}
-	gd := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(body)), "gitdir:"))
-	if gd == "" {
-		return "", os.ErrNotExist
-	}
-	if !filepath.IsAbs(gd) {
-		gd = filepath.Join(workdir, gd)
-	}
-	gd = filepath.Clean(gd)
 
-	// Linked-worktree case: `gd` points at `<project>/.git/worktrees/<name>/`.
-	// Follow `commondir` (if present) to reach the project's bare git dir,
-	// where `config` is stored. The commondir file contains a relative or
-	// absolute path from `gd` to the project root git dir.
+	// Linked-worktree case: follow `commondir` (if present) to the
+	// project's git dir. A bare root or a normal repo has no commondir, so
+	// gd is returned unchanged.
 	commondirPath := filepath.Join(gd, "commondir")
 	if raw, cdErr := os.ReadFile(commondirPath); cdErr == nil { //nolint:gosec
 		cd := strings.TrimSpace(string(raw))

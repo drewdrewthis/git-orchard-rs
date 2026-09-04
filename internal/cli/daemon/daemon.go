@@ -169,7 +169,7 @@ func runStart(parentCtx context.Context, addr string, version string, logLevel s
 	defer func() { _ = configProvider.Stop() }()
 
 	psProvider := ps.New(ps.NewAdapter("local"), logger)
-	tmuxProvider := tmux.New(tmux.NewAdapter(localHostID()), logger)
+	tmuxProvider := tmux.New(tmux.NewAdapter(localHostID()).WithLogger(logger), logger)
 	claudeProjectsRoot := claudeprojectsRoot()
 	claudeProjectsProvider := claudeprojects.New(claudeProjectsRoot, "local", logger)
 
@@ -195,13 +195,17 @@ func runStart(parentCtx context.Context, addr string, version string, logLevel s
 		return fmt.Errorf("build git provider: %w", err)
 	}
 
-	// Hot-reload: when ~/.orchard/config.json changes, re-list repos and
-	// converge the git provider via ApplyProjects (issue #571). Failures
-	// to subscribe are non-fatal — the daemon still serves the boot-time
-	// project set.
-	gitHotReload := newGitConfigSubscriber(repoDiscoverer, gitProvider, logger)
-	gitHotReload.start(ctx, configProvider.Subscribe(ctx))
-	defer gitHotReload.close()
+	// Converge the git provider onto the discovered project set from two
+	// triggers in one driver: config.json invalidations (issue #571, add/
+	// remove without a restart) and a periodic tick at the repodiscovery
+	// TTL (issue #701 D2, so a repo surfaced post-boot via a tmux pane cwd
+	// gains its worktrees within one TTL — repodiscovery emits no event).
+	// ApplyProjects is idempotent, so an unchanged set produces no churn.
+	// Subscribe failures are non-fatal: the daemon still serves the boot
+	// project set and the tick keeps reconciling.
+	gitConverger := newGitConfigSubscriber(repoDiscoverer, gitProvider, repodiscovery.DefaultTTL, logger)
+	gitConverger.start(ctx, configProvider.Subscribe(ctx))
+	defer gitConverger.close()
 
 	claudeAccountProvider := claudeaccount.New("local", logger)
 

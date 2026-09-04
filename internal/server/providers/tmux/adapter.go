@@ -1,5 +1,8 @@
 // Adapter wraps the tmux CLI. Per ADR-011 §3 it is stateless: cache,
-// watcher, and invalidation live in the surrounding Provider.
+// watcher, and invalidation live in the surrounding Provider. The logger
+// (wired via WithLogger) is the sole non-config state carried on the
+// Adapter, and only so the field-count drop WARN reaches the daemon's
+// leveled logger rather than depending on slog.SetDefault.
 //
 // All field separation in -F format strings uses fieldSep (a TAB) — see
 // fieldsep.go, which owns the wire-format contract and the rationale.
@@ -11,6 +14,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -43,6 +48,9 @@ type execRunner struct{}
 // rather than a misleading SIGKILL diagnostic.
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Force a UTF-8 ctype on the child so tmux's `-F` TAB separator survives
+	// (issue #701 / D3). See exec_env.go for the mechanism and rationale.
+	cmd.Env = utf8Env(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -108,6 +116,7 @@ type Adapter struct {
 	runner   CommandRunner
 	aliveTTL time.Duration // 0 → use defaultAliveTTL
 	alive    *aliveCache
+	logger   *slog.Logger // nil → slog.Default() via log(); see droplog.go
 }
 
 // aliveCache memoises the result of the liveness probe (see IsAlive) for
@@ -480,9 +489,16 @@ func (a *Adapter) listAll(ctx context.Context) (
 		return sessions, windows, panes, nil
 	}
 
+	var drops dropCounter
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
 		fields := strings.Split(string(line), fieldSep)
 		if len(fields) != listAllFieldCount {
+			// A row that does not split into the expected field count is
+			// almost always the D3 locale defect: a non-UTF-8 tmux client
+			// sanitizes the TAB separator to `_`, collapsing the row to one
+			// field. Count and warn (see warnDroppedRows) instead of the old
+			// silent drop that surfaced as empty tmuxSessions (#701 AC12).
+			drops.skip(len(fields))
 			continue
 		}
 
@@ -515,7 +531,7 @@ func (a *Adapter) listAll(ctx context.Context) (
 		// --- pane ---
 		paneKey := PaneKey{Host: a.host, PaneID: fields[11]}
 		panes[paneKey] = Pane{
-			Key:     paneKey,
+			Key: paneKey,
 			WindowKey: WindowKey{
 				Host:    a.host,
 				Session: fields[0],
@@ -529,6 +545,7 @@ func (a *Adapter) listAll(ctx context.Context) (
 			Dead:           fields[17] == "1",
 		}
 	}
+	a.warnDroppedRows("list-panes -a", drops, listAllFieldCount)
 	return sessions, windows, panes, nil
 }
 
@@ -551,6 +568,9 @@ const clientFormat = "" +
 	"#{window_index}" + fieldSep +
 	"#{pane_id}"
 
+// clientFieldCount is the field count of a clientFormat row.
+const clientFieldCount = 9
+
 func (a *Adapter) listClients(ctx context.Context) (map[ClientKey]Client, error) {
 	out, err := a.runner.Run(ctx, "tmux", a.tmuxArgs("list-clients", "-F", clientFormat)...)
 	if err != nil {
@@ -564,9 +584,13 @@ func (a *Adapter) listClients(ctx context.Context) (map[ClientKey]Client, error)
 		return map[ClientKey]Client{}, nil
 	}
 	clients := make(map[ClientKey]Client)
+	var drops dropCounter
 	for _, line := range bytes.Split(out, []byte{'\n'}) {
 		fields := strings.Split(string(line), fieldSep)
-		if len(fields) != 9 {
+		if len(fields) != clientFieldCount {
+			// Same D3 field-separator hazard as listAll — count and warn
+			// rather than dropping silently (#701 AC12).
+			drops.skip(len(fields))
 			continue
 		}
 		// tmux historically used the tty path as `client_name`; newer
@@ -589,6 +613,7 @@ func (a *Adapter) listClients(ctx context.Context) (map[ClientKey]Client, error)
 			CurrentPane:    fields[8],
 		}
 	}
+	a.warnDroppedRows("list-clients", drops, clientFieldCount)
 	return clients, nil
 }
 

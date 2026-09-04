@@ -85,7 +85,10 @@ func TestGitHotReload_RemovesProjectOnConfigEdit(t *testing.T) {
 			gp.HasProject("team/alpha"), gp.HasProject("team/beta"))
 	}
 
-	subscriber := newGitConfigSubscriber(cfgProvider, gp, logger)
+	// interval 0 disables the periodic tick so this test isolates the
+	// config-event trigger; the tick path is covered in
+	// git_reconcile_tick_test.go.
+	subscriber := newGitConfigSubscriber(cfgProvider, gp, 0, logger)
 	subscriber.start(ctx, cfgProvider.Subscribe(ctx))
 	t.Cleanup(func() {
 		cancel()
