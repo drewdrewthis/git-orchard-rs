@@ -171,15 +171,21 @@ func (r *e2ePsRunner) Run(_ context.Context, name string, args ...string) ([]byt
 		// (map iteration order), flaking the worktree↔pane join (issue #773).
 		pids := e2eParseLsofPids(args)
 		var b strings.Builder
+		anyMissing := false
 		for _, pid := range pids {
 			if cwd, ok := r.cwdByPid[pid]; ok {
 				fmt.Fprintf(&b, "p%d\nn%s\n", pid, cwd)
+			} else {
+				anyMissing = true
 			}
 		}
 		if b.Len() == 0 {
 			// Real lsof exits non-zero when no pid matches; fetchCwdsDarwin
 			// treats (err, empty output) as "nulls for all keys".
 			return nil, fmt.Errorf("lsof: no entries for pids %v", pids)
+		}
+		if anyMissing {
+			return []byte(b.String()), fmt.Errorf("lsof: partial output, some pids missing: %v", pids)
 		}
 		return []byte(b.String()), nil
 	default:
