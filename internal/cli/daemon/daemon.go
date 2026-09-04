@@ -203,6 +203,16 @@ func runStart(parentCtx context.Context, addr string, version string, logLevel s
 	gitHotReload.start(ctx, configProvider.Subscribe(ctx))
 	defer gitHotReload.close()
 
+	// Periodic reconcile (issue #701 D2): repodiscovery is a pull-only
+	// TTL cache with no emit channel, so a repo discovered after boot
+	// (e.g. via a tmux pane cwd) never triggers a config event. Re-list
+	// and re-converge the git provider on the discovery TTL cadence so
+	// such repos gain their worktrees within one TTL. Idempotent — a no-op
+	// when the discovered set is unchanged.
+	gitReconciler := newGitPeriodicReconciler(repoDiscoverer, gitProvider, 0, logger)
+	gitReconciler.start(ctx)
+	defer gitReconciler.close()
+
 	claudeAccountProvider := claudeaccount.New("local", logger)
 
 	hsvc, hsvcErr := buildHostServiceProvider(ctx)

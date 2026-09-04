@@ -92,14 +92,22 @@ func (a *GitWorktreeAdapter) FetchAll(ctx context.Context) (map[WorktreeID]Workt
 // checkout. Branch / head come from the working tree's `.git/HEAD`
 // (resolved against `.git/refs/heads/<branch>` + `packed-refs`).
 func readMainWorktree(p Project) (Worktree, error) {
-	gitDir, err := resolveGitDir(p.Dir)
+	gd, err := resolveGitDirInfo(p.Dir)
 	if err != nil {
 		return Worktree{}, fmt.Errorf("resolve gitdir: %w", err)
 	}
+	gitDir := gd.dir
 	headFile := filepath.Join(gitDir, "HEAD")
 	branch, head, bare, err := readHeadFile(gitDir, headFile)
 	if err != nil {
 		return Worktree{}, fmt.Errorf("read HEAD: %w", err)
+	}
+	if gd.bare {
+		// The bare repository's root is a bare worktree: no working-tree
+		// branch checkout of its own (its linked worktrees hold the real
+		// checkouts). Schema: "Bare worktrees still appear in the list —
+		// they just have no live branch." (#701 D1)
+		branch, bare = "", true
 	}
 	ahead, behind := computeAheadBehind(p.Dir, branch, bare)
 	return Worktree{
@@ -313,32 +321,15 @@ func resolveRef(gitDir, ref string) (string, error) {
 	return "", fs.ErrNotExist
 }
 
-// resolveGitDir returns the repo's .git directory for a project rooted
-// at workdir. Handles both a real directory (`<workdir>/.git/`) and a
-// gitfile (`<workdir>/.git` as a regular file with `gitdir: <path>`),
-// which appears in submodules and (some) worktree configurations.
+// resolveGitDir returns the repo's git directory for a project rooted
+// at workdir, discarding the bareness flag. Layout detection (normal
+// repo, gitfile, bare repo) lives in resolveGitDirInfo (gitdir.go).
 func resolveGitDir(workdir string) (string, error) {
-	candidate := filepath.Join(workdir, ".git")
-	info, err := os.Stat(candidate)
+	gd, err := resolveGitDirInfo(workdir)
 	if err != nil {
 		return "", err
 	}
-	if info.IsDir() {
-		return candidate, nil
-	}
-	// gitfile: a regular file whose contents are `gitdir: <path>`.
-	body, err := readTrimmed(candidate)
-	if err != nil {
-		return "", err
-	}
-	gd := strings.TrimSpace(strings.TrimPrefix(body, "gitdir:"))
-	if gd == "" {
-		return "", fmt.Errorf("malformed gitfile at %q", candidate)
-	}
-	if !filepath.IsAbs(gd) {
-		gd = filepath.Join(workdir, gd)
-	}
-	return filepath.Clean(gd), nil
+	return gd.dir, nil
 }
 
 // readTrimmed reads a file and returns its contents with leading and
