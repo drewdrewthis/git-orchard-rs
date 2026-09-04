@@ -37,6 +37,12 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 
 	now := p.clock()
 
+	// Request-scoped memo (#813): served before the durable cache and written
+	// after a fetch regardless of shouldCacheEnrichment, so the warm-up and the
+	// per-field dataloader batch collapse to one round-trip even for
+	// open+UNKNOWN PRs. Absent (nil, no-op) for non-GraphQL callers.
+	memo := enrichMemoFromContext(ctx)
+
 	// Snapshot cache state and rate-limit once under read lock.
 	type cacheSnap struct {
 		entry      prEntry
@@ -70,9 +76,14 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 	// Separate keys into: fresh (serve from cache), and stale/missing (need fetch).
 	var toFetch []PullRequestKey
 	for _, k := range unique {
+		if v, ok := memo.get(k); ok {
+			result[k] = v
+			continue
+		}
 		snap := snaps[k]
 		if snap.hasEntry && snap.hasEnrich && now.Sub(snap.enrichedAt) < enrichmentTTL {
 			result[k] = snap.entry.value
+			memo.put(k, snap.entry.value)
 		} else {
 			toFetch = append(toFetch, k)
 		}
@@ -157,7 +168,9 @@ func (p *Provider) BatchEnrichPullRequests(ctx context.Context, keys []PullReque
 			result[pos.key] = serveStaleForKey(pos.key)
 			continue
 		}
-		result[pos.key] = p.applyEnrichment(pos.key, wire, now)
+		enriched := p.applyEnrichment(pos.key, wire, now)
+		result[pos.key] = enriched
+		memo.put(pos.key, enriched)
 	}
 
 	return result, nil

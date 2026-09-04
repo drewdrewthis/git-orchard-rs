@@ -121,6 +121,8 @@ func newReviewDaemon(t *testing.T, p *gh.Provider) *httptest.Server {
 	t.Helper()
 	res := resolvers.New(time.Now()).WithGH(p)
 	gqlSrv := handler.New(gqlgen.NewExecutableSchema(gqlgen.Config{Resolvers: res}))
+	// Mirror server.go: install the per-operation enrichment memo (#813).
+	gqlSrv.AroundOperations(resolvers.EnrichMemoMiddleware)
 	gqlSrv.AddTransport(transport.POST{})
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", loaders.Middleware(res.LoaderBundle(), gqlSrv))
