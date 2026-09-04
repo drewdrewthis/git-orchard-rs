@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,7 +26,6 @@ func TestJanitor_DeleteMatrix(t *testing.T) {
 	}{
 		{name: "dead pid is deleted", pid: 4242, alive: false, wantDeleted: true, wantCount: 1},
 		{name: "alive pid is kept", pid: 4242, alive: true, wantDeleted: false, wantCount: 0},
-		{name: "reused pid reads alive and is kept", pid: 4242, alive: true, wantDeleted: false, wantCount: 0},
 	}
 
 	for _, tt := range tests {
@@ -123,6 +123,10 @@ func TestJanitor_UnreadableDirLogsAndReturnsZero(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(unreadable, 0o755) })
 
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory permission bits")
+	}
+
 	logger, buf := bufLogger()
 	j := NewSidecarJanitor(unreadable, fakeLiveness{}, logger)
 
@@ -139,7 +143,78 @@ func TestJanitor_UnreadableDirLogsAndReturnsZero(t *testing.T) {
 	if count != 0 {
 		t.Errorf("Sweep on unreadable dir returned %d, want 0", count)
 	}
-	if buf.Len() == 0 {
-		t.Errorf("expected janitor to log something for the unreadable dir")
+	if !strings.Contains(buf.String(), "failed to read heartbeat dir") {
+		t.Errorf("expected log to mention failed to read heartbeat dir; got: %s", buf.String())
 	}
+}
+
+// Issue #826 follow-up: the glob also matches each heartbeat's
+// *.inflight.json companion (tool_use_ids, no pid field). It must
+// never be judged by its own (absent) pid — it rides on its
+// heartbeat sibling's liveness instead.
+func TestJanitor_InflightSibling(t *testing.T) {
+	writeInflight := func(t *testing.T, dir, base string) string {
+		t.Helper()
+		path := filepath.Join(dir, base+".inflight.json")
+		if err := os.WriteFile(path, []byte(`{"tool_use_ids":["t1"]}`), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		return path
+	}
+
+	t.Run("dead-pid heartbeat removes its inflight sibling", func(t *testing.T) {
+		dir := t.TempDir()
+		hbPath := writeSidecar(t, dir, "orchard-claude-sess.json", 4242)
+		inflightPath := writeInflight(t, dir, "orchard-claude-sess")
+
+		logger, _ := bufLogger()
+		j := NewSidecarJanitor(dir, fakeLiveness{4242: false}, logger)
+		count := j.Sweep(context.Background())
+
+		if count != 1 {
+			t.Errorf("Sweep returned %d, want 1", count)
+		}
+		if _, err := os.Stat(hbPath); !os.IsNotExist(err) {
+			t.Errorf("expected heartbeat removed, stat err: %v", err)
+		}
+		if _, err := os.Stat(inflightPath); !os.IsNotExist(err) {
+			t.Errorf("expected inflight sibling removed, stat err: %v", err)
+		}
+	})
+
+	t.Run("live-pid heartbeat keeps both", func(t *testing.T) {
+		dir := t.TempDir()
+		hbPath := writeSidecar(t, dir, "orchard-claude-sess.json", 4242)
+		inflightPath := writeInflight(t, dir, "orchard-claude-sess")
+
+		logger, _ := bufLogger()
+		j := NewSidecarJanitor(dir, fakeLiveness{4242: true}, logger)
+		count := j.Sweep(context.Background())
+
+		if count != 0 {
+			t.Errorf("Sweep returned %d, want 0", count)
+		}
+		if _, err := os.Stat(hbPath); err != nil {
+			t.Errorf("expected heartbeat kept: %v", err)
+		}
+		if _, err := os.Stat(inflightPath); err != nil {
+			t.Errorf("expected inflight sibling kept: %v", err)
+		}
+	})
+
+	t.Run("orphan inflight with no heartbeat is kept", func(t *testing.T) {
+		dir := t.TempDir()
+		inflightPath := writeInflight(t, dir, "orchard-claude-sess")
+
+		logger, _ := bufLogger()
+		j := NewSidecarJanitor(dir, fakeLiveness{}, logger)
+		count := j.Sweep(context.Background())
+
+		if count != 0 {
+			t.Errorf("Sweep returned %d, want 0", count)
+		}
+		if _, err := os.Stat(inflightPath); err != nil {
+			t.Errorf("expected orphan inflight kept: %v", err)
+		}
+	})
 }

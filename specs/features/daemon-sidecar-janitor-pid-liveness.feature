@@ -3,25 +3,10 @@ Feature: Sidecar janitor deletes only provably-dead sidecars (pid-liveness, neve
   I want the startup sidecar janitor to delete a sidecar only when its recorded process is provably dead
   So that a daemon whose tmux view is empty, partial, or on a different socket can never sweep the live sidecars owned by another daemon or session (issue #826, a data-loss bug)
 
-  # Issue #826 [P1] — data-loss bug. Root cause: the janitor decided "orphan"
-  # by "session name absent from THIS daemon's single-socket tmux snapshot",
-  # and the sidecar carried no pid, so it had no ground-truth liveness signal.
-  # When tmux was unreachable, FetchAll returned an empty snapshot with nil
-  # error, so liveSessions={} and every sidecar was swept. Reproduced: a
-  # throwaway daemon with an empty tmux view swept 3 live-session sidecars.
-  #
-  # Fix (from the ## Plan planning comment): the hook (orchard-state.sh)
-  # records the Claude pid in each sidecar; the janitor deletes a sidecar IFF
-  # it records a same-host pid>0 that is NOT alive (signal-0 via the existing
-  # OSLivenessChecker). The delete decision no longer consults the tmux
-  # snapshot at all, so empty/partial/cross-socket views are irrelevant by
-  # construction. Every uncertainty (no pid, parse error, reused pid) → KEEP.
-  #
-  # Test-tree note: the janitor scenarios bind to
-  # internal/server/providers/claudeinstance/*_test.go (Go); the hook writer
-  # scenario (AC4) binds to the orchard-state.sh hook test (bats). This file
-  # is the create-issue chain's contract; coders bind each @scenario in the
-  # matching test tree.
+  # Contract (issue #826): the janitor deletes a sidecar IFF it records a
+  # same-host pid>0 that is NOT alive (signal-0 via OSLivenessChecker). The
+  # delete decision never consults tmux state. Every uncertainty (no pid,
+  # parse error, reused pid) → KEEP.
 
   Background:
     Given the orchard daemon runs a startup-only sidecar janitor over the resolved heartbeat dir (ORCHARD_HEARTBEAT_DIR > TMPDIR > /tmp)

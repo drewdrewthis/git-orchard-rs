@@ -6,11 +6,23 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+// inflightSuffix marks a sidecar's tool_use_id companion file
+// (orchard-claude-<session>.inflight.json) — no pid field, so it can
+// never be judged by the pid rule on its own. It rides on its
+// heartbeat sibling's liveness instead (see Sweep).
+const inflightSuffix = ".inflight.json"
 
 // SidecarJanitor removes stale orchard-claude-*.json heartbeat files
 // from heartbeatDir whose recorded pid is provably dead. Run at
 // daemon startup.
+//
+// The glob also matches each heartbeat's *.inflight.json companion
+// (tool_use_ids, no pid). Those are skipped in the main loop and
+// instead removed as a side effect of their heartbeat sibling being
+// swept — never judged by their own (absent) pid.
 //
 // Issue #826: the janitor used to key on THIS daemon's own tmux
 // snapshot — a session name absent from that snapshot was deleted as
@@ -83,6 +95,9 @@ func (j *SidecarJanitor) Sweep(ctx context.Context) int {
 		if ok, _ := filepath.Match("orchard-claude-*.json", name); !ok {
 			continue
 		}
+		if strings.HasSuffix(name, inflightSuffix) {
+			continue
+		}
 		path := filepath.Join(j.heartbeatDir, name)
 
 		body, err := os.ReadFile(path)
@@ -111,6 +126,12 @@ func (j *SidecarJanitor) Sweep(ctx context.Context) int {
 		j.logger.Info("sidecar janitor: removed orphan sidecar",
 			"file", filepath.Base(path), "pid", sc.Pid)
 		removed++
+
+		inflightPath := strings.TrimSuffix(path, ".json") + inflightSuffix
+		if err := os.Remove(inflightPath); err != nil && !os.IsNotExist(err) {
+			j.logger.Warn("sidecar janitor: failed to remove orphan inflight sibling",
+				"file", inflightPath, "err", err)
+		}
 	}
 
 	j.logger.Info("sidecar janitor swept orphan files", "count", removed, "dir", j.heartbeatDir)
