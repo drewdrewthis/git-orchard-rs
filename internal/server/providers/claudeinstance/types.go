@@ -11,6 +11,7 @@
 package claudeinstance
 
 import (
+	"errors"
 	"os"
 	"syscall"
 	"time"
@@ -43,7 +44,14 @@ type LivenessChecker interface {
 // whether a pid is alive without sending a real signal.
 type OSLivenessChecker struct{}
 
-// IsAlive returns true when sending signal 0 to pid succeeds.
+// IsAlive returns true when sending signal 0 to pid succeeds, or when
+// the kernel answers EPERM. Sidecars are host-local but not
+// necessarily same-user (e.g. a sidecar owned by another account, or
+// launchd/pid 1): EPERM means "a process with this pid exists and
+// answered the kernel" — it is alive, just not signalable by us.
+// Misreading EPERM as dead would delete a live sidecar (#826). Any other
+// error is reported as not-alive; the janitor's own missing/zero-pid guard
+// is the fail-safe layer above this.
 // Returns false for pid<=0.
 func (OSLivenessChecker) IsAlive(pid int) bool {
 	if pid <= 0 {
@@ -53,5 +61,6 @@ func (OSLivenessChecker) IsAlive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	sigErr := proc.Signal(syscall.Signal(0))
+	return sigErr == nil || errors.Is(sigErr, syscall.EPERM)
 }

@@ -341,17 +341,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// logs and continues.
 	janitor := claudeinstance.NewSidecarJanitor(
 		claudeinstance.ResolveDir(),
-		func(_ context.Context) (map[string]bool, error) {
-			if s.tmuxProv == nil {
-				return nil, errors.New("tmux provider unavailable; skipping sidecar sweep")
-			}
-			snap := s.tmuxProv.Snapshot()
-			live := make(map[string]bool, len(snap.Sessions))
-			for k := range snap.Sessions {
-				live[k.Name] = true
-			}
-			return live, nil
-		},
+		claudeinstance.OSLivenessChecker{},
 		s.logger,
 	)
 	_ = janitor.Sweep(ctx)
