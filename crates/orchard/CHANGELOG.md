@@ -18,6 +18,19 @@
 
   Out of scope for this release: the orchardist working directory at `~/.config/orchard/.orchardist/` and the state directory `~/.local/state/orchard` both stay where they are.
 
+## [1.2.0](https://github.com/drewdrewthis/orchardist/compare/orchard-v1.1.0...orchard-v1.2.0) (2026-09-04)
+
+
+### Features
+
+* **cleanup:** daemon-owned stale-worktree cleanup — Phase 1 ([#693](https://github.com/drewdrewthis/orchardist/issues/693)) ([#695](https://github.com/drewdrewthis/orchardist/issues/695)) ([a8c4db2](https://github.com/drewdrewthis/orchardist/commit/a8c4db25a1069c4bf6a3d56041811805d6203e8c))
+* **daemon,plugins,specs:** consolidated big-refactor — repo constitution + 12 domain modules + claude-contracts plugin + T8 parity ([#660](https://github.com/drewdrewthis/orchardist/issues/660)) ([552a850](https://github.com/drewdrewthis/orchardist/commit/552a8501bb6b8481b0a35d3e2ff651e927511715))
+* **daemon:** Worktree.ahead and Worktree.behind (closes [#483](https://github.com/drewdrewthis/orchardist/issues/483)) ([#587](https://github.com/drewdrewthis/orchardist/issues/587)) ([5cdae77](https://github.com/drewdrewthis/orchardist/commit/5cdae77b0bf27d86f99d74b1587bce9afda7ca6f))
+* **gh:** expose PullRequest headRefOid, reviews and reviewThreads ([#764](https://github.com/drewdrewthis/orchardist/issues/764)) ([b3686e9](https://github.com/drewdrewthis/orchardist/commit/b3686e9b7b693930979438a8a205e61a5c2bc0b1))
+* orchard shell — outer tmux wrapper, sidebar v2, install/upgrade/doctor ([#747](https://github.com/drewdrewthis/orchardist/issues/747)) ([f2d8d4a](https://github.com/drewdrewthis/orchardist/commit/f2d8d4ace2c88669406dbed9555cad4ca0f4fc9d))
+* publish recall as the orchardist plugin + rename repo refs ([#694](https://github.com/drewdrewthis/orchardist/issues/694)) ([4306d7c](https://github.com/drewdrewthis/orchardist/commit/4306d7c97c736aceb2b71b07025434bd6eb069b5))
+* **release:** orchard shell/upgrade verbs, suite dist tarballs, curl-able installer ([#747](https://github.com/drewdrewthis/orchardist/issues/747)) ([5a9fcb5](https://github.com/drewdrewthis/orchardist/commit/5a9fcb5027e64e517bb6e3f38de0cf68c4c2bb7b))
+
 ## [1.1.0](https://github.com/drewdrewthis/git-orchard-rs/compare/orchard-v1.0.0...orchard-v1.1.0) (2026-05-11)
 
 
