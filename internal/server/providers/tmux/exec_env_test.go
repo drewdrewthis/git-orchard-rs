@@ -1,6 +1,5 @@
-// Unit tests for utf8Env — the D3 locale fix (#701). Verifies the effective
-// ctype precedence (LC_ALL > LC_CTYPE > LANG) and that execRunner actually
-// hands a UTF-8 ctype to the tmux child.
+// Unit tests for the tmux child env: utf8Env (D3 locale fix, #701) and
+// stripTmuxSocketEnv (parent socket inheritance, #699).
 
 package tmux
 
@@ -115,7 +114,7 @@ func TestUtf8Env(t *testing.T) {
 	}
 }
 
-func TestHostEnv(t *testing.T) {
+func TestStripTmuxSocketEnv(t *testing.T) {
 	cases := []struct {
 		name     string
 		in       []string
@@ -141,7 +140,7 @@ func TestHostEnv(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := hostEnv(tc.in)
+			got := stripTmuxSocketEnv(tc.in)
 			for _, drop := range tc.wantDrop {
 				if hasKey(got, drop) {
 					t.Errorf("%s must be dropped, got %v", drop, got)
