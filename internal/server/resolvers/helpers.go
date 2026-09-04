@@ -63,23 +63,31 @@ var enrichmentFieldNames = map[string]struct{}{
 }
 
 // primeEnrichment collapses PR enrichment for a whole list into one GitHub
-// round-trip. Each enrichment field resolver Loads its PR key independently,
-// spread across gqlgen's per-item goroutines; routing the warm-up through the
-// DataLoader would depend on its wall-clock wait window, so under scheduling
-// jitter the keys split across batches and fire more than one GraphQL request
-// (a latent N+1 — issue #773).
+// round-trip via a single direct BatchEnrichPullRequests call with every key.
+// Each enrichment field resolver Loads its PR key independently, spread across
+// gqlgen's per-item goroutines; routing the warm-up through the DataLoader
+// would depend on its wall-clock wait window, so under scheduling jitter the
+// keys split across batches and fire more than one GraphQL request (a latent
+// N+1 — issue #773). The one deterministic batch here warms the provider's
+// per-key cache, so the field resolvers' later Loads read that cache instead
+// of the network.
 //
-// Two warm-up steps run here, and both are load-bearing:
+// The warm-up is the ONLY mechanism. It does NOT prime the request DataLoader,
+// because that cannot be made real here: the loaders are NoCache
+// (internal/server/loaders/loaders.go), so Loader.Prime discards, and the
+// loaders cannot be given an in-memory cache instead — gqlgen's websocket
+// transport captures ONE *Loaders (from loaders.Middleware) at connection open
+// and reuses it for every operation for the whole connection lifetime
+// (websocket.go: wsConnection.ctx = r.Context(), and each subscribe derives
+// from c.ctx). A cached enrichment loader would therefore serve stale
+// mergeable/CI/reviews across a long-lived socket.
 //
-//  1. ONE direct BatchEnrichPullRequests call with every key — a single
-//     deterministic HTTP round trip that warms the provider's per-key cache.
-//  2. Prime the request DataLoader with every returned value. The provider
-//     cache DECLINES to store UNKNOWN-mergeable entries on open PRs
-//     (gh.shouldCacheEnrichment), so step 1 alone would leave those keys cold
-//     and the field resolvers' Loads would refetch them — a second HTTP call
-//     in production. Priming the loader memo makes the field resolvers
-//     deterministic regardless of the provider cache policy: their Loads read
-//     the memo, never the network.
+// Consequence (accepted): open PRs with mergeable == UNKNOWN are deliberately
+// re-fetched. gh.shouldCacheEnrichment refuses to cache that combination —
+// UNKNOWN is an uncomputed value, not a verdict (#367) — so the warm-up leaves
+// those keys cold in the provider cache and their field resolvers refetch, a
+// second GitHub round-trip. Collapsing that too requires a provider-cache
+// policy change, not a resolver-layer memo.
 //
 // No-op when no enrichment field is selected, so a bare `{ number }` query
 // still pays nothing.
@@ -91,14 +99,8 @@ func primeEnrichment(ctx context.Context, provider *gh.Provider, prs []gh.PullRe
 	for _, p := range prs {
 		keys = append(keys, gh.PullRequestKey{Owner: p.RepoOwner, Name: p.RepoName, Number: p.Number})
 	}
-	// Best-effort warm-up; the field resolvers surface any real error. Partial
-	// results are still returned on error, so prime whatever came back.
-	enriched, _ := provider.BatchEnrichPullRequests(ctx, keys)
-	if l := loaders.FromContext(ctx); l != nil && l.PullRequestEnrichment != nil {
-		for key, pr := range enriched {
-			l.PullRequestEnrichment.Prime(ctx, key, pr)
-		}
-	}
+	// Best-effort warm-up; the field resolvers surface any real error.
+	_, _ = provider.BatchEnrichPullRequests(ctx, keys)
 }
 
 // enrichmentSelected reports whether the PullRequest selection set for the
