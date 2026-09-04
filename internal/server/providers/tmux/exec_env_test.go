@@ -1,6 +1,5 @@
-// Unit tests for utf8Env — the D3 locale fix (#701). Verifies the effective
-// ctype precedence (LC_ALL > LC_CTYPE > LANG) and that execRunner actually
-// hands a UTF-8 ctype to the tmux child.
+// Unit tests for the tmux child env: utf8Env (D3 locale fix, #701) and
+// stripTmuxSocketEnv (parent socket inheritance, #699).
 
 package tmux
 
@@ -112,6 +111,81 @@ func TestUtf8Env(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStripTmuxSocketEnv(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       []string
+		wantDrop []string // keys that must be absent
+		wantKeep []string // KEY=VALUE entries that must survive
+	}{
+		{
+			name:     "drops TMUX and TMUX_PANE keeps rest",
+			in:       []string{"TMUX=/tmp/sock,1,0", "TMUX_PANE=%1", "PATH=/bin", "TMUX_TMPDIR=/run/user/1000"},
+			wantDrop: []string{"TMUX", "TMUX_PANE"},
+			wantKeep: []string{"PATH=/bin", "TMUX_TMPDIR=/run/user/1000"},
+		},
+		{
+			name:     "TMUX_TMPDIR survives when no TMUX present",
+			in:       []string{"TMUX_TMPDIR=/run/user/1000", "LANG=C.UTF-8"},
+			wantKeep: []string{"TMUX_TMPDIR=/run/user/1000", "LANG=C.UTF-8"},
+		},
+		{
+			name: "empty env ok",
+			in:   []string{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripTmuxSocketEnv(tc.in)
+			for _, drop := range tc.wantDrop {
+				if hasKey(got, drop) {
+					t.Errorf("%s must be dropped, got %v", drop, got)
+				}
+			}
+			for _, keep := range tc.wantKeep {
+				found := false
+				for _, kv := range got {
+					if kv == keep {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected %q to survive, got %v", keep, got)
+				}
+			}
+		})
+	}
+}
+
+// TestExecRunner_StripsParentTmuxSocketFromChild proves the production
+// execRunner does NOT leak the launching shell's TMUX/TMUX_PANE into the tmux
+// child (#699) — otherwise a daemon started inside a non-default tmux socket
+// would silently address that socket instead of the default server. A fake
+// `tmux` shim on PATH echoes the two vars it received.
+func TestExecRunner_StripsParentTmuxSocketFromChild(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\necho \"$TMUX|$TMUX_PANE\"\n"
+	if err := os.WriteFile(shim, []byte(script), 0o755); err != nil {
+		t.Fatalf("write shim: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("TMUX", "/tmp/fake,1,0")
+	t.Setenv("TMUX_PANE", "%1")
+
+	out, err := execRunner{}.Run(context.Background(), "tmux", "list-sessions")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := strings.TrimSpace(string(out))
+	if got != "|" {
+		t.Errorf("child should see no TMUX/TMUX_PANE, got %q (want %q)", got, "|")
 	}
 }
 

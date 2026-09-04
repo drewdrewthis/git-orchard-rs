@@ -1,5 +1,5 @@
-// exec_env.go forces a UTF-8 ctype locale onto every tmux subprocess the
-// adapter spawns (issue #701, defect D3).
+// exec_env.go adjusts the tmux child env, forcing a UTF-8 ctype locale and
+// stripping the inherited TMUX socket variables (issue #701 D3, #699).
 //
 // Why this is needed: tmux's client sets its CLIENT_UTF8 flag off the client
 // process's locale env string (observed behavior; guaranteed by
@@ -26,6 +26,13 @@
 // ever absent, the child falls back to its old classification and the failure
 // signal is loud — the warnDroppedRows WARN (dropped rows) fires — so an
 // operator can spot the missing locale rather than seeing a silent empty list.
+//
+// Socket inheritance (#699): This file also strips the inherited TMUX / TMUX_PANE
+// variables (stripTmuxSocketEnv). A tmux client with no -S/-L selects its socket
+// from $TMUX, so a daemon launched from inside a non-default tmux socket would
+// silently address that socket instead of the default server. A dev who runs the
+// daemon in the foreground from inside a named (-L) socket will therefore see the
+// default server's sessions; use Adapter.WithSocket for an explicit socket.
 
 package tmux
 
@@ -84,6 +91,37 @@ func effectiveCtype(env []string) string {
 		}
 	}
 	return ""
+}
+
+// childEnv composes the two boundary fixes every tmux subprocess needs: the
+// UTF-8 ctype forcing (utf8Env) and the parent-socket stripping (stripTmuxSocketEnv). It
+// is what execRunner hands to cmd.Env.
+func childEnv(env []string) []string {
+	return utf8Env(stripTmuxSocketEnv(env))
+}
+
+// stripTmuxSocketEnv removes the tmux client's socket-selection inheritance — TMUX and
+// TMUX_PANE — from env, leaving every other entry (TMUX_TMPDIR included)
+// untouched.
+//
+// Why: a tmux client with no -S/-L honours $TMUX (socket-path,pid,session) to
+// pick its server. A daemon launched from inside a tmux pane on a non-default
+// socket would then silently address THAT socket instead of the default server
+// (#699). The daemon must address the default server, or the explicit -S from
+// WithSocket — never the socket of whichever shell happened to launch it. When
+// WithSocket is set, -S already wins over $TMUX, so stripping unconditionally
+// is correct and simplest. TMUX_TMPDIR is a legitimate socket-dir override on
+// systemd hosts (#464) and is deliberately preserved.
+func stripTmuxSocketEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if key == "TMUX" || key == "TMUX_PANE" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // isUTF8Ctype reports whether a locale value names a UTF-8 encoding, matching
