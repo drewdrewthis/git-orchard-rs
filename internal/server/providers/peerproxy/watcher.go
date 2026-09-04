@@ -20,6 +20,10 @@ import (
 // a single LoadFederationConfig + ApplyPeers call.
 const defaultDebounce = 1 * time.Second
 
+// debounceTimer is the minimal timer surface the run loop needs; both
+// *time.Timer and the test clock satisfy it.
+type debounceTimer interface{ Stop() bool }
+
 // ConfigWatcherOption configures a ConfigWatcher at construction time.
 // Mirror the ProviderOption pattern so callers use the same idiom for both.
 type ConfigWatcherOption func(*ConfigWatcher)
@@ -55,6 +59,13 @@ type ConfigWatcher struct {
 	closedCh chan struct{}
 	debounce time.Duration
 
+	// afterFunc arms the debounce timer (default time.AfterFunc); tests inject
+	// a controllable clock so a burst coalesces by construction, not by racing
+	// a wall-clock window (issue #773). onReload, when set, fires after each
+	// completed reload so a test can sync on the batch boundary, not sleep.
+	afterFunc func(time.Duration, func()) debounceTimer
+	onReload  func()
+
 	// reloadCount is incremented each time a successful LoadFederationConfig
 	// + ApplyPeers cycle completes. Parse errors do NOT increment this
 	// counter. Exposed via ReloadCount() as a test seam.
@@ -80,6 +91,9 @@ func NewConfigWatcher(path string, provider *Provider, logger *slog.Logger, opts
 		logger:   logger,
 		closedCh: make(chan struct{}),
 		debounce: defaultDebounce,
+		afterFunc: func(d time.Duration, f func()) debounceTimer {
+			return time.AfterFunc(d, f)
+		},
 	}
 	for _, opt := range opts {
 		opt(cw)
@@ -135,17 +149,12 @@ func (cw *ConfigWatcher) Start(ctx context.Context) error {
 // LoadFederationConfig + ApplyPeers once per debounce window. Bursty
 // saves (multiple events within debounce) collapse into a single reload.
 //
-// Debounce algorithm:
-//   - On a matching event: stop any running timer and start a fresh one
-//     (d from now). This resets the window on every new event.
-//   - When the timer fires it sends on reloadCh. The select picks it up
-//     and performs the actual reload.
-//   - On ctx.Done(): stop any pending timer and exit. The pending reload
-//     is dropped — consistent with the "context = lifetime" contract.
+// Debounce: each matching event resets the timer to d-from-now; when it
+// fires it sends on reloadCh and the select performs the reload. ctx.Done
+// stops any pending timer and exits, dropping the pending reload.
 //
-// Using time.AfterFunc + a dedicated channel avoids the time.Timer.Reset
-// footgun (draining the channel before Reset). The goroutine never drains
-// a timer channel; it only reads from reloadCh.
+// A dedicated reloadCh (not a timer channel) avoids the time.Timer.Reset
+// footgun: the goroutine only ever reads from reloadCh.
 func (cw *ConfigWatcher) run(ctx context.Context) {
 	defer close(cw.closedCh)
 
@@ -156,7 +165,7 @@ func (cw *ConfigWatcher) run(ctx context.Context) {
 	// if a previous signal hasn't been consumed yet.
 	reloadCh := make(chan struct{}, 1)
 
-	var pendingTimer *time.Timer
+	var pendingTimer debounceTimer
 	stopTimer := func() {
 		if pendingTimer != nil {
 			pendingTimer.Stop()
@@ -188,7 +197,7 @@ func (cw *ConfigWatcher) run(ctx context.Context) {
 			// Reset the debounce window: stop any running timer, start a
 			// fresh one. When it fires it will send on reloadCh.
 			stopTimer()
-			pendingTimer = time.AfterFunc(cw.debounce, func() {
+			pendingTimer = cw.afterFunc(cw.debounce, func() {
 				select {
 				case reloadCh <- struct{}{}:
 				default:
@@ -215,6 +224,9 @@ func (cw *ConfigWatcher) run(ctx context.Context) {
 					"err", err)
 			}
 			cw.reloadCount.Add(1)
+			if cw.onReload != nil {
+				cw.onReload()
+			}
 
 		case err, ok := <-cw.watcher.Errors:
 			if !ok {

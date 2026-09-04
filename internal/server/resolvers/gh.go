@@ -49,7 +49,7 @@ func (r *queryResolver) queryPullRequestsResolver(ctx context.Context, repo stri
 	for _, p := range prs {
 		out = append(out, toGraphQLPullRequest(p))
 	}
-	primeEnrichment(ctx, prs)
+	primeEnrichment(ctx, r.GH, prs)
 	return out, nil
 }
 
@@ -162,7 +162,7 @@ func (r *queryResolver) queryOpenPullRequestsResolver(ctx context.Context, repo 
 		out = append(out, toGraphQLPullRequest(p))
 		kept = append(kept, p)
 	}
-	primeEnrichment(ctx, kept)
+	primeEnrichment(ctx, r.GH, kept)
 	return out, nil
 }
 

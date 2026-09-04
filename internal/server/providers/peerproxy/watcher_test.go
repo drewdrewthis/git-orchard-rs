@@ -550,32 +550,42 @@ func TestConfigWatcher_BurstCoalesced(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = p.Stop() })
 
-	// 3. Construct a ConfigWatcher with a 100ms debounce (10× shorter than
-	// the 1-second default) so the test completes quickly.
+	// 3. Construct a ConfigWatcher driven by a FakeClock so the debounce is
+	// fired deterministically — no dependence on a wall-clock window that,
+	// under scheduling jitter, lets a straggler fsnotify event fall into a
+	// second window and reload twice (issue #773). The reload hook lets the
+	// test synchronise on the batch boundary instead of sleeping.
 	const debounce = 100 * time.Millisecond
-	cw := peerproxy.NewConfigWatcher(cfgPath, p, slog.Default(), peerproxy.WithDebounce(debounce))
+	clk := peerproxy.NewFakeClock()
+	reloaded := make(chan struct{}, 8)
+	cw := peerproxy.NewConfigWatcher(cfgPath, p, slog.Default(),
+		peerproxy.WithDebounce(debounce),
+		peerproxy.WithFakeClockForTest(clk),
+		peerproxy.WithReloadHookForTest(func() { reloaded <- struct{}{} }),
+	)
 
-	// 4. Start the watcher and give fsnotify a moment to attach.
+	// 4. Start the watcher.
 	if err := cw.Start(ctx); err != nil {
 		t.Fatalf("ConfigWatcher.Start: %v", err)
 	}
 	t.Cleanup(func() { _ = cw.Close() })
-	time.Sleep(20 * time.Millisecond) // let the watcher goroutine reach its select
 
-	// 5. Rapidly write the same 2-peer config 5 times within ~50ms.
-	// Each write fires one or more fsnotify events. All five should coalesce
-	// into a single debounced reload.
+	// 5. Rapidly write the same 2-peer config 5 times. Each write fires one
+	// or more fsnotify events; every event re-arms the (fake) debounce timer.
 	twoPeerConfig := []peerproxy.PeerConfig{
 		{Name: "orchard.boxd.sh", Address: fakeBoxd.addr(), TLS: false},
 		{Name: "lw-fed-c", Address: fakeFedC.addr(), TLS: false},
 	}
 	for i := 0; i < 5; i++ {
 		writeConfig(t, cfgPath, twoPeerConfig)
-		time.Sleep(10 * time.Millisecond) // ~50ms total for 5 writes
 	}
 
-	// 6. Wait debounce + generous slack for the single reload to fire.
-	time.Sleep(debounce + 200*time.Millisecond)
+	// 6. Fire every live debounce timer, serialising on the reload hook. The
+	// invariant is now enforced by CANCELLATION, not by a single fn slot: each
+	// burst event Stops the prior timer before arming the next, so a correct
+	// debouncer leaves exactly one live timer (→ one reload), while a debouncer
+	// that dropped stopTimer would leave all five live (→ five reloads → fail).
+	clk.FireAll(reloaded)
 
 	// 7. ReloadCount must be exactly 1 — all 5 events coalesced.
 	if got := cw.ReloadCount(); got != 1 {
