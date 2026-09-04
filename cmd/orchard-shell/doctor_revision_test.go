@@ -15,8 +15,9 @@ import (
 //
 // evaluateRevisions is the pure decision (#787 AC3, #803): PASS when every
 // binary agrees; WARN when they agree but ≥1 binary predates --revision; FAIL
-// when the resolved revisions disagree or a binary is missing. It covers only
-// the Go RevisionBinaries — the Rust pair is named in the excluded suffix.
+// when the resolved revisions disagree or a binary is missing. It covers the Go
+// binaries plus orchard-tui (#807) — the `orchard` dispatcher is the sole
+// unstamped binary, named in the excluded suffix.
 func TestEvaluateRevisions(t *testing.T) {
 	t.Run("equal revisions pass", func(t *testing.T) {
 		got := evaluateRevisions([]binaryVersion{
@@ -27,21 +28,27 @@ func TestEvaluateRevisions(t *testing.T) {
 		}
 	})
 
-	t.Run("all unstamped pass (nothing to distinguish)", func(t *testing.T) {
+	t.Run("all unstamped fail and are named (empty = unstamped build)", func(t *testing.T) {
 		got := evaluateRevisions([]binaryVersion{
 			{"orchard-daemon", ""}, {"orchard-sidebar", ""},
 		})
-		if got.Status != statusPass {
-			t.Errorf("Status = %v; want pass", got.Status)
+		if got.Status != statusFail {
+			t.Errorf("Status = %v; want fail — an empty revision is an unstamped build, not a match", got.Status)
+		}
+		if !strings.Contains(got.Detail, "orchard-daemon") || !strings.Contains(got.Detail, "orchard-sidebar") {
+			t.Errorf("Detail = %q; want it to name the unstamped binaries", got.Detail)
 		}
 	})
 
-	t.Run("every detail names the excluded Rust binaries", func(t *testing.T) {
+	t.Run("every detail names orchard as the excluded Rust binary", func(t *testing.T) {
 		got := evaluateRevisions([]binaryVersion{
 			{"orchard-daemon", "abc123"}, {"orchard-sidebar", "abc123"},
 		})
-		if !strings.Contains(got.Detail, "orchard-tui") || !strings.Contains(got.Detail, "Rust") {
-			t.Errorf("Detail = %q; want the excluded-Rust suffix", got.Detail)
+		if !strings.Contains(got.Detail, "orchard") || !strings.Contains(got.Detail, "Rust") {
+			t.Errorf("Detail = %q; want the excluded-Rust suffix naming orchard", got.Detail)
+		}
+		if strings.Contains(got.Detail, "orchard-tui") {
+			t.Errorf("Detail = %q; orchard-tui is stamped now (#807) and must not be excluded", got.Detail)
 		}
 	})
 
@@ -136,8 +143,47 @@ func TestCheckRevisions_MismatchedSidebarIsDetected(t *testing.T) {
 	}
 }
 
+// A stale orchard-tui (now a stamped RevisionBinaries member, #807) reporting a
+// different revision than the Go binaries fails the check and names it — the
+// Rust TUI is covered by the skew check now, not excluded.
+//
+// @scenario doctor fails suite-revisions when orchard-tui is stale
+func TestCheckRevisions_MismatchedTuiIsDetected(t *testing.T) {
+	pathDir := t.TempDir()
+	const currentRev = "shellREV"
+	const staleTuiRev = "tuiREV"
+	for _, name := range release.RevisionBinaries {
+		if name == "orchard-shell" {
+			continue // resolved from env.selfRevision, never exec'd
+		}
+		rev := currentRev
+		if name == "orchard-tui" {
+			rev = staleTuiRev
+		}
+		writeFakeRevisionBinary(t, pathDir, name, rev)
+	}
+	t.Setenv("PATH", pathDir)
+
+	env := doctorEnv{
+		self:         filepath.Join(t.TempDir(), "orchard-shell"),
+		selfRevision: currentRev,
+		run:          runCommand,
+	}
+	got := checkRevisions(context.Background(), env)
+
+	if got.Status != statusFail {
+		t.Errorf("Status = %v; want fail (detail: %s)", got.Status, got.Detail)
+	}
+	if !strings.Contains(got.Detail, "orchard-tui") {
+		t.Errorf("Detail = %q; want it to name the stale orchard-tui", got.Detail)
+	}
+	if !strings.Contains(got.Detail, staleTuiRev) {
+		t.Errorf("Detail = %q; want it to name the stale revision", got.Detail)
+	}
+}
+
 // A suite whose binaries all report the same revision passes, and the pass
-// detail still names the excluded Rust binaries.
+// detail still names the excluded Rust binary (the `orchard` dispatcher).
 //
 // @scenario doctor passes suite-revisions on a single-checkout install
 func TestCheckRevisions_MatchingSuitePasses(t *testing.T) {
@@ -160,8 +206,11 @@ func TestCheckRevisions_MatchingSuitePasses(t *testing.T) {
 	if got.Status != statusPass {
 		t.Errorf("Status = %v; want pass (detail: %s)", got.Status, got.Detail)
 	}
-	if !strings.Contains(got.Detail, "orchard-tui") || !strings.Contains(got.Detail, "excluded") {
-		t.Errorf("Detail = %q; want it to name orchard-tui as excluded", got.Detail)
+	if !strings.Contains(got.Detail, "orchard") || !strings.Contains(got.Detail, "excluded") {
+		t.Errorf("Detail = %q; want it to name orchard as excluded", got.Detail)
+	}
+	if strings.Contains(got.Detail, "orchard-tui") {
+		t.Errorf("Detail = %q; orchard-tui is stamped now (#807) and must not be excluded", got.Detail)
 	}
 }
 

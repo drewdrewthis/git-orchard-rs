@@ -68,11 +68,12 @@ func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string 
 
 // evaluateRevisions is the pure decision. Precedence, highest severity first:
 //
-//   - FAIL when the resolved revisions genuinely disagree, or any binary could
-//     not be found — the #787 skew signal must never read as a pass.
+//   - FAIL when the resolved revisions genuinely disagree, any binary could not
+//     be found, or any binary reports an empty (unstamped) revision — the #787
+//     skew signal must never read as a pass.
 //   - WARN when every resolved revision agrees but ≥1 binary lacks --revision:
 //     the check cannot confirm those binaries, and the fix is a rebuild.
-//   - PASS when every binary reports the same revision (or all are unstamped).
+//   - PASS when every binary reports the same non-empty revision.
 //
 // It shares grouping and the mismatch listing with the version check
 // (groupSuite, suiteMismatch); every detail carries the excluded-Rust suffix.
@@ -80,26 +81,32 @@ func evaluateRevisions(revisions []binaryVersion) checkResult {
 	groups := groupSuite(revisions)
 
 	realGroups := map[string][]string{}
-	var unimplemented, unresolved []string
+	var unimplemented, unresolved, unstamped []string
 	for value, names := range groups {
 		switch value {
 		case unresolvedVersion:
 			unresolved = names
 		case unimplementedRevision:
 			unimplemented = names
+		case "":
+			// Every RevisionBinaries member is reliably stampable now that
+			// orchard-tui carries a build stamp (#807), so an empty revision is
+			// a broken/unstamped build — the exact skew-hiding shape the check
+			// exists to catch. It FAILs and is named, never read as a match.
+			unstamped = names
 		default:
-			realGroups[value] = names // an actual revision, or "" (unstamped)
+			realGroups[value] = names
 		}
 	}
 
 	suffix := excludedSuffix()
 
-	if len(realGroups) == 0 && len(unimplemented) == 0 {
+	if len(realGroups) == 0 && len(unimplemented) == 0 && len(unstamped) == 0 {
 		return checkResult{ID: "suite-revisions", Status: statusFail,
 			Detail: "none of the suite binaries could report a revision" + suffix,
 			Remedy: "reinstall orchard so its binaries are on $PATH or beside orchard-shell"}
 	}
-	if len(realGroups) > 1 || len(unresolved) > 0 {
+	if len(realGroups) > 1 || len(unresolved) > 0 || len(unstamped) > 0 {
 		res := suiteMismatch("suite-revisions", "suite binaries built from different revisions: ",
 			"reinstall or rebuild every orchard binary from the same checkout so their revisions match", groups)
 		res.Detail += suffix
@@ -112,13 +119,10 @@ func evaluateRevisions(revisions []binaryVersion) checkResult {
 			Remedy: "rebuild the listed binaries from a checkout that answers `--revision` — they predate this check"}
 	}
 	// Exactly one real revision group remains (len(realGroups) == 1, guarded by
-	// the mismatch branch above), so this pass reads its single key and returns.
+	// the branches above; empties FAIL, so it is non-empty), so this pass reads
+	// its single key and returns.
 	var rev string
 	for rev = range realGroups {
-	}
-	if rev == "" {
-		return checkResult{ID: "suite-revisions", Status: statusPass,
-			Detail: fmt.Sprintf("all %d suite binaries carry no VCS revision (an unstamped build)%s", len(revisions), suffix)}
 	}
 	return checkResult{ID: "suite-revisions", Status: statusPass,
 		Detail: fmt.Sprintf("all %d suite binaries built from revision %s%s", len(revisions), rev, suffix)}
