@@ -3,6 +3,12 @@ name: Release Please
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag to re-assemble suite tarballs + SHA256SUMS for (e.g. orchard-v1.2.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write      # push version bump commits and tags
@@ -15,6 +21,7 @@ env:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
     # Manifest-mode outputs are namespaced by path (e.g. `crates/orchard--tag_name`)
     # and never populate the singular root-level `release_created`. `paths_released`
     # is the aggregate gate; `outputs_json` forwards the full output map so downstream
@@ -163,7 +170,22 @@ jobs:
 
   checksums:
     needs: [release-please, build, build-go]
-    if: ${{ needs.release-please.outputs.paths_released != '' && needs.release-please.outputs.paths_released != '[]' && contains(fromJSON(needs.release-please.outputs.paths_released), 'crates/orchard') }}
+    # On workflow_dispatch the release-please/build jobs are skipped, so
+    # `!cancelled()` is required to reach this job at all (#815). On push,
+    # gate on build success explicitly since `!cancelled()` disables the
+    # implicit needs-succeeded check.
+    if: >-
+      ${{ !cancelled() && (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'push' &&
+          needs.build.result == 'success' &&
+          needs.build-go.result == 'success' &&
+          needs.release-please.outputs.paths_released != '' &&
+          needs.release-please.outputs.paths_released != '[]' &&
+          contains(fromJSON(needs.release-please.outputs.paths_released), 'crates/orchard')
+        )
+      ) }}
     name: Assemble suite tarballs + SHA256SUMS
     runs-on: ubuntu-latest
     steps:
@@ -171,8 +193,13 @@ jobs:
         id: meta
         env:
           OUTPUTS_JSON: ${{ needs.release-please.outputs.outputs_json }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          tag=$(printf '%s' "$OUTPUTS_JSON" | jq -r '."crates/orchard--tag_name"')
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          else
+            tag=$(printf '%s' "$OUTPUTS_JSON" | jq -r '."crates/orchard--tag_name"')
+          fi
           if [ -z "$tag" ] || [ "$tag" = "null" ]; then
             echo "error: no crates/orchard tag found in release-please outputs" >&2
             exit 1
@@ -197,14 +224,14 @@ jobs:
             # triple is a broken release, not a partial one. This is exactly
             # the check that would have caught the pre-#747 build-job bug
             # that shipped zero dispatcher assets.
-            if ! gh release download "$TAG" -R "$REPO" -p "orchard-${triple}.tar.gz" -D dist -c 2>/dev/null; then
+            if ! gh release download "$TAG" -R "$REPO" -p "orchard-${triple}.tar.gz" -D dist --clobber 2>/dev/null; then
               missing_dispatcher="$missing_dispatcher orchard-${triple}.tar.gz"
             fi
             work="$(mktemp -d)"
             got=0
             for bin in $suite_bins; do
               asset="${bin}-${triple}.tar.gz"
-              if gh release download "$TAG" -R "$REPO" -p "$asset" -D dist -c 2>/dev/null; then
+              if gh release download "$TAG" -R "$REPO" -p "$asset" -D dist --clobber 2>/dev/null; then
                 tar xzf "dist/$asset" -C "$work"
                 got=$((got + 1))
               else
