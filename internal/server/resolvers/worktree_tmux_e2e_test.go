@@ -163,26 +163,46 @@ func (r *e2ePsRunner) Run(_ context.Context, name string, args ...string) ([]byt
 	case "ps":
 		return []byte(e2ePsHeader), nil
 	case "lsof":
-		pid := e2eParseLsofPid(args)
-		if cwd, ok := r.cwdByPid[pid]; ok {
-			return []byte(fmt.Sprintf("p%d\nn%s\n", pid, cwd)), nil
+		// Production batches cwd lookups: fetchCwdsDarwin issues a single
+		// `lsof -a -d cwd -p pid1,pid2,... -F n` and expects one p<pid>\nn<cwd>
+		// block per pid. The stub MUST emit a block for every requested pid,
+		// not just the first — otherwise, when two panes' cwd Loads coalesce
+		// into one batch, only one pid resolves and which one is nondeterministic
+		// (map iteration order), flaking the worktree↔pane join (issue #773).
+		pids := e2eParseLsofPids(args)
+		var b strings.Builder
+		for _, pid := range pids {
+			if cwd, ok := r.cwdByPid[pid]; ok {
+				fmt.Fprintf(&b, "p%d\nn%s\n", pid, cwd)
+			}
 		}
-		return nil, fmt.Errorf("lsof: no entry for pid %d", pid)
+		if b.Len() == 0 {
+			// Real lsof exits non-zero when no pid matches; fetchCwdsDarwin
+			// treats (err, empty output) as "nulls for all keys".
+			return nil, fmt.Errorf("lsof: no entries for pids %v", pids)
+		}
+		return []byte(b.String()), nil
 	default:
 		return nil, fmt.Errorf("unexpected command: %s", name)
 	}
 }
 
-// e2eParseLsofPid extracts the pid from `lsof -a -d cwd -p <pid> -F n`.
-func e2eParseLsofPid(args []string) int {
+// e2eParseLsofPids extracts every pid from `lsof -a -d cwd -p pid1,pid2,... -F n`.
+// Production joins the batch's pids with commas, so the stub must parse them all.
+func e2eParseLsofPids(args []string) []int {
 	for i, a := range args {
 		if a == "-p" && i+1 < len(args) {
-			var n int
-			fmt.Sscanf(args[i+1], "%d", &n)
-			return n
+			out := make([]int, 0, 4)
+			for _, s := range strings.Split(args[i+1], ",") {
+				var n int
+				if _, err := fmt.Sscanf(s, "%d", &n); err == nil {
+					out = append(out, n)
+				}
+			}
+			return out
 		}
 	}
-	return 0
+	return nil
 }
 
 // ----------------------------------------------------------------------

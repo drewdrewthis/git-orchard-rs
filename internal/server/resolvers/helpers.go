@@ -64,32 +64,25 @@ var enrichmentFieldNames = map[string]struct{}{
 
 // primeEnrichment collapses PR enrichment for a whole list into one GitHub
 // round-trip. Each enrichment field resolver Loads its PR key independently,
-// spread across gqlgen's per-item goroutines; the DataLoader only groups Loads
-// that arrive inside its wait window, so under scheduling jitter the keys split
-// across batches and fire more than one GraphQL request (a latent N+1).
-// Enqueuing every key here — synchronously, before field resolution begins —
-// puts them all in one batch and warms the provider cache the field resolvers
-// then read. No-op when no enrichment field is selected, so a bare
-// `{ number }` query still pays nothing.
-func primeEnrichment(ctx context.Context, prs []gh.PullRequest) {
-	if len(prs) == 0 {
+// spread across gqlgen's per-item goroutines; routing the warm-up through the
+// DataLoader would depend on its wall-clock wait window, so under scheduling
+// jitter the keys split across batches and fire more than one GraphQL request
+// (a latent N+1 — issue #773). Instead this issues ONE direct
+// BatchEnrichPullRequests call with every key, deterministically one HTTP round
+// trip, warming the provider's per-key cache. The field resolvers then read
+// that cache through the DataLoader at zero additional network cost, regardless
+// of how their Loads batch. No-op when no enrichment field is selected, so a
+// bare `{ number }` query still pays nothing.
+func primeEnrichment(ctx context.Context, provider *gh.Provider, prs []gh.PullRequest) {
+	if provider == nil || len(prs) == 0 || !enrichmentSelected(ctx) {
 		return
 	}
-	l := loaders.FromContext(ctx)
-	if l == nil || l.PullRequestEnrichment == nil || !enrichmentSelected(ctx) {
-		return
-	}
-	// Drive Load directly rather than LoadMany: LoadMany fans out a goroutine
-	// per key, which would reintroduce the very scheduling split this avoids.
-	// A synchronous enqueue loop lands every key in one batch window.
-	thunks := make([]func() (gh.PullRequest, error), 0, len(prs))
+	keys := make([]gh.PullRequestKey, 0, len(prs))
 	for _, p := range prs {
-		key := gh.PullRequestKey{Owner: p.RepoOwner, Name: p.RepoName, Number: p.Number}
-		thunks = append(thunks, l.PullRequestEnrichment.Load(ctx, key))
+		keys = append(keys, gh.PullRequestKey{Owner: p.RepoOwner, Name: p.RepoName, Number: p.Number})
 	}
-	for _, thunk := range thunks {
-		_, _ = thunk() // best-effort warm-up; field resolvers surface real errors
-	}
+	// Best-effort warm-up; the field resolvers surface any real error.
+	_, _ = provider.BatchEnrichPullRequests(ctx, keys)
 }
 
 // enrichmentSelected reports whether the PullRequest selection set for the
