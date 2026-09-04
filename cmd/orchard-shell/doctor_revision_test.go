@@ -28,15 +28,27 @@ func TestEvaluateRevisions(t *testing.T) {
 		}
 	})
 
-	t.Run("all unstamped fail and are named (empty = unstamped build)", func(t *testing.T) {
+	t.Run("all unstamped fail with a dedicated unstamped-build detail (empty = unstamped build)", func(t *testing.T) {
 		got := evaluateRevisions([]binaryVersion{
 			{"orchard-daemon", ""}, {"orchard-sidebar", ""},
 		})
 		if got.Status != statusFail {
 			t.Errorf("Status = %v; want fail — an empty revision is an unstamped build, not a match", got.Status)
 		}
-		if !strings.Contains(got.Detail, "orchard-daemon") || !strings.Contains(got.Detail, "orchard-sidebar") {
-			t.Errorf("Detail = %q; want it to name the unstamped binaries", got.Detail)
+		if !strings.Contains(got.Detail, "are unstamped") {
+			t.Errorf("Detail = %q; want it to state the suite binaries are unstamped", got.Detail)
+		}
+	})
+
+	t.Run("mixed real and unstamped revisions fail via suite mismatch and name the unstamped binary", func(t *testing.T) {
+		got := evaluateRevisions([]binaryVersion{
+			{"orchard-daemon", "abc123"}, {"orchard-sidebar", ""},
+		})
+		if got.Status != statusFail {
+			t.Errorf("Status = %v; want fail", got.Status)
+		}
+		if !strings.Contains(got.Detail, "orchard-sidebar") {
+			t.Errorf("Detail = %q; want it to name the unstamped binary", got.Detail)
 		}
 	})
 

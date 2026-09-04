@@ -94,14 +94,16 @@ fn git(args: &[&str]) -> Option<String> {
 /// True when the working tree has changes — matches Go `vcs.modified`, which
 /// treats any `git status --porcelain` output (tracked or untracked) as dirty.
 fn git_dirty() -> bool {
-    match Command::new("git").args(["status", "--porcelain"]).output() {
-        Ok(out) => out.status.success() && !out.stdout.is_empty(),
-        Err(_) => false,
-    }
+    git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty())
 }
 
 /// Tells cargo to rebuild when HEAD moves or the checked-out branch ref updates,
 /// so a fresh commit re-stamps the revision.
+///
+/// Limitation: `+dirty` is only re-sampled on a rerun trigger (HEAD/ref move,
+/// or a build.rs edit), so a local edit made between reruns can leave the
+/// stamp stale (missing `+dirty`) until something above fires again — the same
+/// caveat vergen/built carry for their dirty-tracking.
 fn emit_git_rerun() {
     if let Some(head_path) = git(&["rev-parse", "--git-path", "HEAD"]) {
         println!("cargo:rerun-if-changed={head_path}");
