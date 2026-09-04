@@ -18,6 +18,13 @@
 
   Out of scope for this release: the orchardist working directory at `~/.config/orchard/.orchardist/` and the state directory `~/.local/state/orchard` both stay where they are.
 
+## [1.3.0](https://github.com/drewdrewthis/orchardist/compare/orchard-v1.2.0...orchard-v1.3.0) (2026-09-04)
+
+
+### Features
+
+* **orchard-tui:** stamp git revision at build and expose --revision so doctor suite-revisions covers it ([#807](https://github.com/drewdrewthis/orchardist/issues/807)) ([ff805b4](https://github.com/drewdrewthis/orchardist/commit/ff805b472fc81e55a5b582c75840f54611048390))
+
 ## [1.2.0](https://github.com/drewdrewthis/orchardist/compare/orchard-v1.1.0...orchard-v1.2.0) (2026-09-04)
 
 
