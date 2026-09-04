@@ -69,8 +69,12 @@ func resolveOneRevision(ctx context.Context, env doctorEnv, name string) string 
 
 // evaluateRevisions is the pure decision. Precedence, highest severity first:
 //
-//   - FAIL when every resolved binary reports an empty (unstamped) revision —
-//     none of the suite is stampable, a distinct condition from a mismatch.
+//   - FAIL when every resolved binary reports an empty (unstamped) revision AND
+//     none is unimplemented — none of the suite is stampable, a distinct
+//     condition from a mismatch. If any binary is unimplemented, the mixed
+//     case falls through to the mismatch branch below, which names every
+//     group (including unimplemented ones) instead of miscounting them as
+//     unstamped.
 //   - FAIL when the resolved revisions genuinely disagree, any binary could not
 //     be found, or some (but not all) binaries report an empty (unstamped)
 //     revision — the #787 skew signal must never read as a pass.
@@ -109,7 +113,7 @@ func evaluateRevisions(revisions []binaryVersion) checkResult {
 			Detail: "none of the suite binaries could report a revision" + suffix,
 			Remedy: "reinstall orchard so its binaries are on $PATH or beside orchard-shell"}
 	}
-	if len(realGroups) == 0 && len(unresolved) == 0 && len(unstamped) > 0 {
+	if len(realGroups) == 0 && len(unresolved) == 0 && len(unimplemented) == 0 && len(unstamped) > 0 {
 		return checkResult{ID: "suite-revisions", Status: statusFail,
 			Detail: fmt.Sprintf("all %d suite binaries are unstamped (built without a VCS revision)%s", len(unstamped), suffix),
 			Remedy: "rebuild every orchard binary with VCS stamping (not -buildvcs=false; pass REVISION/ORCHARD_REVISION for tarball builds)"}

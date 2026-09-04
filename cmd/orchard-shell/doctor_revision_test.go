@@ -52,6 +52,24 @@ func TestEvaluateRevisions(t *testing.T) {
 		}
 	})
 
+	t.Run("mixed unstamped and unimplemented fails via suite mismatch, names both, never reads as all-unstamped", func(t *testing.T) {
+		got := evaluateRevisions([]binaryVersion{
+			{"orchard-daemon", ""}, {"orchard-sidebar", unimplementedRevision},
+		})
+		if got.Status != statusFail {
+			t.Errorf("Status = %v; want fail", got.Status)
+		}
+		if !strings.Contains(got.Detail, "different revisions") {
+			t.Errorf("Detail = %q; want the mismatch detail, not the all-unstamped detail", got.Detail)
+		}
+		if !strings.Contains(got.Detail, "orchard-daemon") || !strings.Contains(got.Detail, "orchard-sidebar") {
+			t.Errorf("Detail = %q; want it to name both binaries", got.Detail)
+		}
+		if strings.Contains(got.Detail, "are unstamped") {
+			t.Errorf("Detail = %q; must not miscount as all-unstamped when one binary is unimplemented", got.Detail)
+		}
+	})
+
 	t.Run("every detail names orchard as the excluded Rust binary", func(t *testing.T) {
 		got := evaluateRevisions([]binaryVersion{
 			{"orchard-daemon", "abc123"}, {"orchard-sidebar", "abc123"},
