@@ -32,11 +32,17 @@ func prKeyFromGraphQL(r *Resolver, obj *graphql1.PullRequest) (gh.PullRequestKey
 	return gh.PullRequestKey{Owner: owner, Name: name, Number: number}, true
 }
 
-// enrichPR fetches the five enrichment fields for a PR, routing through the
+// enrichPR fetches the enrichment fields for a PR, routing through the
 // PullRequestEnrichment dataloader when one is available in ctx (batching all
 // enrichment calls within one GraphQL operation into one HTTP request per
-// repo). Falls back to the direct EnrichPullRequest call when no loader is
-// present (e.g. subscription emissions that bypass the HTTP middleware).
+// repo). A loader is present for every operation that reaches the /graphql
+// handler — including subscription emissions: loaders.Middleware wraps the
+// whole handler (server.go), and gqlgen's websocket transport captures that
+// request context once at connection open and derives every operation from it
+// (see primeEnrichment), so the connection-scoped *Loaders is in ctx on each
+// emission too. The direct EnrichPullRequest fallback is therefore only for
+// callers with no loaders middleware in ctx at all — e.g. direct provider
+// calls in tests.
 func enrichPR(ctx context.Context, r *Resolver, key gh.PullRequestKey) (gh.PullRequest, error) {
 	if l := loaders.FromContext(ctx); l != nil && l.PullRequestEnrichment != nil {
 		pr, err := l.PullRequestEnrichment.Load(ctx, key)()
@@ -82,12 +88,17 @@ var enrichmentFieldNames = map[string]struct{}{
 // from c.ctx). A cached enrichment loader would therefore serve stale
 // mergeable/CI/reviews across a long-lived socket.
 //
-// Consequence (accepted): open PRs with mergeable == UNKNOWN are deliberately
-// re-fetched. gh.shouldCacheEnrichment refuses to cache that combination —
+// Consequence: open PRs with mergeable == UNKNOWN are re-fetched by the field
+// resolvers. gh.shouldCacheEnrichment refuses to cache that combination —
 // UNKNOWN is an uncomputed value, not a verdict (#367) — so the warm-up leaves
-// those keys cold in the provider cache and their field resolvers refetch, a
-// second GitHub round-trip. Collapsing that too requires a provider-cache
-// policy change, not a resolver-layer memo.
+// those keys cold in the durable provider cache. For query and mutation
+// operations the per-operation memo (gh.WithEnrichMemo, installed by
+// resolvers.EnrichMemoMiddleware, #813) captures the warm-up result for the
+// life of the operation, so the field resolvers read it instead of the network
+// and that second GitHub round-trip collapses. Subscriptions are deliberately
+// excluded from the memo (it would outlive the emissions and serve stale
+// mergeable/CI/reviews across a long-lived socket), so the extra open+UNKNOWN
+// round-trip remains ONLY on subscription emissions (tracked in #822).
 //
 // No-op when no enrichment field is selected, so a bare `{ number }` query
 // still pays nothing.

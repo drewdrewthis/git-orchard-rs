@@ -447,6 +447,9 @@ func healthHandler(startedAt time.Time) http.HandlerFunc {
 func graphqlHandlerFor(res *resolvers.Resolver) http.Handler {
 	cfg := gql.Config{Resolvers: res}
 	srv := handler.New(gql.NewExecutableSchema(cfg))
+	// Install the request-scoped PR enrichment memo per operation (#813), so
+	// open+UNKNOWN PRs resolve their enrichment from one GitHub round-trip.
+	srv.AroundOperations(resolvers.EnrichMemoMiddleware)
 	srv.AddTransport(transport.POST{})
 	srv.AddTransport(transport.GET{})
 	srv.AddTransport(websocketTransport())
