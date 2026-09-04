@@ -91,6 +91,12 @@ jobs:
       - name: Checksum dispatcher
         run: shasum -a 256 orchard-${{ matrix.target.name }}.tar.gz > orchard-${{ matrix.target.name }}.tar.gz.sha256
       - name: Build TUI (orchard-tui)
+        # Stamp ORCHARD_REVISION explicitly (build.rs reads it, mirroring
+        # scripts/dist.sh). Otherwise build.rs falls back to `git status
+        # --porcelain`, which sees the untracked dispatcher tarball packaged
+        # just above (repo root, not gitignored) and stamps `<sha>+dirty` (#817).
+        env:
+          ORCHARD_REVISION: ${{ github.sha }}
         run: cargo build --release --target ${{ matrix.target.name }} -p orchard
       - name: Package TUI
         run: tar czf orchard-tui-${{ matrix.target.name }}.tar.gz -C target/${{ matrix.target.name }}/release orchard-tui
@@ -143,20 +149,30 @@ jobs:
           CGO_ENABLED: "0"
           TRIPLE: ${{ matrix.target.name }}
           VERSION: ${{ steps.meta.outputs.version }}
+          REVISION: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # Suite binaries baked with the release VERSION, mirroring
+          # Suite binaries baked with the release VERSION + REVISION, mirroring
           # scripts/dist.sh. A binary whose cmd/ dir doesn't exist yet is
           # skipped (mid-rollout tolerance), not failed; an existing dir that
           # fails to *compile* still fails this step, as it should.
+          #
+          # Outputs go into the gitignored dist/ (not the repo root) so
+          # `git status --porcelain` stays clean between builds. Previously the
+          # binary + tarball landed in the root untracked, so Go's buildvcs saw
+          # a dirty tree and stamped vcs.modified=true -> `<sha>+dirty` on every
+          # binary after the first (orchard-daemon), which built clean (#817).
+          # REVISION is also passed explicitly (matches Makefile GO_LDFLAGS /
+          # scripts/dist.sh) so the revision is pinned even absent a VCS stamp.
+          mkdir -p dist
           for bin in orchard-daemon orchard-sidebar orchard-shell orchard-upgrade; do
             if [ ! -d "cmd/$bin" ]; then
               echo "skip $bin: cmd/$bin does not exist yet"
               continue
             fi
-            go build -ldflags "-X main.version=$VERSION" -o "$bin" "./cmd/$bin"
-            tar czf "$bin-$TRIPLE.tar.gz" "$bin"
-            shasum -a 256 "$bin-$TRIPLE.tar.gz" > "$bin-$TRIPLE.tar.gz.sha256"
+            go build -ldflags "-X main.version=$VERSION -X github.com/drewdrewthis/orchardist/internal/release.revision=$REVISION" -o "dist/$bin" "./cmd/$bin"
+            tar czf "dist/$bin-$TRIPLE.tar.gz" -C dist "$bin"
+            ( cd dist && shasum -a 256 "$bin-$TRIPLE.tar.gz" > "$bin-$TRIPLE.tar.gz.sha256" )
           done
       - name: Upload
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
@@ -165,8 +181,8 @@ jobs:
           # fail_on_unmatched_files defaults to false: tolerates a binary
           # skipped above because its cmd/ dir doesn't exist yet.
           files: |
-            orchard-*-${{ matrix.target.name }}.tar.gz
-            orchard-*-${{ matrix.target.name }}.tar.gz.sha256
+            dist/orchard-*-${{ matrix.target.name }}.tar.gz
+            dist/orchard-*-${{ matrix.target.name }}.tar.gz.sha256
 
   checksums:
     needs: [release-please, build, build-go]
@@ -189,6 +205,13 @@ jobs:
     name: Assemble suite tarballs + SHA256SUMS
     runs-on: ubuntu-latest
     steps:
+      # Checkout + Go are needed by the revision-verification step below
+      # (scripts/check-suite-revisions.sh reads the repo and runs `go version
+      # -m`). This job had no checkout previously.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
       - name: Derive tag
         id: meta
         env:
@@ -253,6 +276,8 @@ jobs:
           fi
           cd dist
           shasum -a 256 -- *.tar.gz > SHA256SUMS
+      - name: Verify suite binaries share one clean revision (#817)
+        run: scripts/check-suite-revisions.sh dist/orchard-suite-*.tar.gz
       - name: Upload suite tarballs + SHA256SUMS
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
