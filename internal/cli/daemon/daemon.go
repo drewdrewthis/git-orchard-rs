@@ -275,7 +275,7 @@ func runStart(parentCtx context.Context, addr string, version string, logLevel s
 
 // localHostID returns the host id for tmux nodes. v1 stays neutral.
 func localHostID() tmux.HostID {
-	return tmux.HostID("local")
+	return tmux.HostID(tmux.LocalHostID)
 }
 
 // buildGitProvider constructs the git provider and registers every
@@ -436,32 +436,34 @@ func probeAddr(addr string) string {
 	return addr
 }
 
-// claudeprojectsRoot returns the directory the daemon should watch for
-// Claude Code transcripts. CLAUDE_PROJECTS_ROOT overrides; default is
-// ~/.claude/projects.
-func claudeprojectsRoot() string {
-	if v := os.Getenv("CLAUDE_PROJECTS_ROOT"); v != "" {
+// envRootOr returns the directory an env var override names, or
+// ~/<defaultRel> when the var is unset/empty (falling back to the bare
+// relative path if the home directory can't be resolved). Shared by
+// claudeprojectsRoot and claudeSessionsRoot (#743) so the two roots can't
+// drift out of sync on how they resolve.
+func envRootOr(envVar, defaultRel string) string {
+	if v := os.Getenv(envVar); v != "" {
 		return v
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return ".claude/projects"
+		return defaultRel
 	}
-	return home + "/.claude/projects"
+	return home + "/" + defaultRel
+}
+
+// claudeprojectsRoot returns the directory the daemon should watch for
+// Claude Code transcripts. CLAUDE_PROJECTS_ROOT overrides; default is
+// ~/.claude/projects.
+func claudeprojectsRoot() string {
+	return envRootOr("CLAUDE_PROJECTS_ROOT", ".claude/projects")
 }
 
 // claudeSessionsRoot returns the directory holding Claude Code's live-REPL
 // registry files (<pid>.json). CLAUDE_SESSIONS_ROOT overrides; default is
 // ~/.claude/sessions. Mirrors claudeprojectsRoot (#743).
 func claudeSessionsRoot() string {
-	if v := os.Getenv("CLAUDE_SESSIONS_ROOT"); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ".claude/sessions"
-	}
-	return home + "/.claude/sessions"
+	return envRootOr("CLAUDE_SESSIONS_ROOT", ".claude/sessions")
 }
 
 // orchardScriptsRoot returns the absolute path to the scripts/ directory.

@@ -88,5 +88,13 @@ func (p *Provider) SessionByPid(pid int) (Session, bool) {
 	if sf.Pid == 0 || sf.SessionID == "" {
 		return Session{}, false // missing required fields
 	}
+	if sf.Pid != pid {
+		// Filename is authoritative: a corrupt write or a renamed/reused file
+		// whose body names a different pid than the one we looked up must not
+		// be trusted — returning it here would attribute another REPL's
+		// sessionUuid to this pid.
+		p.logger.Debug("claudesessions: pid/filename mismatch, ignoring", "path", path, "wantPid", pid, "filePid", sf.Pid)
+		return Session{}, false
+	}
 	return Session{Pid: sf.Pid, SessionUUID: sf.SessionID, Cwd: sf.Cwd}, true
 }

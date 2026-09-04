@@ -18,6 +18,11 @@ import "time"
 // federation in Workstream F can disambiguate without a schema bump.
 type HostID string
 
+// LocalHostID is the HostID (as a plain string) for the machine the daemon
+// runs on — the single source of truth for the "local" literal so resolvers
+// and daemon boot code never hardcode it separately (#743 review).
+const LocalHostID = "local"
+
 // SessionKey is the cache key for a TmuxSession. Sessions are uniquely
 // identified by name within a server.
 type SessionKey struct {

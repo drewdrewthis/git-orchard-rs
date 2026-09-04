@@ -1,10 +1,32 @@
 package claudesessions
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// AC-9 — pins the package doc comment to name the ADR-022 vocabulary (node,
+// axis, wiring) so a future edit can't silently drop the design rationale.
+func TestPackageDoc_NamesNodeAxisAndResolverWiring(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "provider.go", nil, parser.ParseComments|parser.PackageClauseOnly)
+	if err != nil {
+		t.Fatalf("parse provider.go: %v", err)
+	}
+	if f.Doc == nil {
+		t.Fatal("provider.go has no package doc comment")
+	}
+	doc := f.Doc.Text()
+	for _, want := range []string{"ClaudeSessionRegistry", "SessionByPid", "resolver"} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("package doc missing %q; got:\n%s", want, doc)
+		}
+	}
+}
 
 func writeFile(t *testing.T, root string, name, body string) {
 	t.Helper()
@@ -77,6 +99,17 @@ func TestSessionByPid_IgnoresUnknownFields(t *testing.T) {
 	got, ok := p.SessionByPid(8164)
 	if !ok || got.SessionUUID != "s" {
 		t.Errorf("got %+v ok=%v, want session 's' despite unknown fields", got, ok)
+	}
+}
+
+// Pid/filename mismatch (corrupt write or renamed/reused file) → not found:
+// the filename is authoritative, never the body's pid field.
+func TestSessionByPid_FilenamePidMismatch(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "8164.json", `{"pid":9999,"sessionId":"s","cwd":"/w"}`)
+	p := New(root, nil)
+	if _, ok := p.SessionByPid(8164); ok {
+		t.Error("want not found when file body's pid doesn't match the filename's pid")
 	}
 }
 

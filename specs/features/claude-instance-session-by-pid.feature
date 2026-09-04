@@ -141,7 +141,7 @@ Feature: ClaudeInstance sessionUuid resolved by pid, not cwd
   # AC 11 — Single-pane path
   # ===================================================================
 
-  @unit
+  @integration
   Scenario: tmuxPane.claudeInstance resolver resolves sessionUuid from the registry when cwdToSession is nil
     Given the cwdToSession == nil branch of tmuxPane.claudeInstance
     And a fake registry entry for the pane's pid with sessionId "solo-uuid"

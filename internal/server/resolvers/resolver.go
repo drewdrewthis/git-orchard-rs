@@ -34,13 +34,13 @@ type Resolver struct {
 	// Version) to avoid shadowing the Query.Version resolver method on
 	// the embedded queryResolver. Defaults to "dev" when no ldflags
 	// were used (plain `go build`).
-	DaemonVersion       string
-	HostProvider        *host.Provider
-	ReposProvider       ReposLister
-	Git                 *gitprovider.Provider
-	PS                  *ps.Provider
-	Tmux                *tmux.Provider
-	ClaudeProjects      *claudeprojects.Provider
+	DaemonVersion  string
+	HostProvider   *host.Provider
+	ReposProvider  ReposLister
+	Git            *gitprovider.Provider
+	PS             *ps.Provider
+	Tmux           *tmux.Provider
+	ClaudeProjects *claudeprojects.Provider
 	// ClaudeSessions is the live-REPL registry (~/.claude/sessions/<pid>.json).
 	// When nil, sessionUuid resolution degrades to the cwd/nil fallback (#743).
 	ClaudeSessions      *claudesessions.Provider

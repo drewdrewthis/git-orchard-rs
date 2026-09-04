@@ -192,6 +192,12 @@ func TestSessionByPid_ByteEqualsJsonlSessionUUID(t *testing.T) {
 // process's own pid with a REAL ps provider so cwd resolution (lsof on darwin,
 // /proc on linux) is deterministic and portable; the registry file's cwd is set
 // to exactly what the resolver will resolve, so the pid-reuse guard passes.
+//
+// Retagged @integration (not @unit): Resolver.PS is a concrete *ps.Provider,
+// not an interface, so there is no seam to fake LoadCwd without a
+// larger provider-interface refactor across the resolvers package (out of
+// scope for #743). On Linux this shells out to nothing — LoadCwd reads
+// /proc/<pid>/cwd via readlink — but on darwin it invokes lsof, hence real I/O.
 func TestTmuxPaneClaudeInstance_ResolvesSessionUUIDFromRegistry(t *testing.T) {
 	pid := os.Getpid()
 	paneID := "%7"

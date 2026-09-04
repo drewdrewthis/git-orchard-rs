@@ -15,6 +15,7 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/server/loaders"
 	claudeinstance "github.com/drewdrewthis/orchardist/internal/server/providers/claudeinstance"
 	psprovider "github.com/drewdrewthis/orchardist/internal/server/providers/ps"
+	"github.com/drewdrewthis/orchardist/internal/server/providers/tmux"
 )
 
 // projectPanesToClaudeInstances converts a slice of tmux panes (all presumed
@@ -31,7 +32,7 @@ func (r *queryResolver) projectPanesToClaudeInstances(ctx context.Context, panes
 		return []*graphql1.ClaudeInstance{}
 	}
 
-	host := "local"
+	host := tmux.LocalHostID
 	if r.Tmux != nil {
 		host = string(r.Tmux.Host())
 	}
