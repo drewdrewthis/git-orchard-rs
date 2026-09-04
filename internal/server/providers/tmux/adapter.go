@@ -48,9 +48,10 @@ type execRunner struct{}
 // rather than a misleading SIGKILL diagnostic.
 func (execRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	// Force a UTF-8 ctype on the child so tmux's `-F` TAB separator survives
-	// (issue #701 / D3). See exec_env.go for the mechanism and rationale.
-	cmd.Env = utf8Env(os.Environ())
+	// childEnv forces a UTF-8 ctype so tmux's `-F` TAB separator survives (#701 /
+	// D3) and strips the parent's TMUX/TMUX_PANE so the child addresses the
+	// default server, not the launching shell's socket (#699). See exec_env.go.
+	cmd.Env = childEnv(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

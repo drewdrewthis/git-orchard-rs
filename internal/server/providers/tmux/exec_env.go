@@ -86,6 +86,37 @@ func effectiveCtype(env []string) string {
 	return ""
 }
 
+// childEnv composes the two boundary fixes every tmux subprocess needs: the
+// UTF-8 ctype forcing (utf8Env) and the parent-socket stripping (hostEnv). It
+// is what execRunner hands to cmd.Env.
+func childEnv(env []string) []string {
+	return utf8Env(hostEnv(env))
+}
+
+// hostEnv removes the tmux client's socket-selection inheritance — TMUX and
+// TMUX_PANE — from env, leaving every other entry (TMUX_TMPDIR included)
+// untouched.
+//
+// Why: a tmux client with no -S/-L honours $TMUX (socket-path,pid,session) to
+// pick its server. A daemon launched from inside a tmux pane on a non-default
+// socket would then silently address THAT socket instead of the default server
+// (#699). The daemon must address the default server, or the explicit -S from
+// WithSocket — never the socket of whichever shell happened to launch it. When
+// WithSocket is set, -S already wins over $TMUX, so stripping unconditionally
+// is correct and simplest. TMUX_TMPDIR is a legitimate socket-dir override on
+// systemd hosts (#464) and is deliberately preserved.
+func hostEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		key, _, _ := strings.Cut(kv, "=")
+		if key == "TMUX" || key == "TMUX_PANE" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // isUTF8Ctype reports whether a locale value names a UTF-8 encoding, matching
 // both `UTF-8` and `UTF8` spellings case-insensitively (e.g. en_US.UTF-8,
 // C.UTF-8, C.utf8).
