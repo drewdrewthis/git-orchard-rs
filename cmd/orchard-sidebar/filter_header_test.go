@@ -37,6 +37,14 @@ func TestFilterHeaderYieldsToDevIdent(t *testing.T) {
 			[]string{"/payments"}, []string{"dev@abc1234*", "/yments"}},
 		{"filter open, wide pane: both fit", "payments", 80,
 			[]string{"dev@abc1234*", "/payments"}, nil},
+		// with 30 fake rows and query "payments", visibleRows() is 3 (fake-01,
+		// fake-13, fake-25) and the attention badge is "●9" — fixing the
+		// header's right-hand strip so w=48 is the exact width where
+		// filterFieldSpace lands on filterMinWidth (16) and the hint is kept.
+		{"filter open, boundary width: hint barely fits", "payments", 48,
+			[]string{"dev@abc1234*", "/payments"}, nil},
+		{"filter open, boundary width minus one: hint drops", "payments", 47,
+			[]string{"/payments"}, []string{"dev@abc1234*"}},
 		{"filter off, defaultWidth: ident shows", "", defaultWidth,
 			[]string{"dev@abc1234*"}, nil},
 	} {

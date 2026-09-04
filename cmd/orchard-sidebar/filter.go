@@ -27,13 +27,9 @@ type filterState struct {
 // wide enough that a fresh field does not open already scrolled.
 const filterFieldWidth = 32
 
-// filterMinWidth is the visible cell width the query field must keep for the
-// header to also seat the update hint beside it. A dev build's ident (dev@<rev>,
-// ~12 cells) prepended to the right strip at defaultWidth starved the field to
-// ~7 cells, so typing "payments" scrolled the textinput and drew "/yments"
-// (#801). 16 cells clears the longest fake session query with the slash, the
-// cursor cell and the count still on the line; below it the header drops the
-// hint for that frame rather than shred the query the user is typing.
+// filterMinWidth is the field's floor: enough to hold the slash, the cursor
+// cell, and the count beside a short query. Below it the header drops the
+// update hint for that frame rather than shred the query in progress (#801).
 const filterMinWidth = 16
 
 func (m *model) filterQuery() string { return m.filter.field.value() }
@@ -142,26 +138,19 @@ func (m *model) railIndex(vis []int) int {
 // and cannot end up pointing at a session that is not even on screen.
 func (m *model) railRow() (row, bool) { return m.rowAt(m.railIndex(m.visibleRows())) }
 
-// hintFitsFilter reports whether the header may prepend the update hint to its
-// right strip without starving the open filter field. With the filter closed
-// the hint always fits (the title yields to it); open, the hint and the field
-// share the row, so the hint is kept only while the field would stay at least
-// filterMinWidth cells (#801). iw is the header's inner width and right the
-// strip the hint would lead — the same budget filterHead is handed at layout.
-func (m *model) hintFitsFilter(iw int, hint, right string) bool {
+// hintFits reports whether the update hint may share the header's right
+// strip without starving an open filter field below filterMinWidth; a
+// closed filter always has room (#801).
+func (m *model) hintFits(headW int) bool {
 	if !m.filterOn() {
 		return true
 	}
-	headW := iw - cellWidth(hint+"  "+right) - 1
 	return m.filterFieldSpace(headW) >= filterMinWidth
 }
 
-// filterFieldSpace is the visible cell width the query field gets inside a
-// header left-hand strip of w cells. Two cells come off rather than one after
-// the slash and the count: a focused textinput draws its Width PLUS the cell
-// its cursor sits in, and a count clipped to "(…" is a count that says nothing.
-// The header reads it to decide whether the update hint still fits beside the
-// field (#801); filterHead lays the field out at exactly this width.
+// filterFieldSpace is the query field's visible width inside a w-cell strip:
+// two cells come off, not one, since a focused textinput draws Width plus its
+// cursor cell, and a count clipped to "(…" says nothing (#801).
 func (m *model) filterFieldSpace(w int) int {
 	count := fmt.Sprintf(" (%d)", len(m.visibleRows()))
 	return max(1, w-2-cellWidth(count))
