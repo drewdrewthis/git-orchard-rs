@@ -99,6 +99,6 @@ See ADR-016 (GraphQL as protocol), ADR-017 (layer responsibilities), ADR-019 (no
 
 ## Amendments
 
-- 2026-09-04: applied the gate to `ClaudeSessionRegistry` (node), `SessionByPid`
-  (axis), provider → resolver directly, no dataloader — each pane's pid is
-  distinct per request, so there's nothing to batch (#743).
+- 2026-09-04: applied the gate to `ClaudeInstance` (node), `SessionByPid` (axis
+  resolving `ClaudeInstance.sessionUuid` from Claude Code's `~/.claude/sessions`
+  registry by the pane's own live pid), provider → dataloader → resolver (#743).

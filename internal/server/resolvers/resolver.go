@@ -207,7 +207,7 @@ func (a *ghPRStateAdapter) PRStateByBranch(ctx context.Context, repoSlug, branch
 // dataloaders need. Used as a fallback when no middleware-installed
 // Loaders is on the context (e.g. internal subscription emissions).
 func (r *Resolver) LoaderBundle() *loaders.ProvidersBundle {
-	return &loaders.ProvidersBundle{
+	b := &loaders.ProvidersBundle{
 		Host:       r.HostProvider,
 		Git:        r.Git,
 		Ps:         r.PS,
@@ -216,4 +216,11 @@ func (r *Resolver) LoaderBundle() *loaders.ProvidersBundle {
 		GH:         r.GH,
 		GHEnricher: r.GH,
 	}
+	// Assign only when non-nil so the interface field stays a true nil (a
+	// typed-nil *Provider would make loadSessionsByPid's nil check miss and
+	// panic dereferencing the registry root).
+	if r.ClaudeSessions != nil {
+		b.ClaudeSessions = r.ClaudeSessions
+	}
+	return b
 }

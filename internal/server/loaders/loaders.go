@@ -25,6 +25,7 @@ import (
 	"github.com/graph-gophers/dataloader/v7"
 
 	graphql1 "github.com/drewdrewthis/orchardist/internal/server/graphql"
+	claudesessions "github.com/drewdrewthis/orchardist/internal/server/providers/claudesessions"
 	configprovider "github.com/drewdrewthis/orchardist/internal/server/providers/config"
 	ghprovider "github.com/drewdrewthis/orchardist/internal/server/providers/gh"
 	gitprovider "github.com/drewdrewthis/orchardist/internal/server/providers/git"
@@ -64,6 +65,9 @@ type ProvidersBundle struct {
 	// GHEnricher is the narrow gh surface the PullRequestEnrichment loader
 	// needs. *gh.Provider satisfies GHPREnricher automatically.
 	GHEnricher GHPREnricher
+	// ClaudeSessions is the ~/.claude/sessions registry surface the
+	// SessionByPid loader reads. *claudesessions.Provider satisfies it.
+	ClaudeSessions ClaudeSessionByPid
 }
 
 // loaderKey is the private context key for the per-request loaders.
@@ -85,6 +89,9 @@ type Loaders struct {
 	PanesByCwd     *dataloader.Loader[CwdKey, []*graphql1.TmuxPane]
 	PanesByCommand *dataloader.Loader[CommandKey, []*graphql1.TmuxPane]
 
+	// SessionByPid (ADR-022): ClaudeInstance.sessionUuid by the pane's own pid.
+	SessionByPid *dataloader.Loader[SessionPidKey, *claudesessions.Session]
+
 	// metrics — provider call counts, used by the n+1 detector test.
 	hostBatches           *batchCounter
 	worktreeBatches       *batchCounter
@@ -94,6 +101,7 @@ type Loaders struct {
 	paneByIDBatches       *batchCounter
 	panesByCwdBatches     *batchCounter
 	panesByCommandBatches *batchCounter
+	sessionByPidBatches   *batchCounter
 }
 
 // RepoKey is the composite key for the PullRequestsForRepo loader.
@@ -159,6 +167,7 @@ func NewLoaders(providers *ProvidersBundle) *Loaders {
 	paneByIDBatches := &batchCounter{}
 	panesByCwdBatches := &batchCounter{}
 	panesByCommandBatches := &batchCounter{}
+	sessionByPidBatches := &batchCounter{}
 
 	// Build the narrow PanePsGetter adapter once — shared across all pane
 	// loaders inside this request. Nil when ps provider is not wired.
@@ -196,6 +205,10 @@ func NewLoaders(providers *ProvidersBundle) *Loaders {
 		panesByCommandBatches.inc()
 		return loadPanesByCommand(providers, keys, panePsGetter)
 	}
+	sessionByPidBatch := func(_ context.Context, keys []SessionPidKey) []*dataloader.Result[*claudesessions.Session] {
+		sessionByPidBatches.inc()
+		return loadSessionsByPid(providers, keys)
+	}
 
 	hostOpts := []dataloader.Option[string, *graphql1.Host]{
 		dataloader.WithWait[string, *graphql1.Host](1 * time.Millisecond),
@@ -229,6 +242,10 @@ func NewLoaders(providers *ProvidersBundle) *Loaders {
 		dataloader.WithWait[CommandKey, []*graphql1.TmuxPane](1 * time.Millisecond),
 		dataloader.WithCache[CommandKey, []*graphql1.TmuxPane](&dataloader.NoCache[CommandKey, []*graphql1.TmuxPane]{}),
 	}
+	sessionByPidOpts := []dataloader.Option[SessionPidKey, *claudesessions.Session]{
+		dataloader.WithWait[SessionPidKey, *claudesessions.Session](1 * time.Millisecond),
+		dataloader.WithCache[SessionPidKey, *claudesessions.Session](&dataloader.NoCache[SessionPidKey, *claudesessions.Session]{}),
+	}
 
 	return &Loaders{
 		Host:                  dataloader.NewBatchedLoader(hostBatch, hostOpts...),
@@ -239,6 +256,7 @@ func NewLoaders(providers *ProvidersBundle) *Loaders {
 		PaneByID:              dataloader.NewBatchedLoader(paneByIDBatch, paneByIDOpts...),
 		PanesByCwd:            dataloader.NewBatchedLoader(panesByCwdBatch, panesByCwdOpts...),
 		PanesByCommand:        dataloader.NewBatchedLoader(panesByCommandBatch, panesByCommandOpts...),
+		SessionByPid:          dataloader.NewBatchedLoader(sessionByPidBatch, sessionByPidOpts...),
 		hostBatches:           hostBatches,
 		worktreeBatches:       worktreeBatches,
 		processBatches:        processBatches,
@@ -247,6 +265,7 @@ func NewLoaders(providers *ProvidersBundle) *Loaders {
 		paneByIDBatches:       paneByIDBatches,
 		panesByCwdBatches:     panesByCwdBatches,
 		panesByCommandBatches: panesByCommandBatches,
+		sessionByPidBatches:   sessionByPidBatches,
 	}
 }
 

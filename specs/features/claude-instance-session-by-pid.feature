@@ -8,7 +8,7 @@ Feature: ClaudeInstance sessionUuid resolved by pid, not cwd
   # ~/.claude/sessions/<pid>.json. Liveness comes not from a LivenessChecker
   # filter but from the lookup key itself: it is keyed on the pane's own live
   # pid (from the ps snapshot), plus a cwd cross-check against the registry
-  # entry's recorded cwd, wired provider -> resolver per ADR-022. Resolution
+  # entry's recorded cwd, wired provider -> dataloader -> resolver per ADR-022. Resolution
   # order per pane: (1) registry entry for the pane's own live pid,
   # cwd-cross-checked against the registry entry's recorded cwd; (2) cwd
   # fallback (existing cwdToSession); (3) nil when neither is unambiguous.

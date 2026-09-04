@@ -1,16 +1,16 @@
-// Package claudesessions is the read side of the ClaudeSessionRegistry node
-// (ADR-022): the live-REPL registry Claude Code writes to
-// ~/.claude/sessions/<pid>.json, one file per running REPL, mapping a pid to
-// its sessionId (and recorded cwd). Its single lookup axis is SessionByPid —
-// arity one: exactly one live session per pid.
+// Package claudesessions is the read side of the SessionByPid lookup axis on the
+// ClaudeInstance node (ADR-022). It reads the live-REPL registry Claude Code
+// writes to ~/.claude/sessions/<pid>.json, one file per running REPL, mapping a
+// pid to its sessionId (and recorded cwd). SessionByPid has arity one: a pid
+// maps to at most one live session, and it resolves ClaudeInstance.sessionUuid.
 //
-// Wiring per ADR-022 (provider → resolver, no dataloader): the provider exposes
-// SessionByPid; the pane→ClaudeInstance resolver (internal/server/resolvers/
-// pane_claude.go) calls it directly to attribute each pane's sessionUuid by the
-// pane's own resolved live pid, instead of the lossy cwd join that collapsed
-// every REPL sharing a worktree cwd onto one shared sessionUuid (#743). No
-// dataloader batches this: the resolver reads one registry file per pane on the
-// request goroutine, mirroring the existing per-request cwd index.
+// Wiring per ADR-022 (provider → dataloader → resolver): the provider exposes
+// SessionByPid; the loaders package batches it per request behind the
+// SessionByPid dataloader; the pane→ClaudeInstance resolver (internal/server/
+// resolvers/pane_claude.go) loads through that dataloader to attribute each
+// pane's sessionUuid by the pane's own resolved live pid, instead of the lossy
+// cwd join that collapsed every REPL sharing a worktree cwd onto one shared
+// sessionUuid (#743).
 package claudesessions
 
 import (

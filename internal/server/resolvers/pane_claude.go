@@ -14,9 +14,40 @@ import (
 	graphql1 "github.com/drewdrewthis/orchardist/internal/server/graphql"
 	"github.com/drewdrewthis/orchardist/internal/server/loaders"
 	claudeinstance "github.com/drewdrewthis/orchardist/internal/server/providers/claudeinstance"
+	claudesessions "github.com/drewdrewthis/orchardist/internal/server/providers/claudesessions"
 	psprovider "github.com/drewdrewthis/orchardist/internal/server/providers/ps"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/tmux"
 )
+
+// paneSessionLoader adapts the request-scoped SessionByPid dataloader (or the
+// direct provider when no loader is in context) to the paneSessionRegistry
+// interface resolveSessionUUID needs, keeping that helper pure. Host is captured
+// for the loader key; resolveSessionUUID only calls SessionByPid for local
+// panes, so the batch fn's local-only registry is never asked about a remote host.
+type paneSessionLoader struct {
+	ctx    context.Context
+	host   string
+	loader *loaders.Loaders         // nil when no middleware is wired
+	direct *claudesessions.Provider // fallback path
+}
+
+// SessionByPid resolves one registry entry by pid, batched through the loader
+// when present and via the direct provider otherwise. A missing entry (or any
+// load error) is reported as not-found so resolveSessionUUID falls through to
+// its cwd join rather than surfacing an error.
+func (a paneSessionLoader) SessionByPid(pid int) (claudesessions.Session, bool) {
+	if a.loader != nil {
+		s, err := a.loader.SessionByPid.Load(a.ctx, loaders.SessionPidKey{Host: a.host, Pid: pid})()
+		if err != nil || s == nil {
+			return claudesessions.Session{}, false
+		}
+		return *s, true
+	}
+	if a.direct == nil {
+		return claudesessions.Session{}, false
+	}
+	return a.direct.SessionByPid(pid)
+}
 
 // projectPanesToClaudeInstances converts a slice of tmux panes (all presumed
 // to be running claude) into ClaudeInstance graph nodes. For each pane it:
@@ -166,8 +197,10 @@ func (r *queryResolver) buildClaudeInstanceFromPane(
 			}
 		}
 		var reg paneSessionRegistry
-		if r.ClaudeSessions != nil {
-			reg = r.ClaudeSessions
+		if l := loaders.FromContext(ctx); l != nil {
+			reg = paneSessionLoader{ctx: ctx, host: host, loader: l}
+		} else if r.ClaudeSessions != nil {
+			reg = paneSessionLoader{ctx: ctx, host: host, direct: r.ClaudeSessions}
 		}
 		sessionUUID = resolveSessionUUID(host, pid, cwd, reg, idx)
 	}

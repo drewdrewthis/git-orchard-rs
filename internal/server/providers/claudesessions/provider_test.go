@@ -21,7 +21,7 @@ func TestPackageDoc_NamesNodeAxisAndResolverWiring(t *testing.T) {
 		t.Fatal("provider.go has no package doc comment")
 	}
 	doc := f.Doc.Text()
-	for _, want := range []string{"ClaudeSessionRegistry", "SessionByPid", "resolver"} {
+	for _, want := range []string{"ClaudeInstance", "SessionByPid", "resolver"} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("package doc missing %q; got:\n%s", want, doc)
 		}
