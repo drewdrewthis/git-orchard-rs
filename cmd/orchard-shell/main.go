@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
 )
 
 // version is overridden via -ldflags at release time.
@@ -33,6 +35,11 @@ func main() {
 // session you asked for is not there", which is the one failure a caller
 // scripts around.
 func run(argv []string, stdout, stderr io.Writer) int {
+	// --revision prints the bare VCS revision before any other dispatch, so the
+	// doctor suite-revisions check can compare it across binaries (orchardist#787).
+	if release.HandleRevisionFlag(argv, stdout) {
+		return 0
+	}
 	if len(argv) == 2 && argv[0] == updateCheckFlag {
 		runInternalUpdateCheck(argv[1])
 		return 0

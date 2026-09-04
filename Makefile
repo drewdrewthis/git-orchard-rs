@@ -44,21 +44,27 @@
 # Override for a one-off build: make daemon VERSION=1.2.3
 VERSION ?= $(shell awk -F'"' '/^version = / { print $$2; exit }' crates/orchard/Cargo.toml)
 
+# REVISION is the VCS commit baked into every Go binary so doctor's
+# suite-revisions check can compare builds (orchardist#803). Empty in a
+# tarball with no .git falls back to the compiler's own vcs.revision stamp.
+REVISION ?= $(shell git rev-parse HEAD 2>/dev/null)
+GO_LDFLAGS = -X main.version=$(VERSION) -X github.com/drewdrewthis/orchardist/internal/release.revision=$(REVISION)
+
 # Go binaries — orchard-daemon, orchard-sidebar, orchard-shell, orchard-upgrade.
-# Each bakes VERSION via -ldflags: make sidebar VERSION=1.2.3
+# Each bakes VERSION and REVISION via -ldflags: make sidebar VERSION=1.2.3
 daemon:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/orchard-daemon ./cmd/orchard-daemon
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/orchard-daemon ./cmd/orchard-daemon
 
 sidebar:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/orchard-sidebar ./cmd/orchard-sidebar
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/orchard-sidebar ./cmd/orchard-sidebar
 
 # cmd/orchard-shell — outer tmux wrapper (landing alongside this change).
 shell:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/orchard-shell ./cmd/orchard-shell
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/orchard-shell ./cmd/orchard-shell
 
 # cmd/orchard-upgrade — release client (landing alongside this change).
 upgrade:
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/orchard-upgrade ./cmd/orchard-upgrade
+	go build -ldflags "$(GO_LDFLAGS)" -o bin/orchard-upgrade ./cmd/orchard-upgrade
 
 # Generate gqlgen types/stubs from schema.graphql + gqlgen.yml.
 # Generated files live under internal/server/graphql/ and are committed

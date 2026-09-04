@@ -16,6 +16,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/drewdrewthis/orchardist/internal/release"
 )
 
 // version is overridden via -ldflags at release time.
@@ -27,6 +29,11 @@ func main() {
 
 // run is main's testable body. It returns the process exit code.
 func run(argv []string, stdout, stderr io.Writer) int {
+	// --revision prints the bare VCS revision before flag parsing, so doctor
+	// can compare it across the suite (orchardist#787).
+	if release.HandleRevisionFlag(argv, stdout) {
+		return 0
+	}
 	opts, err := parseArgs(argv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0

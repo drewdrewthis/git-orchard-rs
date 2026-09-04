@@ -28,8 +28,7 @@ func handleVersionFlag() {
 		fmt.Println("orchard-sidebar " + version)
 		os.Exit(0)
 	}
-	if len(os.Args) > 1 && os.Args[1] == "--revision" {
-		fmt.Println(release.Revision())
+	if release.HandleRevisionFlag(os.Args[1:], os.Stdout) {
 		os.Exit(0)
 	}
 }

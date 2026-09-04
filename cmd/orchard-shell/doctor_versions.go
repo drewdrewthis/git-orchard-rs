@@ -131,6 +131,8 @@ func mismatchLabel(value string) string {
 	switch value {
 	case unresolvedVersion:
 		return "not found"
+	case unimplementedRevision:
+		return "no --revision"
 	case "":
 		return "unknown"
 	default:

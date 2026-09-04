@@ -38,6 +38,14 @@ derive_version() {
 
 VERSION="${VERSION:-$(derive_version)}"
 VERSION="${VERSION:-dev}"
+
+# REVISION is the VCS commit baked into every Go binary so doctor's
+# suite-revisions check can compare builds (orchardist#803). Empty when the
+# source tree is not a git checkout (a downloaded tarball); the compiler's own
+# vcs.revision stamp then fills in where it can.
+REVISION="${REVISION:-$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null || true)}"
+GO_LDFLAGS="-X main.version=$VERSION -X github.com/drewdrewthis/orchardist/internal/release.revision=$REVISION"
+
 ONLY_TRIPLE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -219,7 +227,7 @@ for entry in "${PLATFORMS[@]}"; do
     fi
     out="$platform_dir/$bin"
     if ! (cd "$ROOT" && GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-        go build -ldflags "-X main.version=$VERSION" -o "$out" "./$src" 2>&1); then
+        go build -ldflags "$GO_LDFLAGS" -o "$out" "./$src" 2>&1); then
       echo "  FAILED building $bin for $triple"
       have_go=0
       continue
@@ -275,21 +283,30 @@ fi
 # Catches a direct `bash scripts/dist.sh` invocation where VERSION landed
 # on "dev" (env unset, Cargo.toml unreadable), or a future regression that
 # stops forwarding VERSION into the build. ---
-version_check_failed=0
+selfcheck_failed=0
 for entry in "${PLATFORMS[@]}"; do
   read -r _ _ triple <<<"$entry"
   platform_dir="$work/$triple"
   for bin in "${GO_BINS[@]}"; do
     bin_path="$platform_dir/$bin"
     [ -f "$bin_path" ] || continue
-    if ! go version -m "$bin_path" 2>/dev/null | grep -qF -- "-X main.version=$VERSION"; then
+    buildinfo="$(go version -m "$bin_path" 2>/dev/null)"
+    if ! printf '%s' "$buildinfo" | grep -qF -- "-X main.version=$VERSION"; then
       echo "ERROR: $bin ($triple) did not bake in VERSION=$VERSION" >&2
-      version_check_failed=1
+      selfcheck_failed=1
+    fi
+    # Doctor's suite-revisions check compares this exact ldflag across binaries;
+    # a build that stops forwarding REVISION would make doctor cry skew on a
+    # clean release. Checked here, not via `--revision`, so it holds for
+    # foreign-arch cross binaries that cannot be executed.
+    if ! printf '%s' "$buildinfo" | grep -qF -- "-X github.com/drewdrewthis/orchardist/internal/release.revision=$REVISION"; then
+      echo "ERROR: $bin ($triple) did not bake in REVISION=$REVISION" >&2
+      selfcheck_failed=1
     fi
   done
 done
-if [ "$version_check_failed" -eq 1 ]; then
-  echo "error: one or more Go binaries do not report VERSION=$VERSION (see above)" >&2
+if [ "$selfcheck_failed" -eq 1 ]; then
+  echo "error: one or more Go binaries do not report the expected VERSION/REVISION (see above)" >&2
   exit 1
 fi
-echo "verified: all built Go binaries report VERSION=$VERSION"
+echo "verified: all built Go binaries report VERSION=$VERSION and REVISION=$REVISION"
