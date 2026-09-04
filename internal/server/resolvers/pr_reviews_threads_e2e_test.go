@@ -33,6 +33,7 @@ import (
 	"github.com/drewdrewthis/orchardist/internal/server/loaders"
 	"github.com/drewdrewthis/orchardist/internal/server/providers/gh"
 	"github.com/drewdrewthis/orchardist/internal/server/resolvers"
+	gorillaws "github.com/gorilla/websocket"
 )
 
 // reviewFixture loads the canned GitHub `pullRequest` block shared by the
@@ -124,6 +125,15 @@ func newReviewDaemon(t *testing.T, p *gh.Provider) *httptest.Server {
 	// Mirror server.go: install the per-operation enrichment memo (#813).
 	gqlSrv.AroundOperations(resolvers.EnrichMemoMiddleware)
 	gqlSrv.AddTransport(transport.POST{})
+	// Mount the websocket transport too, mirroring server.go's
+	// websocketTransport(), so the memo-scope tests can run two operations on
+	// one connection that shares a single connection-scoped *Loaders.
+	gqlSrv.AddTransport(transport.Websocket{
+		Upgrader: gorillaws.Upgrader{
+			CheckOrigin:  func(*http.Request) bool { return true },
+			Subprotocols: []string{"graphql-transport-ws", "graphql-ws"},
+		},
+	})
 	mux := http.NewServeMux()
 	mux.Handle("/graphql", loaders.Middleware(res.LoaderBundle(), gqlSrv))
 	srv := httptest.NewServer(mux)

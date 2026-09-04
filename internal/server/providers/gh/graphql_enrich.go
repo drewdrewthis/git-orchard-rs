@@ -50,6 +50,9 @@ func (p *Provider) EnrichPullRequest(ctx context.Context, key PullRequestKey) (P
 	// Consulted before the durable cache and written after a fetch regardless
 	// of shouldCacheEnrichment, so an open+UNKNOWN PR resolves from one
 	// GitHub round-trip within the operation. Absent for non-GraphQL callers.
+	// The memo has no single-flight: the N+1 collapse relies on primeEnrichment's
+	// batch completing (and its memo.put) before the field resolvers Load — the
+	// loader batch runs after the prime returns — so concurrent misses may each fetch.
 	memo := enrichMemoFromContext(ctx)
 	if v, ok := memo.get(key); ok {
 		return v, nil
