@@ -71,6 +71,30 @@ fi
 mv -f "$SHELL_BUILD_TMP/orchard-shell" "$REPO_ROOT/bin/orchard-shell"
 rm -rf "$SHELL_BUILD_TMP"
 
+# render_conf OUTER_SOCKET INNER_SOCKET: prints the path to outer.conf
+# rendered via the real binary's `render-conf` subcommand -- the same
+# substituteConf (cmd/orchard-shell/conf.go) the boot path itself uses.
+# Every direct outer.conf load below goes through this instead of `-f`/
+# `source-file`-ing scripts/outer-shell/outer.conf raw, which would leave
+# its @ORCHARD_SHELL@/@INNER_SOCKET@/@OUTER_SOCKET@ tokens unsubstituted --
+# a single source of truth for the rendered bytes rather than two paths
+# that can drift.
+render_conf() {
+  local outer_socket="$1" inner_socket="$2"
+  local out="$SCRATCH/outer-rendered-${outer_socket}.conf"
+  local log="$SCRATCH/render-conf-${outer_socket}.log"
+  if ! "$REPO_ROOT/bin/orchard-shell" render-conf \
+      --self "$REPO_ROOT/bin/orchard-shell" \
+      --inner-socket "$inner_socket" \
+      --outer-socket "$outer_socket" >"$out" 2>"$log"; then
+    cat "$log" >&2
+    echo "error: orchard-shell render-conf failed for socket $outer_socket" >&2
+    exit 1
+  fi
+  printf '%s' "$out"
+}
+RENDERED_CONF="$(render_conf "$OUTER" "$INNER")"
+
 # LAUNCH speaks the same interface every check below already calls it with
 # (INNER_SOCKET SESSION positionally, OUTER_SOCKET from the environment) --
 # only what it execs underneath has changed, from the old shell prototype to
@@ -241,6 +265,29 @@ if ! tmux -L "$OUTER" has-session -t "$OUTER_SESSION" 2>/dev/null; then
   exit 1
 fi
 record PASS "outer session boots" "orchard-shell created session '$OUTER_SESSION' on socket '$OUTER'"
+
+# --- recovery hook + M-r bind are loaded (issue #802) -----------------------
+# The pane-died hook and the M-r bind only self-heal a dead pane if the conf
+# actually loaded onto this outer server carries them, with a real binary
+# path substituted in for @ORCHARD_SHELL@ -- this is orchard-shell's own boot
+# path (resolveConfFor), not the render_conf helper above, so a PASS here
+# proves the shipped materialise-on-boot behavior, not just this script's
+# own rendering.
+HOOKS_OUT="$(tmux -L "$OUTER" show-hooks -gw 2>/dev/null)"
+if printf '%s\n' "$HOOKS_OUT" | grep -q 'pane-died' && \
+   printf '%s\n' "$HOOKS_OUT" | grep -q 'recover-pane' && \
+   ! printf '%s\n' "$HOOKS_OUT" | grep -q '@ORCHARD_SHELL@'; then
+  record PASS "pane-died recovery hook is registered" "show-hooks -gw rendered pane-died recover-pane hook"
+else
+  record FAIL "pane-died recovery hook is registered" "show-hooks -gw missing rendered pane-died recover-pane hook"
+fi
+
+ROOT_KEYS_HOOK="$(tmux -L "$OUTER" list-keys -T root 2>/dev/null)"
+if printf '%s\n' "$ROOT_KEYS_HOOK" | grep -q 'M-r'; then
+  record PASS "M-r recovery bind is registered" "list-keys -T root contains M-r"
+else
+  record FAIL "M-r recovery bind is registered" "list-keys -T root missing M-r"
+fi
 
 # --- boot correctness: the right command must be in the right pane ---------
 # Regression guard for the send-keys-before-split bug: sending the sidebar
@@ -601,9 +648,9 @@ check_width40 "unset width option falls back to 40"
 # wrapper after every later change, not just loaded once at boot -- $OUTER
 # already loaded it once when it booted above, so sourcing it here twice
 # more reproduces exactly that repeated hot-apply.
-tmux -L "$OUTER" source-file "$SCRIPT_DIR/outer.conf" 2>"$SCRATCH/resource1.err"
+tmux -L "$OUTER" source-file "$RENDERED_CONF" 2>"$SCRATCH/resource1.err"
 RESOURCE1_RC=$?
-tmux -L "$OUTER" source-file "$SCRIPT_DIR/outer.conf" 2>"$SCRATCH/resource2.err"
+tmux -L "$OUTER" source-file "$RENDERED_CONF" 2>"$SCRATCH/resource2.err"
 RESOURCE2_RC=$?
 if [[ "$RESOURCE1_RC" -eq 0 && "$RESOURCE2_RC" -eq 0 ]]; then
   record PASS "outer.conf re-sources idempotently" "two repeated source-file calls against the already-booted \$OUTER session both exit 0"
@@ -1611,7 +1658,7 @@ $(tmux -L "$FK_OUTER" capture-pane -p -t "$FK_PANE" 2>/dev/null)"
       #    forward a plain arrow to pane 0.0 regardless of focus. The CSI
       #    modifier form is used deliberately: three ESC-prefixed alt keys in
       #    one write have an ambiguous boundary and tmux drops one.
-      tmux -L "$FK_OUTER" source-file "$SCRIPT_DIR/outer.conf" 2>/dev/null
+      tmux -L "$FK_OUTER" source-file "$(render_conf "$FK_OUTER" "$FK_INNER")" 2>/dev/null
       tmux -L "$FK_OUTER" select-pane -t "$FK_SESSION:0.1" 2>/dev/null
       FK_ALT_B64="$(printf '\033[1;3B\033[1;3B' | base64 | tr -d '\n')"
       FK_OUT6="$SCRATCH/fk_altarrows.out"
@@ -1924,7 +1971,7 @@ else
   tmux -L "$ST_INNER" -f /dev/null new-session -d -s work -x 200 -y 50
   # the real outer.conf, so the restore lands in front of the same resize
   # hooks the wrapper runs with
-  tmux -L "$ST_OUTER" -f "$SCRIPT_DIR/outer.conf" new-session -d -s "$OUTER_SESSION" -x 130 -y 40 \
+  tmux -L "$ST_OUTER" -f "$(render_conf "$ST_OUTER" "$ST_INNER")" new-session -d -s "$OUTER_SESSION" -x 130 -y 40 \
     "XDG_STATE_HOME='$ST_STATE_HOME' ORCHARD_TMUX_SOCKET=$ST_INNER CLAUDE_SESSION_STATE_DIR='$SCRATCH/nostate' $FK_BIN"
   tmux -L "$ST_OUTER" split-window -h -t "$OUTER_SESSION:0.0" -l 89 2>/dev/null
 

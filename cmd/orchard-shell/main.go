@@ -47,6 +47,9 @@ func run(argv []string, stdout, stderr io.Writer) int {
 	if len(argv) > 0 && argv[0] == "recover-pane" {
 		return runRecoverPane(argv[1:], stderr)
 	}
+	if len(argv) > 0 && argv[0] == "render-conf" {
+		return runRenderConf(argv[1:], stdout, stderr)
+	}
 	opts, err := parseArgs(argv, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
