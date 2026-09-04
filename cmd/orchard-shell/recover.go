@@ -24,13 +24,14 @@ const (
 	actRespawnSidebar                       // 0.0's sidebar exited — relaunch it
 	actCrashLoopHalt                        // too many restarts too fast — stop and wait for M-r
 	actNoop                                 // already halted a moment ago — leave the pane parked
+	actCloseSplit                           // a died #777 split work pane (outer index >= 2) — close it, restore the layout
 )
 
 // recoverInput is everything decideRecovery needs: which pane died, its exit
 // status, whether the inner server still has sessions (inner only), the
 // pane's own restart history and the current time.
 type recoverInput struct {
-	Pane             string // "sidebar" | "inner"
+	Pane             string // "sidebar" | "inner" | "split"
 	ExitStatus       int
 	InnerHasSessions bool // only meaningful when Pane == "inner"
 	History          []time.Time
@@ -78,6 +79,17 @@ const haltDebounce = 5 * time.Second
 // and starts a fresh one when it does not. Retry (M-r) skips both guards — the
 // user is deliberately asking to try again.
 func decideRecovery(in recoverInput) (recoverAction, string) {
+	// A died #777 open-in-split work pane (outer-window index >= 2) is closed,
+	// never respawned: the split pane is sidebar-owned state (cmd/orchard-
+	// sidebar/split.go: m.alt / m.splitOpen), so respawning it here would
+	// orphan a pane the sidebar can no longer close with M-w. Closing it and
+	// re-pinning the two-pane layout is the whole recovery, so it short-circuits
+	// ahead of the respawn-oriented crash-loop and halt-debounce guards, which
+	// do not apply to a terminal close.
+	if in.Pane == "split" {
+		return actCloseSplit, "split work pane exited — closed, two-pane layout restored"
+	}
+
 	// Defense-in-depth against a halt re-firing itself: unless the user asked
 	// (M-r), a pane-died within haltDebounce of the last halt is the parked
 	// pane churning, not a new failure — leave it parked, silently.

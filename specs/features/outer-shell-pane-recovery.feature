@@ -78,3 +78,28 @@ Feature: outer shell pane recovery
   Scenario: The two outer.conf copies stay byte-identical after adding recovery hooks
     Given "cmd/orchard-shell/outer.conf" now contains a pane-died hook and an M-r bind
     Then "scripts/outer-shell/outer.conf" is byte-identical to it
+
+  # orchardist#802 AC1 — a pane at outer-window index >= 2 (the #777 open-in-split
+  # work pane) that dies must not be silently ignored. paneNameFromArg only knows
+  # "0"/"sidebar" and "1"/"inner", so a died index-2 pane short-circuits to
+  # "no dead pane to recover" and stays dead, breaking the layout. Recovery closes
+  # the split pane cleanly (kill-pane) and re-pins the two-pane layout — it does NOT
+  # respawn it, because the split pane is sidebar-owned state (cmd/orchard-sidebar/
+  # split.go: m.alt / m.splitOpen), and a respawn would orphan a pane the sidebar
+  # can no longer close with M-w.
+  @integration
+  Scenario: A died split work pane at index >= 2 is closed cleanly and the layout restored
+    Given a third outer work pane at index 2 was opened via open-in-split (#777)
+    And that pane's inner client process has exited, leaving it dead
+    When orchard-shell's pane-died hook fires for pane index 2
+    Then pane index 2 is closed with kill-pane rather than left dead
+    And the outer window is re-pinned to the two-pane main-vertical layout
+    And a status line explains the split pane at index 2 was recovered
+    And no wrong-pane recovery is misfired against the sidebar or inner pane
+
+  @unit
+  Scenario: recover-pane resolves an index >= 2 argument to the split pane class
+    Given the pane-died hook passes the dead pane's "#{pane_index}" of "2"
+    When recover-pane maps that argument to a pane class
+    Then it resolves to the split-pane class, not the empty "no dead pane" result
+    And the recovery decision for that class is to close the pane cleanly

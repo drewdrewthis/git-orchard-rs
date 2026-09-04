@@ -50,27 +50,33 @@ func runRecoverPane(argv []string, stderr io.Writer) int {
 		conf: confPath, tmux: runTmux, log: stderr, lookPath: exec.LookPath,
 	}
 
-	pane, ok := recoverTarget(w, fs.Arg(0), *retry)
+	pane, target, ok := recoverTarget(w, fs.Arg(0), *retry)
 	if !ok {
 		fmt.Fprintln(stderr, "recover-pane: no dead pane to recover")
 		return 0
 	}
-	w.recoverPane(pane, *retry, stderr)
+	w.recoverPane(pane, target, *retry, stderr)
 	return 0
 }
 
-// recoverTarget resolves which pane to act on. An explicit index/name wins;
-// with --retry and no argument, it reads the outer state and the recovery log
-// and hands both to resolveRetryTarget.
-func recoverTarget(w *wrapper, arg string, retry bool) (string, bool) {
+// recoverTarget resolves which pane to act on and its tmux address. An explicit
+// index/name wins; with --retry and no argument, it reads the outer state and
+// the recovery log and hands both to resolveRetryTarget. A close-always split
+// pane is never an M-r target (there is nothing to retry), so the retry path
+// only ever yields sidebar/inner.
+func recoverTarget(w *wrapper, arg string, retry bool) (pane, target string, ok bool) {
 	if name := paneNameFromArg(arg); name != "" {
-		return name, true
+		return name, paneTargetFor(name, arg), true
 	}
 	if !retry {
-		return "", false
+		return "", "", false
 	}
 	logPath, _ := recoveryLogPath()
-	return resolveRetryTarget(w.probe(), readRecoveryEvents(logPath))
+	name, ok := resolveRetryTarget(w.probe(), readRecoveryEvents(logPath))
+	if !ok {
+		return "", "", false
+	}
+	return name, paneTargetFor(name, ""), true
 }
 
 // resolveRetryTarget is the pure M-r target decision, split out so it is
@@ -90,25 +96,43 @@ func resolveRetryTarget(s outerState, events []recoveryEvent) (string, bool) {
 	return mostRecentlyHaltedPane(events)
 }
 
-// paneNameFromArg maps outer.conf's #{pane_index} (0/1) or an explicit
-// sidebar/inner word to the pane name decideRecovery speaks.
+// paneNameFromArg maps outer.conf's #{pane_index} or an explicit
+// sidebar/inner word to the pane class decideRecovery speaks. A numeric outer-
+// window index of 2 or more is a #777 open-in-split work pane — the "split"
+// class — so a died split pane resolves to a real recovery instead of
+// short-circuiting to "no dead pane" and staying dead (issue #802 AC1).
 func paneNameFromArg(arg string) string {
-	switch strings.TrimSpace(arg) {
+	arg = strings.TrimSpace(arg)
+	switch arg {
 	case "0", "sidebar":
 		return "sidebar"
 	case "1", "inner":
 		return "inner"
-	default:
-		return ""
 	}
+	if n, err := strconv.Atoi(arg); err == nil && n >= 2 {
+		return "split"
+	}
+	return ""
+}
+
+// paneTargetFor resolves a pane class to the tmux pane address recover-pane
+// acts on. The split class carries its own outer-window index (arg), since
+// there can be more than one split pane.
+func paneTargetFor(pane, arg string) string {
+	switch pane {
+	case "sidebar":
+		return paneSidebar
+	case "inner":
+		return paneInner
+	case "split":
+		return outerSessionName + ":0." + strings.TrimSpace(arg)
+	}
+	return ""
 }
 
 // recoverPane reads the pane's exit status and history, decides, and acts.
-func (w *wrapper) recoverPane(pane string, retry bool, stderr io.Writer) {
-	target := paneSidebar
-	if pane == "inner" {
-		target = paneInner
-	}
+// target is the tmux pane address recoverTarget resolved for pane.
+func (w *wrapper) recoverPane(pane, target string, retry bool, stderr io.Writer) {
 	exitStatus := w.paneExitStatus(target)
 
 	logPath, _ := recoveryLogPath()
@@ -160,8 +184,43 @@ func (w *wrapper) applyRecovery(action recoverAction, target, msg string, stderr
 	case actCrashLoopHalt:
 		_, err := w.outer("respawn-pane", "-k", "-t", target, haltCommand(msg))
 		return err
+	case actCloseSplit:
+		// Close the died split pane and re-pin the known two-pane layout, the
+		// same shape boot/rebuild pins. No respawn: the pane is sidebar-owned
+		// (see decideRecovery), so respawning it would orphan m.alt.
+		//
+		// Split panes are opened remain-on-exit off (cmd/orchard-sidebar/
+		// split.go), so on the natural death path tmux has already removed the
+		// pane before this hook runs — a kill-pane would then fail and short-
+		// circuit past the layout re-pin. Treat a gone pane as already closed:
+		// kill it only if it still exists, but ALWAYS re-pin the layout.
+		if w.paneExists(target) {
+			if _, err := w.outer("kill-pane", "-t", target); err != nil {
+				return err
+			}
+		}
+		_, err := w.outer("select-layout", "-t", outerSessionName+":0", "main-vertical")
+		return err
 	}
 	return nil
+}
+
+// paneExists reports whether target is still a live pane on window 0 of the
+// outer server. A split pane opened remain-on-exit off is gone by the time its
+// pane-died hook fires, so actCloseSplit must not treat a missing pane as a
+// kill-pane error — it checks here first.
+func (w *wrapper) paneExists(target string) bool {
+	out, err := w.outer("list-panes", "-t", outerSessionName+":0", "-F", "#{pane_index}")
+	if err != nil {
+		return false
+	}
+	idx := strings.TrimPrefix(target, outerSessionName+":0.")
+	for _, line := range strings.Fields(out) {
+		if line == idx {
+			return true
+		}
+	}
+	return false
 }
 
 // reattachInner respawns pane 0.1 onto the inner server's most-recently
