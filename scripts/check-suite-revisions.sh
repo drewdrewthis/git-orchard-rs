@@ -60,6 +60,14 @@ for tarball in "$@"; do
       fi
       [ -n "$out" ] && run_rev="$out"
     done
+  else
+    # Foreign triple: can't exec these binaries here, so --revision is
+    # unverified. Say so explicitly -- a bare PASSED must never hide this.
+    triple="$(basename "$tarball" | grep -oE '(x86_64|aarch64)-(apple-darwin|unknown-linux-gnu)' | head -1)"
+    for bin in $REVISION_BINS; do
+      [ -f "$work/$bin" ] || continue
+      echo "  SKIP --revision $bin (${triple:-non-host} not host arch; go version -m covers Go bins only)"
+    done
   fi
 
   rm -rf "$work"; trap - EXIT
