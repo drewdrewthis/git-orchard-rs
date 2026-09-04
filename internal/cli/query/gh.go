@@ -60,7 +60,7 @@ const workflowRunsQuery = `query WorkflowRuns($repo: String!) {
     status
     conclusion
     headBranch
-    headSha
+    headSHA
     url
     createdAt
     updatedAt
