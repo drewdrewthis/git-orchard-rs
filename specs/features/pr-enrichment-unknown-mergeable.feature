@@ -31,7 +31,7 @@ Feature: Daemon — no hidden N+1 for open PRs with `mergeable == UNKNOWN` (#813
     Then every PR resolves `headRefOid`, `reviews` (2), `reviewThreads` (4) and `unresolvedThreadCount` (3)
     And no GraphQL `errors` array is present
     And the captured GitHub GraphQL call counter equals 1
-    # (This is TestPRReviewSurface_NoNPlusOne_UnknownMergeable, currently red observing 4.)
+    # (TestPRReviewSurface_NoNPlusOne_UnknownMergeable; before the #813 fix it observed 4 calls.)
 
   # =======================================================================
   # AC2 — Memo is request-scoped, not connection-scoped
